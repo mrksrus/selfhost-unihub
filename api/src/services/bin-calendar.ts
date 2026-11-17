@@ -11,7 +11,7 @@ import { ApiError, conflict, notFound } from '../http/errors';
 import { withTransaction } from './transactions';
 import { alreadyBack, putInBin, parsePayload, lockBinOwner } from './bin';
 import { UID_EXACT, overlayStateOf, insertOverlays, applyOverlaysToLiveRows, overlayKeyProblem } from './calendar-overlays';
-import { fencedWrite, calendarAdmission } from './calendar-move-state';
+import { fencedWrite, fenceTaskLocks, calendarAdmission } from './calendar-move-state';
 import { itemKey } from './task-order';
 import { publishCalendarChanged } from './realtime';
 import { ensureDefaultLocalCalendarForUser, resolveCalendarDefaults } from './calendar';
@@ -62,7 +62,7 @@ interface Copy { account: SyncAccount; calendar: SyncCalendar; timeZone: string;
 
 const EVENT_COLUMNS = ['id', 'user_id', 'calendar_id', 'title', 'description', 'start_time', 'end_time', 'all_day', 'location', 'color', 'recurrence', 'reminder_minutes',
   'reminders', 'todo_status', 'is_todo_only', 'done_at', 'created_at', 'updated_at', 'source_email_id', 'source_email_json', 'order_key', 'uid'] as const;
-const SUBTASK_COLUMNS = ['id', 'event_id', 'user_id', 'title', 'is_done', 'position', 'created_at', 'updated_at'] as const;
+const SUBTASK_COLUMNS = ['id', 'event_id', 'user_id', 'title', 'is_done', 'position', 'created_at', 'updated_at', 'created_by'] as const;
 const ATTENDEE_COLUMNS = ['id', 'user_id', 'event_id', 'email', 'display_name', 'response_status', 'is_organizer', 'optional_attendee', 'comment', 'created_at', 'updated_at'] as const;
 const CALENDAR_COLUMNS = ['id', 'user_id', 'account_id', 'name', 'color', 'is_visible', 'auto_todo_enabled', 'read_only', 'is_primary', 'created_at', 'uid'] as const;
 const TIME_COLUMNS = new Set(['start_time', 'end_time', 'done_at', 'created_at', 'updated_at']);
@@ -100,30 +100,38 @@ const itemTypeOf = (event: Stored): BinItemType => Number(event.is_todo_only) ||
 
 // --- Into the bin ---------------------------------------------------------------
 
-async function snapshotLocalEvent(cx: SqlExecutor, userId: string, eventId: string): Promise<LocalPayload | null> {
-  const [[event]] = await cx.execute<RowDataPacket[]>('SELECT * FROM calendar_events WHERE id = ? AND user_id = ? FOR UPDATE', [eventId, userId]);
+// ownerId: the user_id the event's rows carry (the calendar's owner, or null when no person owns it).
+async function snapshotLocalEvent(cx: SqlExecutor, ownerId: string | null, eventId: string): Promise<LocalPayload | null> {
+  const [[event]] = await cx.execute<RowDataPacket[]>('SELECT * FROM calendar_events WHERE id = ? AND user_id <=> ? FOR UPDATE', [eventId, ownerId]);
   if (!event) return null;
-  const [subtasks] = await cx.execute<RowDataPacket[]>('SELECT * FROM calendar_event_subtasks WHERE event_id = ? AND user_id = ? ORDER BY position, created_at, id', [eventId, userId]);
-  const [attendees] = await cx.execute<RowDataPacket[]>('SELECT * FROM calendar_event_attendees WHERE event_id = ? AND user_id = ? ORDER BY created_at, id', [eventId, userId]);
-  const [ranks] = await cx.execute<RowDataPacket[]>('SELECT * FROM task_order WHERE user_id = ? AND event_id = ?', [userId, eventId]);
-  const [[calendar]] = await cx.execute<RowDataPacket[]>('SELECT name FROM calendar_calendars WHERE id = ? AND user_id = ?', [event.calendar_id, userId]);
+  const [subtasks] = await cx.execute<RowDataPacket[]>('SELECT * FROM calendar_event_subtasks WHERE event_id = ? AND user_id <=> ? ORDER BY position, created_at, id', [eventId, ownerId]);
+  const [attendees] = await cx.execute<RowDataPacket[]>('SELECT * FROM calendar_event_attendees WHERE event_id = ? AND user_id <=> ? ORDER BY created_at, id', [eventId, ownerId]);
+  const [ranks] = await cx.execute<RowDataPacket[]>('SELECT * FROM task_order WHERE user_id <=> ? AND event_id = ?', [ownerId, eventId]);
+  const [[calendar]] = await cx.execute<RowDataPacket[]>('SELECT name FROM calendar_calendars WHERE id = ? AND user_id <=> ?', [event.calendar_id, ownerId]);
   return { provider: 'local', origin: calendar?.name ?? null, event: toStored(event), subtasks: subtasks.map(toStored), attendees: attendees.map(toStored), task_order: ranks.map(toStored) };
 }
 
-/** In the caller's transaction: UniHub events and tasks into the bin, then their rows removed. */
-async function binLocalEvents(cx: SqlExecutor, userId: string, eventIds: readonly string[], { reason = 'deleted' as const, groupId = null as string | null }: { reason?: 'deleted' | 'calendar_deleted'; groupId?: string | null } = {}) {
+/**
+ * In the caller's transaction: UniHub events and tasks into the bin, then
+ * their rows removed. Each item names its calendar, whose bin shows it too;
+ * one a person owns stays in their bin, one of a calendar no person owns
+ * (ownerId null, one calendar per call) is in that calendar's bin only.
+ */
+async function binLocalEvents(cx: SqlExecutor, ownerId: string | null, eventIds: readonly string[], { reason = 'deleted' as const, groupId = null as string | null }: { reason?: 'deleted' | 'calendar_deleted'; groupId?: string | null } = {}) {
   const items = [];
   const removed: string[] = [];
   for (const eventId of eventIds) {
-    const payload = await snapshotLocalEvent(cx, userId, eventId);
+    const payload = await snapshotLocalEvent(cx, ownerId, eventId);
     if (!payload) continue;
-    items.push({ module: 'calendar' as const, itemType: itemTypeOf(payload.event), itemId: eventId, title: String(payload.event.title ?? ''), reason, groupId, payload });
+    const calendarId = payload.event.calendar_id == null ? null : String(payload.event.calendar_id);
+    items.push({ module: 'calendar' as const, itemType: itemTypeOf(payload.event), itemId: eventId, title: String(payload.event.title ?? ''), reason, groupId, payload, calendarId });
     removed.push(eventId);
   }
-  const binIds = await putInBin(cx, userId, items);
+  if (!items.length) return [];
+  const binIds = await putInBin(cx, ownerId ?? { calendarId: items[0].calendarId! }, items);
   for (let index = 0; index < removed.length; index += 200) {
     const chunk = removed.slice(index, index + 200);
-    await cx.execute(`DELETE FROM calendar_events WHERE user_id = ? AND id IN (${placeholders(chunk)})`, [userId, ...chunk]);
+    await cx.execute(`DELETE FROM calendar_events WHERE user_id <=> ? AND id IN (${placeholders(chunk)})`, [ownerId, ...chunk]);
   }
   return binIds;
 }
@@ -183,7 +191,7 @@ const syncBusy = (): Refusal => ({ error: 'This calendar is being synced right n
  */
 async function deleteEventToBin(userId: string, event: CalendarEvent, scope: 'series' | 'occurrence'): Promise<{ binned: string | null } | { refused: Refusal }> {
   const write = await calendarSync.describeEventWrite(userId, event);
-  if (!write.remote) return { binned: await binLocally(userId, event.id) };
+  if (!write.remote) return { binned: await binLocally(userId, event) };
   if (write.link && write.recurring && write.link.recurrenceId && scope !== 'series') {
     const { assertAllowed } = require('./settings') as typeof import('./settings');
     await assertAllowed(userId, ['bin.delete']);
@@ -208,7 +216,7 @@ async function deleteEventToBin(userId: string, event: CalendarEvent, scope: 'se
       return { binned };
     }
     // Not linked to a server copy: UniHub's own row.
-    return { binned: await binLocally(userId, event.id) };
+    return { binned: await binLocally(userId, event) };
   }, DELETE_SYNC_WAIT_SECONDS);
   if ('skipped' in outcome) return { refused: syncBusy() };
   // The refresh a conflict asks for could not run while the lock was held.
@@ -216,8 +224,15 @@ async function deleteEventToBin(userId: string, event: CalendarEvent, scope: 'se
   return 'refused' in outcome ? { refused: outcome.refused } : outcome;
 }
 
-async function binLocally(userId: string, eventId: string) {
-  const [id] = await fencedWrite(connection => binLocalEvents(connection, userId, [eventId]));
+/** A UniHub event into its calendar's bin, under the calendar's guard: the caller's own, or one of a calendar they edit. */
+async function binLocally(userId: string, event: Pick<CalendarEvent, 'id' | 'user_id' | 'calendar_id'>) {
+  const ownerId = event.user_id ?? null;
+  const [id] = await withTransaction(async connection => {
+    const { lockEventWrite } = require('./calendar-shares') as typeof import('./calendar-shares');
+    if (!await lockEventWrite(connection, userId, event.id, ownerId, 'edit', event.calendar_id ?? null)) return [];
+    await fenceTaskLocks(connection);
+    return binLocalEvents(connection, ownerId, [event.id]);
+  });
   return id ?? null;
 }
 
@@ -256,36 +271,45 @@ async function localTarget(cx: SqlExecutor, userId: string, calendarId: unknown)
   if (typeof calendarId === 'string' && ID_PATTERN.test(calendarId)) {
     const [[own]] = await cx.execute<RowDataPacket[]>(
       `SELECT c.id FROM calendar_calendars c JOIN calendar_accounts a ON a.id = c.account_id AND a.user_id = c.user_id
-       WHERE c.id = ? AND c.user_id = ? AND a.provider = 'local' AND NOT COALESCE(c.read_only, 0)`, [calendarId, userId]);
+       WHERE c.id = ? AND c.user_id = ? AND a.provider = 'local' AND NOT COALESCE(c.read_only, 0) AND c.archived_at IS NULL`, [calendarId, userId]);
     if (own) return { id: String(own.id), note: null };
   }
   return { id: (await resolveCalendarDefaults(userId, cx)).taskListId, note: GONE_NOTE };
 }
 
-/** Writes an event from its snapshot into an owned UniHub list; its id and identity stay unless taken. Returns the row's id, or null when it is the person's again (already back). */
-async function restoreLocalEvent(cx: SqlExecutor, userId: string, payload: Pick<LocalPayload, 'event' | 'subtasks' | 'attendees' | 'task_order'>, calendarId: string) {
+/**
+ * Writes an event from its snapshot into a UniHub list of its owner (userId;
+ * null for a calendar no person owns); its id and identity stay unless
+ * taken. Returns the row's id, or null when it is the owner's again (already back).
+ */
+async function restoreLocalEvent(cx: SqlExecutor, userId: string | null, payload: Pick<LocalPayload, 'event' | 'subtasks' | 'attendees' | 'task_order'>, calendarId: string) {
   const event = payload.event || {};
-  const [[idTaken]] = ID_PATTERN.test(String(event.id)) ? await cx.execute<RowDataPacket[]>('SELECT id, user_id FROM calendar_events WHERE id = ?', [String(event.id)]) : [[{ id: '', user_id: null }]];
-  if (idTaken?.user_id === userId) return null;
+  const [[idTaken]] = ID_PATTERN.test(String(event.id)) ? await cx.execute<RowDataPacket[]>('SELECT id, user_id FROM calendar_events WHERE id = ?', [String(event.id)]) : [[{ id: '', user_id: undefined }]];
+  if (idTaken && (idTaken.user_id ?? null) === userId) return null;
   const id = idTaken ? crypto.randomUUID() : String(event.id);
   const own = typeof event.uid === 'string' && event.uid && event.uid.length <= 500 ? event.uid : id;
-  const [[uidTaken]] = await cx.execute<RowDataPacket[]>(`SELECT id FROM calendar_events WHERE user_id = ? AND uid = ? ${UID_EXACT} LIMIT 1`, [userId, own]);
+  const [[uidTaken]] = await cx.execute<RowDataPacket[]>(`SELECT id FROM calendar_events WHERE user_id <=> ? AND uid = ? ${UID_EXACT} LIMIT 1`, [userId, own]);
   let emailId = typeof event.source_email_id === 'string' && ID_PATTERN.test(event.source_email_id) ? event.source_email_id : null;
   if (emailId) {
     const [owned] = await cx.execute<RowDataPacket[]>('SELECT id FROM emails WHERE id = ? AND user_id = ? LIMIT 1', [emailId, userId]);
     if (!owned.length) emailId = null;
   }
-  const [[calendar]] = await cx.execute<RowDataPacket[]>('SELECT color FROM calendar_calendars WHERE id = ? AND user_id = ?', [calendarId, userId]);
+  const [[calendar]] = await cx.execute<RowDataPacket[]>('SELECT color FROM calendar_calendars WHERE id = ? AND user_id <=> ?', [calendarId, userId]);
   await insertRows(cx, 'calendar_events', EVENT_COLUMNS, [{
     ...event, id, user_id: userId, calendar_id: calendarId, uid: uidTaken ? id : own, source_email_id: emailId,
     color: calendar?.color ?? event.color ?? '#2563eb', title: String(event.title ?? '').slice(0, 255) || 'Untitled',
     start_time: event.start_time ?? new Date().toISOString(), end_time: event.end_time ?? event.start_time ?? new Date().toISOString(),
   }]);
-  await insertRows(cx, 'calendar_event_subtasks', SUBTASK_COLUMNS, await freeIds(cx, 'calendar_event_subtasks', (payload.subtasks || []).map(row => ({ ...row, event_id: id, user_id: userId }))));
+  // Who added a point stays known while that person does.
+  const authors = [...new Set((payload.subtasks || []).map(row => String(row.created_by ?? '')).filter(author => ID_PATTERN.test(author)))];
+  const [known] = authors.length ? await cx.execute<RowDataPacket[]>(`SELECT id FROM users WHERE id IN (${placeholders(authors)})`, authors) : [[] as RowDataPacket[]];
+  const people = new Set(known.map(row => String(row.id)));
+  await insertRows(cx, 'calendar_event_subtasks', SUBTASK_COLUMNS, await freeIds(cx, 'calendar_event_subtasks', (payload.subtasks || [])
+    .map(row => ({ ...row, event_id: id, user_id: userId, created_by: people.has(String(row.created_by)) ? row.created_by : null }))));
   await insertRows(cx, 'calendar_event_attendees', ATTENDEE_COLUMNS, await freeIds(cx, 'calendar_event_attendees', (payload.attendees || []).map(row => ({ ...row, event_id: id, user_id: userId }))));
   // Its hand place, now keyed as a UniHub task.
   const rank = (payload.task_order || []).find(row => Number.isSafeInteger(Number(row.sort_rank)));
-  if (rank) {
+  if (rank && userId) {
     await cx.execute(`INSERT IGNORE INTO task_order (user_id, item_key, calendar_id, event_id, remote_uid, recurrence_id, sort_rank) VALUES (?, ?, NULL, ?, NULL, '', ?)`,
       [userId, itemKey({ event_id: id }), id, Number(rank.sort_rank)]);
   }
@@ -567,8 +591,32 @@ async function finishServerRestore(connection: SqlExecutor, userId: string, binI
   return true;
 }
 
+/**
+ * An item of a calendar's bin back into that calendar, by someone who may
+ * edit it: the rows carry the calendar owner's user_id (or none) again.
+ */
+async function restoreCalendarItem(userId: string, row: BinRow) {
+  const answer = await withTransaction(async cx => {
+    const { calendarWrite } = require('./calendar-shares') as typeof import('./calendar-shares');
+    const { ownerId } = await calendarWrite(cx, userId, String(row.calendar_id), 'edit');
+    const [[locked]] = await cx.execute<BinRow[]>('SELECT * FROM bin_items WHERE id = ? AND calendar_id = ? AND restored_at IS NULL FOR UPDATE', [row.id, row.calendar_id]);
+    if (!locked) throw notFound('BIN_ITEM_NOT_FOUND', 'Not in the bin');
+    const payload = parsePayload<LocalPayload>(locked);
+    if (!payload?.event || payload.provider !== 'local') throw conflict('BIN_ITEM_UNREADABLE', 'This item cannot be restored.');
+    const id = await restoreLocalEvent(cx, ownerId, payload, String(row.calendar_id));
+    if (!id) throw alreadyBack();
+    await cx.execute('DELETE FROM bin_items WHERE id = ?', [locked.id]);
+    return restoredOf(locked, id, null);
+  });
+  const { afterEventWrite } = require('./calendar-shares') as typeof import('./calendar-shares');
+  await afterEventWrite(userId, String(row.calendar_id), { eventId: answer.item_id, action: 'created' });
+  return answer;
+}
+
 const eventBinKind: BinKind = {
   async restore(userId, group, choice) {
+    // Another person's calendar, or one no person owns: back into it.
+    if (group.length === 1 && group[0].calendar_id && group[0].user_id !== userId) return [await restoreCalendarItem(userId, group[0])];
     if (group.some(row => row.item_type === 'calendar')) return restoreGroupWithCalendar(userId, group);
     const answers: BinRestored[] = [];
     for (const row of group) {
@@ -583,4 +631,4 @@ const eventBinKind: BinKind = {
   },
 };
 
-export { binLocalEvents, deleteEventToBin, deleteCalendarToBin, finishServerRestore, eventBinKind };
+export { binLocalEvents, binLocally, deleteEventToBin, deleteCalendarToBin, finishServerRestore, eventBinKind };

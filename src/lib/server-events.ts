@@ -160,6 +160,7 @@ export function startServerEvents({
     }));
     current.addEventListener('calendar.changed', live(() => schedule('calendar')));
     current.addEventListener('contacts.books', live(() => schedule('books')));
+    current.addEventListener('calendar.shares', live(() => schedule('calendar')));
     current.addEventListener('end', live(event => {
       const reason = parse<{ reason?: string }>(event)?.reason;
       close();

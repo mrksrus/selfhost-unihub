@@ -4,6 +4,7 @@ import type { QueryClient } from '@tanstack/react-query';
 import { api, type ApiResponse } from '@/lib/api';
 import { ApiError } from '@/lib/api-error';
 import type { BinnedResponse } from '../../api/src/contracts/bin';
+import type { CalendarAccessFields, SharedEventFields, SubtaskAuthorFields } from '../../api/src/contracts/calendar-shares';
 import type { CalendarChoiceFields, CalendarWriteBlock, TaskMoveCancelResponse, TaskMovePending, TaskMoveRequest, TaskMoveResponse, TaskPositionRequest, TaskPositionResponse, TaskRankFields } from '../../api/src/contracts/tasks';
 
 export type { CalendarWriteBlock, TaskPositionRequest, TaskPositionResponse } from '../../api/src/contracts/tasks';
@@ -69,7 +70,7 @@ export type CalendarSyncStatus = 'pending' | 'syncing' | 'ok' | 'error' | 'pause
 /** How an edit or delete of one occurrence of a synced series applies. */
 export type RecurrenceScope = 'occurrence' | 'series';
 
-export interface CalendarSubtask {
+export interface CalendarSubtask extends Partial<SubtaskAuthorFields> {
   id: string;
   event_id: string;
   user_id: string;
@@ -146,7 +147,7 @@ export const browserTimeZone = () => {
  * answer from an older server lacks them and gets the fallback in
  * `normalizeCalendar`.
  */
-export interface CalendarCalendar extends CalendarChoiceFields {
+export interface CalendarCalendar extends CalendarChoiceFields, Partial<CalendarAccessFields> {
   id: string;
   user_id: string;
   account_id: string;
@@ -187,7 +188,7 @@ export function normalizeCalendar(calendar: CalendarCalendarRow): CalendarCalend
   };
 }
 
-export interface CalendarEvent extends Partial<TaskRankFields> {
+export interface CalendarEvent extends Partial<TaskRankFields>, Partial<SharedEventFields> {
   id: string;
   user_id: string;
   calendar_id: string | null;
@@ -277,6 +278,8 @@ export const calendarQueryKeys = {
  */
 export function invalidateCalendarQueries(client: QueryClient) {
   return Promise.all([
+    // Shares and shared calendars (calendar-shares-api.ts).
+    client.invalidateQueries({ queryKey: ['calendar-shares'] }),
     client.invalidateQueries({ queryKey: calendarQueryKeys.all }),
     client.invalidateQueries({ queryKey: calendarQueryKeys.accounts }),
     client.invalidateQueries({ queryKey: calendarQueryKeys.calendars }),

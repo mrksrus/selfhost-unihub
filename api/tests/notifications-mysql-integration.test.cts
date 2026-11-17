@@ -40,7 +40,9 @@ test('MySQL notification schema, atomic outbox, due reminders, stale cancellatio
     setting_key VARCHAR(100) NOT NULL, setting_value JSON, PRIMARY KEY (user_id, setting_key)) ${options}`);
   await connection.execute(`CREATE TEMPORARY TABLE calendar_calendars (id CHAR(36) PRIMARY KEY, is_visible BOOLEAN) ${options}`);
   await connection.execute(`CREATE TEMPORARY TABLE calendar_events (id CHAR(36) PRIMARY KEY, user_id CHAR(36), calendar_id CHAR(36), title VARCHAR(255), start_time DATETIME, end_time DATETIME,
-    reminders JSON, reminder_minutes INT, todo_status VARCHAR(24), is_todo_only BOOLEAN DEFAULT FALSE, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP) ${options}`);
+    reminders JSON, reminder_minutes INT, todo_status VARCHAR(24), is_todo_only BOOLEAN DEFAULT FALSE, series_id CHAR(36), updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP) ${options}`);
+  // Each person's own reminders (none here: the owner has the event's).
+  await connection.execute(`CREATE TEMPORARY TABLE calendar_reminders (id CHAR(36) PRIMARY KEY, user_id CHAR(36), event_id CHAR(36), series_id CHAR(36), reminders JSON) ${options}`);
   await connection.execute(`CREATE TEMPORARY TABLE emails (id CHAR(36) PRIMARY KEY, user_id CHAR(36), mail_account_id CHAR(36), subject TEXT, from_name TEXT, from_address TEXT, folder VARCHAR(64), is_draft BOOLEAN DEFAULT FALSE, is_read BOOLEAN DEFAULT FALSE) ${options}`);
   // Folder roles and the installation's policies; the filters themselves are
   // covered on the full schema (notification-filters-mysql-integration).

@@ -6,13 +6,16 @@ import type { Principal } from '../contracts/organisation';
 
 import crypto from 'node:crypto';
 import { db } from '../state';
-import { badRequest, forbidden, notFound } from '../http/errors';
+import { badRequest, conflict, forbidden, notFound } from '../http/errors';
 import { can as roleCan } from '../security/permissions';
 import { withTransaction } from './transactions';
-import { accessLevel, assertCan, assertReach, lockGrant, namedGrants, reachCandidates, setGrant, shareCounts, visible } from './access';
+import { accessLevel, assertCan, assertReach, grantsOn, lockGrant, namedGrants, reachCandidates, setGrant, shareCounts, visible } from './access';
 import { presentEvents, seriesKeySql } from './calendar';
 import { sourceEmailPresentSql } from './email-tasks';
-import { groupExists, groupNames, membershipOf } from './groups';
+import { groupExists, groupMemberIds, groupNames, membershipOf } from './groups';
+import { log } from '../log';
+import { lockedRestoreSections } from './restore-locks';
+import { publishCalendarChanged } from './realtime';
 
 // Shared, group and organisation calendars (F4): shares at five levels, a
 // person's own view of a calendar they reach, and the calendars no person
@@ -48,6 +51,108 @@ async function assertShareable(userId: string, calendarId: string, executor: Sql
   return row;
 }
 
+// --- Writes ----------------------------------------------------------------------
+
+/**
+ * The check every write to a calendar's events runs first in its
+ * transaction: the calendar's row locked shared, the caller's level asked
+ * again (an archived calendar is read-only for everyone) and, on another
+ * person's calendar, that person's calendar restore, which their own writes
+ * wait for at the request boundary. Answers the level and the user_id the
+ * calendar's rows carry (null when no person owns it).
+ */
+async function calendarWrite(cx: SqlExecutor, userId: string, calendarId: string, permission: CalendarPermission) {
+  await cx.execute('SELECT id FROM calendar_calendars WHERE id = ? LOCK IN SHARE MODE', [calendarId]);
+  const level = await assertCalendar(userId, calendarId, permission, cx);
+  const { userId: ownerId } = await calendarRow(calendarId, cx);
+  if (ownerId && ownerId !== userId && (await lockedRestoreSections(ownerId, cx)).has('calendar')) {
+    throw conflict('RESTORE_IN_PROGRESS', 'Restore in progress for calendar. This section is temporarily read-only.');
+  }
+  return { level, ownerId };
+}
+
+const atLeast = (level: CalendarPermission, permission: CalendarPermission) => LEVELS.indexOf(level) >= LEVELS.indexOf(permission);
+
+/** The caller's level on a calendar, or null when they cannot see it. */
+const levelOn = (userId: string, calendarId: string, executor: SqlExecutor = db) => UUID.test(calendarId) ? accessLevel(userId, calendar(calendarId), executor) : Promise.resolve(null);
+
+/**
+ * The event a request names: the caller's own row, or one of a calendar
+ * they reach (its rows carry the calendar owner's user_id, or none); null
+ * when they reach none, so its existence is not told.
+ */
+async function eventTarget(userId: string, eventId: string, executor: SqlExecutor = db) {
+  const [[row]] = await executor.execute<(RowDataPacket & CalendarEvent)[]>('SELECT * FROM calendar_events WHERE id = ?', [eventId]);
+  if (!row) return null;
+  if (row.user_id === userId) return { event: row as CalendarEvent, ownerId: userId as string | null, own: true };
+  if (!row.calendar_id || !await accessLevel(userId, calendar(String(row.calendar_id)), executor)) return null;
+  return { event: row as CalendarEvent, ownerId: row.user_id == null ? null : String(row.user_id), own: false };
+}
+
+/**
+ * First in an event write's transaction: the guard on the calendar the
+ * caller read the event in (no read before it, so the access check sees
+ * what committed before the calendar's lock), then the event's row locked.
+ * Null when the row is gone or left the owner; refused when it moved to
+ * another calendar meanwhile.
+ */
+async function lockEventWrite(cx: SqlExecutor, userId: string, eventId: string, ownerId: string | null, permission: CalendarPermission, calendarId: string | null) {
+  const level = calendarId ? (await calendarWrite(cx, userId, calendarId, permission)).level : 'manage';
+  const [[row]] = await cx.execute<(RowDataPacket & CalendarEvent)[]>('SELECT * FROM calendar_events WHERE id = ? AND user_id <=> ? FOR UPDATE', [eventId, ownerId]);
+  if (!row) return null;
+  if ((row.calendar_id ?? null) !== calendarId) throw conflict('CALENDAR_EVENT_CHANGED', 'This item moved to another calendar or changed in the meantime. It has been refreshed; please try again.');
+  return { event: row as CalendarEvent, level };
+}
+
+/** A person's own reminders on an event (null: none of their own, the event's apply to its owner). */
+async function setOwnReminders(cx: SqlExecutor, userId: string, eventId: string, reminders: unknown) {
+  await cx.execute(`INSERT INTO calendar_reminders (id, user_id, event_id, reminders) VALUES (?, ?, ?, ?)
+    ON DUPLICATE KEY UPDATE reminders = VALUES(reminders)`, [crypto.randomUUID(), userId, eventId, JSON.stringify(Array.isArray(reminders) ? reminders : [])]);
+  // The scheduler reads reminders again.
+  await cx.execute('UPDATE notification_config SET reminder_revision = reminder_revision + 1 WHERE id = 1');
+}
+
+/** Whether a reminder change of this person goes to their own row: they do not own the event, or already have one. */
+async function remindersAreOwn(executor: SqlExecutor, userId: string, event: Pick<CalendarEvent, 'id' | 'user_id'>) {
+  if (event.user_id !== userId) return true;
+  const [rows] = await executor.execute<RowDataPacket[]>('SELECT 1 FROM calendar_reminders WHERE user_id = ? AND event_id = ?', [userId, event.id]);
+  return rows.length > 0;
+}
+
+/** Everyone who reaches a calendar: its owner, its grantees and its group's managers. */
+async function peopleReaching(calendarId: string, executor: SqlExecutor = db): Promise<string[]> {
+  const { peopleOf } = require('./address-books') as typeof import('./address-books');
+  const [[row]] = await executor.execute<RowDataPacket[]>('SELECT user_id, group_id FROM calendar_calendars WHERE id = ?', [calendarId]);
+  if (!row) return [];
+  const people = await peopleOf((await grantsOn(calendar(calendarId), executor)).map(grant => grant.principal), executor);
+  if (row.user_id) people.push(String(row.user_id));
+  if (row.group_id) people.push(...await groupMemberIds(String(row.group_id), executor, 'manager'));
+  return [...new Set(people)];
+}
+
+/**
+ * After a write to a calendar's events committed: everyone who reaches it
+ * refetches, and those who asked to hear of others' changes are told.
+ * Failures only lose the hint or the notice.
+ */
+async function afterEventWrite(userId: string, calendarId: string | null, change: { eventId: string; seriesKey?: string | null; action: CalendarChange }) {
+  if (!calendarId) return;
+  try {
+    for (const person of await peopleReaching(calendarId)) if (person !== userId) publishCalendarChanged(person, null, 'local');
+    const { enqueueCalendarChange } = require('./notifications') as typeof import('./notifications');
+    await enqueueCalendarChange({ actorId: userId, calendarId, ...change });
+  } catch (error) {
+    log.error('calendar', 'Calendar change hint failed', error);
+  }
+}
+type CalendarChange = 'created' | 'changed' | 'ticked' | 'point' | 'deleted';
+
+/** The calendars these people reach may have changed (a share, a membership, a calendar deleted or restored): they refetch. */
+async function hintCalendarReach(calendarId: string, extra: readonly string[] = []) {
+  const { publishCalendarShares } = require('./realtime') as typeof import('./realtime');
+  publishCalendarShares([...await peopleReaching(calendarId).catch(() => []), ...extra]);
+}
+
 // --- Shares ----------------------------------------------------------------------
 
 /** GET /api/calendar/calendars/:id/shares (manage). */
@@ -70,7 +175,9 @@ function shareInput(input: unknown): { principal: Principal; permission: Calenda
 async function setCalendarShare(userId: string, calendarId: string, input: unknown): Promise<CalendarShare[]> {
   const { principal, permission } = shareInput(input);
   await assertShareable(userId, calendarId);
-  return withTransaction(async cx => {
+  const { peopleOf } = require('./address-books') as typeof import('./address-books');
+  const before = await peopleReaching(calendarId);
+  const shares = await withTransaction(async cx => {
     await cx.execute('SELECT id FROM calendar_calendars WHERE id = ? FOR UPDATE', [calendarId]);
     const row = await assertShareable(userId, calendarId, cx);
     if (principal.kind === 'user' && principal.id === row.userId) throw badRequest('SHARE_IS_OWNER', 'The owner manages their calendar; that stays as it is.');
@@ -80,6 +187,8 @@ async function setCalendarShare(userId: string, calendarId: string, input: unkno
     if (current !== permission) await setGrant(cx, calendar(calendarId), principal, permission, userId);
     return calendarShares(userId, calendarId, cx);
   });
+  await hintCalendarReach(calendarId, [...before, ...await peopleOf([principal]).catch(() => [])]);
+  return shares;
 }
 
 /** GET /api/calendar/calendars/:id/share-candidates?q= (manage): people and groups within the caller's reach. */
@@ -163,15 +272,15 @@ async function people(ids: readonly (string | null)[], executor: SqlExecutor = d
  * others share with them (c.* with the account's provider), each with what
  * the caller may do and their view of it.
  */
-async function calendarsWithAccess(userId: string, own: readonly RowDataPacket[]) {
-  const levels = await reachedCalendars(userId);
+async function calendarsWithAccess(userId: string, own: readonly RowDataPacket[], executor: SqlExecutor = db) {
+  const levels = await reachedCalendars(userId, executor);
   const ids = [...levels.keys()];
-  const [reached] = ids.length ? await db.execute<RowDataPacket[]>(`SELECT c.*, a.provider FROM calendar_calendars c LEFT JOIN calendar_accounts a ON a.id = c.account_id
+  const [reached] = ids.length ? await executor.execute<RowDataPacket[]>(`SELECT c.*, a.provider FROM calendar_calendars c LEFT JOIN calendar_accounts a ON a.id = c.account_id
     WHERE c.id IN (${ids.map(() => '?').join(', ')}) ORDER BY c.name, c.id`, ids) : [[]];
   const rows = [...own, ...reached];
-  const persons = await people(rows.flatMap(row => [row.user_id, row.offer_to, row.offer_by]));
-  const groups = await groupNames(rows.flatMap(row => row.group_id == null ? [] : [String(row.group_id)]));
-  const views = await viewsOf(userId, rows.map(row => ({ id: String(row.id), user_id: row.user_id ?? null, is_visible: row.is_visible, color: row.color })));
+  const persons = await people(rows.flatMap(row => [row.user_id, row.offer_to, row.offer_by]), executor);
+  const groups = await groupNames(rows.flatMap(row => row.group_id == null ? [] : [String(row.group_id)]), executor);
+  const views = await viewsOf(userId, rows.map(row => ({ id: String(row.id), user_id: row.user_id ?? null, is_visible: row.is_visible, color: row.color })), executor);
   return rows.map(row => {
     const mine = row.user_id === userId;
     const offer = row.offer_to != null && [row.user_id, row.offer_to, row.offer_by].includes(userId)
@@ -195,9 +304,10 @@ function busy<T extends object>(event: T): T {
 }
 
 /** Events of calendars others share with the person, at their level: free/busy ones redacted and without tasks that have no date. */
-async function presentReached(userId: string, rows: readonly CalendarEvent[], levels: ReadonlyMap<string, CalendarPermission>) {
+async function presentReached(userId: string, rows: readonly CalendarEvent[], levels: ReadonlyMap<string, CalendarPermission>, executor: SqlExecutor = db) {
   const shown = rows.filter(row => !(levels.get(String(row.calendar_id)) === 'freebusy' && row.is_todo_only));
-  return (await presentEvents(userId, shown)).map(event => levels.get(String(event.calendar_id)) === 'freebusy' ? busy(event) : event);
+  // The email a task came from is its owner's alone.
+  return (await presentEvents(userId, shown, executor)).map(event => levels.get(String(event.calendar_id)) === 'freebusy' ? busy(event) : { ...event, source_email_id: null, source_email: null });
 }
 
 /** GET /api/calendar/events/:id of an event in a calendar another person or nobody owns; null when the person cannot read it. */
@@ -257,6 +367,7 @@ async function createSharedCalendar(userId: string, input: unknown): Promise<Sha
       VALUES (?, NULL, NULL, ?, ?, ?, TRUE, TRUE, FALSE, FALSE)`, [id, groupId, name!, color ?? '#2563eb']);
     if (groupId) await setGrant(cx, calendar(id), { kind: 'group', id: groupId }, 'contribute', userId);
   });
+  await hintCalendarReach(id);
   return summary(id);
 }
 
@@ -265,10 +376,10 @@ async function updateSharedCalendar(userId: string, calendarId: string, input: u
   const { name, color } = calendarInput(input, { partial: true });
   await assertShareable(userId, calendarId);
   await withTransaction(async cx => {
-    await cx.execute('SELECT id FROM calendar_calendars WHERE id = ? FOR UPDATE', [calendarId]);
-    await assertShareable(userId, calendarId, cx);
+    await calendarWrite(cx, userId, calendarId, 'manage');
     await cx.execute('UPDATE calendar_calendars SET name = COALESCE(?, name), color = COALESCE(?, color) WHERE id = ?', [name ?? null, color ?? null, calendarId]);
   });
+  await hintCalendarReach(calendarId);
   return summary(calendarId);
 }
 
@@ -290,6 +401,7 @@ async function deleteSharedCalendar(userId: string, calendarId: string): Promise
     await assertMayDelete(cx, userId, calendarId);
     await cx.execute('UPDATE calendar_calendars SET deleted_at = UTC_TIMESTAMP() WHERE id = ?', [calendarId]);
   });
+  await hintCalendarReach(calendarId);
   return { deleted: true };
 }
 
@@ -304,11 +416,14 @@ async function restoreSharedCalendar(calendarId: string): Promise<SharedCalendar
   if (!UUID.test(calendarId)) throw notFound('CALENDAR_NOT_FOUND', 'Calendar not found');
   const [result] = await db.execute<ResultSetHeader>('UPDATE calendar_calendars SET deleted_at = NULL WHERE id = ? AND user_id IS NULL', [calendarId]);
   if (!result.affectedRows) throw notFound('CALENDAR_NOT_FOUND', 'Calendar not found');
+  await hintCalendarReach(calendarId);
   return summary(calendarId);
 }
 
 export {
+  calendarWrite, atLeast, levelOn, eventTarget, lockEventWrite, setOwnReminders, remindersAreOwn, peopleReaching, afterEventWrite, hintCalendarReach,
   reachedCalendars, calendarsWithAccess, presentReached, reachedEvent, busy, viewsOfCalendars,
   assertCalendar, calendarShares, setCalendarShare, calendarShareCandidates, setCalendarView,
   createSharedCalendar, updateSharedCalendar, deleteSharedCalendar, adminCalendars, restoreSharedCalendar,
 };
+export type { CalendarChange };

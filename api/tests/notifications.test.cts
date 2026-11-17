@@ -273,6 +273,7 @@ test('reminder scans preserve skipped changes through restore cancellation and r
         return [events.filter(event => event[field] >= values[0])];
       }
       if (sql.startsWith('DELETE FROM notification_reminders')) { scheduled.delete(values[0]); return [{}]; }
+      if (sql.includes('FROM calendar_reminders')) return [[]];
       if (sql.startsWith('INSERT INTO notification_reminders')) { scheduled.set(values[0], values[3]); return [{}]; }
       if (sql.startsWith('UPDATE notification_config')) {
         settings.last_reminder_scan_at = values[0]; settings.scanned_revision = values[1]; return [{}];
@@ -313,8 +314,8 @@ test('restore sections retain todo aliases, merge active jobs, and scope notific
   await service.testInternals.deliverPending(connection, now, active);
   assert.match(calls[0].sql, /r.user_id NOT IN \(\?\)[\s\S]*LIMIT 200/);
   assert.equal(calls[0].values[1], 'u1');
-  assert.equal(calls[1].sql.match(/NOT \(e.kind IN \(\?, \?, \?\) AND e.user_id IN \(\?\)\)/g)?.length, 2);
-  assert.deepEqual([...calls[1].values.slice(2)].sort(), ['calendar', 'mail', 'reminder', 'scheduled-send', 'snooze', 'todo', 'u1', 'u1'], 'mail and calendar kinds of u1 only');
+  assert.equal(calls[1].sql.match(/NOT \(e.kind IN \((\?, )*\?\) AND e.user_id IN \(\?\)\)/g)?.length, 2);
+  assert.deepEqual([...calls[1].values.slice(2)].sort(), ['calendar', 'calendar-change', 'mail', 'reminder', 'scheduled-send', 'snooze', 'todo', 'u1', 'u1'], 'mail and calendar kinds of u1 only');
   assert.equal(calls[1].values.includes('u2'), false, 'a contact restore does not delay notifications');
 });
 

@@ -11,7 +11,7 @@ import { assertCaller } from './caller-proof';
 import { recordAudit } from './audit';
 import { checkPeoplePolicies, deleteGroupPolicies, groupRules, groupsWithPolicies, lockRules } from './settings';
 import { applyPolicyChange } from './module-lifecycle';
-import { publishBooksChanged } from './realtime';
+import { publishBooksChanged, publishCalendarShares } from './realtime';
 
 // The organisation's groups and their members (F3) have one owner: this
 // service (a lint fence keeps their SQL here). Who may do what with a group
@@ -181,8 +181,9 @@ async function underRulesLock<T>(work: (cx: SqlExecutor) => Promise<{ value: T; 
     return result;
   });
   if (reached.length) await applyPolicyChange(reached);
-  // A membership reaches the books shared with the group.
+  // A membership reaches the books and calendars shared with the group.
   publishBooksChanged(reached);
+  publishCalendarShares(reached);
   return value;
 }
 
@@ -315,9 +316,9 @@ async function joinGroups(cx: SqlExecutor, adminId: string, userId: string, grou
   }
 }
 
-/** The ids of the group's members, managers included. */
-async function groupMemberIds(groupId: string, executor: SqlExecutor = db): Promise<string[]> {
-  const [rows] = await executor.execute<RowDataPacket[]>('SELECT user_id FROM org_group_members WHERE group_id = ?', [groupId]);
+/** The ids of the group's members, managers included; with a role, only those. */
+async function groupMemberIds(groupId: string, executor: SqlExecutor = db, role?: GroupRole): Promise<string[]> {
+  const [rows] = await executor.execute<RowDataPacket[]>(`SELECT user_id FROM org_group_members WHERE group_id = ?${role ? ' AND role = ?' : ''}`, role ? [groupId, role] : [groupId]);
   return rows.map(row => String(row.user_id));
 }
 

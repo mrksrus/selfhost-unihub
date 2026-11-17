@@ -188,6 +188,13 @@ function publishBooksChanged(userIds: Iterable<unknown>, hub: Realtime = realtim
   }
 }
 
+/** The calendars these people reach may have changed (a share, a membership, a calendar deleted or restored): refetch them. */
+function publishCalendarShares(userIds: Iterable<unknown>, hub: Realtime = realtime) {
+  for (const userId of new Set(userIds)) {
+    if (userId && hub.isOnline(userId)) hub.publishToUser(userId, 'calendar.shares', {}, { module: 'calendar', throttleKey: 'calendar.shares' });
+  }
+}
+
 export {
   createRealtime,
   realtime,
@@ -196,5 +203,6 @@ export {
   publishMailChanged,
   publishCalendarChanged,
   publishBooksChanged,
+  publishCalendarShares,
 };
 export type { Realtime, PublishOptions };

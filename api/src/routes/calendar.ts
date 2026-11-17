@@ -3,7 +3,8 @@ import type { RouteRequest, ApiError, StoredFlag } from '../types';
 import type { CalendarAccount, CalendarCalendar, CalendarEvent, CalendarAttendee, CalendarSubtask } from '../types/calendar';
 import crypto from 'crypto';
 import { db } from '../state';
-import { clientError } from '../http/errors';
+import { clientError, conflict, forbidden, notFound } from '../http/errors';
+import { withTransaction } from '../services/transactions';
 import { sourceEmailPresentSql, snapshotSourceEmail, sourceEmailLinkRefusal } from '../services/email-tasks';
 import {
   CALENDAR_MULTI_ENABLED,
@@ -70,6 +71,7 @@ const {
   replaceEventAttendees,
   applyLocalEventUpdate,
   getCalendarEventWithSubtasks,
+  getCalendarSubtasksForEvents,
   getCalendarEventIdFromReq,
   normalizeResponseStatus,
   loadCalendarWithAccount,
@@ -90,6 +92,115 @@ const calendarAccountChanges = require('../services/calendar-account-changes') a
 const calendarShares = require('../services/calendar-shares') as typeof import('../services/calendar-shares');
 
 const has = (body: Record<string, unknown>, key: string) => Object.prototype.hasOwnProperty.call(body, key);
+
+/** An event the caller may read: their own, or one of a calendar they reach (free/busy redacted). */
+const readEvent = async (userId: string, id: string) => await getCalendarEventWithSubtasks(userId, id) ?? await calendarShares.reachedEvent(userId, id);
+const pointRefused = () => clientError(forbidden('CALENDAR_FORBIDDEN', 'You can change only the points you added.'), 'Failed to update subtask');
+const remindersOf = (body: Input) => Array.isArray(body.reminders) ? body.reminders : body.reminder_minutes == null ? [] : [body.reminder_minutes];
+
+// The fields of an event change, checked; the reminders only when they are the event's (not the person's own).
+function eventFieldUpdates(body: Input, current: CalendarEvent, { remote, reminders }: { remote: boolean; reminders: boolean }) {
+  const updates: string[] = [];
+  const params: ExecuteValues[] = [];
+  if (has(body, 'title')) {
+    if (!body.title?.trim()) return { error: 'Title is required', status: 400 };
+    updates.push('title = ?');
+    params.push(body.title.trim());
+  }
+  if (has(body, 'description')) {
+    updates.push('description = ?');
+    params.push(body.description || null);
+  }
+
+  const startProvided = has(body, 'start_time');
+  const endProvided = has(body, 'end_time');
+  const resolvedStart = startProvided ? toMysqlDatetime(body.start_time) : toMysqlDatetime(current.start_time);
+  const resolvedEnd = endProvided ? toMysqlDatetime(body.end_time) : toMysqlDatetime(current.end_time);
+  if (startProvided && !resolvedStart) return { error: 'Valid start time is required', status: 400 };
+  if (endProvided && !resolvedEnd) return { error: 'Valid end time is required', status: 400 };
+  if (!resolvedStart || !resolvedEnd) return { error: 'Valid start and end time are required', status: 400 };
+  if (parseDatetimeToMillis(resolvedEnd)! < parseDatetimeToMillis(resolvedStart)!) {
+    return { error: 'End time must be after start time', status: 400 };
+  }
+  if (startProvided) {
+    updates.push('start_time = ?');
+    params.push(resolvedStart);
+  }
+  if (endProvided) {
+    updates.push('end_time = ?');
+    params.push(resolvedEnd);
+  }
+
+  if (has(body, 'all_day')) {
+    updates.push('all_day = ?');
+    params.push(!!body.all_day);
+  }
+  if (has(body, 'location')) {
+    updates.push('location = ?');
+    params.push(body.location?.trim() || null);
+  }
+  if (has(body, 'color')) {
+    updates.push('color = ?');
+    params.push(body.color || '#2563eb');
+  }
+  if (has(body, 'recurrence') && !remote) {
+    updates.push('recurrence = ?');
+    params.push(body.recurrence || null);
+  }
+  if (has(body, 'reminders') && body.reminders !== null && body.reminders !== undefined && !Array.isArray(body.reminders)) {
+    return { error: 'Reminders must be an array or null', status: 400 };
+  }
+  if (reminders && has(body, 'reminder_minutes')) {
+    updates.push('reminder_minutes = ?');
+    params.push(body.reminder_minutes ?? null);
+  }
+  if (reminders && has(body, 'reminders')) {
+    updates.push('reminders = ?');
+    params.push(body.reminders ? JSON.stringify(body.reminders) : null);
+  }
+  if (has(body, 'is_todo_only')) {
+    updates.push('is_todo_only = ?');
+    params.push(!!body.is_todo_only);
+  }
+  const dateChanged = (startProvided && resolvedStart !== toMysqlDatetime(current.start_time))
+    || (has(body, 'is_todo_only') && !!body.is_todo_only !== !!current.is_todo_only);
+  return { updates, params, resolvedStart, resolvedEnd, dateChanged };
+}
+
+/**
+ * PUT /api/calendar/events/:id of an event in a calendar another person or
+ * nobody owns: UniHub's rows only, under the calendar's guard. Every field
+ * needs edit; the caller's own reminders need read. An event moves only to
+ * another calendar of the same owner.
+ */
+async function updateReachedEvent(userId: string, target: { event: CalendarEvent; ownerId: string | null }, body: Input) {
+  const { event, ownerId } = target;
+  if (has(body, 'source_email_id')) return { error: 'A task keeps its email link in your own lists only.', status: 400 };
+  const fields = eventFieldUpdates(body, event, { remote: false, reminders: false });
+  if ('error' in fields) return fields;
+  const { updates, params } = fields;
+  const moveTo = has(body, 'calendar_id') && body.calendar_id !== event.calendar_id ? body.calendar_id || null : null;
+  if (has(body, 'calendar_id') && !body.calendar_id) return { error: 'Choose a calendar for this event.', status: 400 };
+  const changes = updates.length > 0 || Array.isArray(body.attendees) || !!moveTo;
+  const ownReminders = has(body, 'reminders') || has(body, 'reminder_minutes');
+  await withTransaction(async cx => {
+    if (!await calendarShares.lockEventWrite(cx, userId, event.id, ownerId, changes ? 'edit' : 'read', event.calendar_id ?? null)) throw notFound('CALENDAR_EVENT_NOT_FOUND', 'Event not found');
+    if (moveTo) {
+      // Another owner's calendar would take the event's rows, reminders and bin with it.
+      if ((await calendarShares.calendarWrite(cx, userId, moveTo, 'edit')).ownerId !== ownerId) {
+        throw conflict('CALENDAR_MOVE_SHARED', 'An event moves only between calendars of the same owner.');
+      }
+      updates.push('calendar_id = ?');
+      params.push(moveTo);
+    }
+    if (updates.length) await cx.execute(`UPDATE calendar_events SET ${updates.join(', ')} WHERE id = ? AND user_id <=> ?`, [...params, event.id, ownerId]);
+    if (Array.isArray(body.attendees)) await replaceEventAttendees(ownerId, event.id, body.attendees, cx);
+    if (ownReminders) await calendarShares.setOwnReminders(cx, userId, event.id, remindersOf(body));
+  });
+  if (fields.dateChanged) await taskOrder.clearRank(db, userId, event.id);
+  if (changes) await calendarShares.afterEventWrite(userId, moveTo ?? event.calendar_id ?? null, { eventId: event.id, seriesKey: event.series_id as string | null, action: 'changed' });
+  return { event: await readEvent(userId, event.id) };
+}
 
 async function loadCalendarAccountRow(userId: string, calendarId: string) {
   const [rows] = await db.execute<(CalendarRecordRow & { provider: string; is_active: StoredFlag })[]>(
@@ -257,6 +368,8 @@ export = {
             default_for_events: false,
             write_block: writes ? null : 'read_only',
             takes_undated_tasks: writes,
+            // Free/busy shows no tasks: not a list in ToDo.
+            ...(access.permission === 'freebusy' ? { auto_todo_enabled: false } : {}),
             ...access,
           };
         }
@@ -443,7 +556,8 @@ export = {
       // with them that they have on (their own view, not the owner's).
       const levels = await calendarShares.reachedCalendars(userId);
       const views = await calendarShares.viewsOfCalendars(userId, [...levels.keys()]);
-      const reached = [...levels.keys()].filter(id => !visibleOnly || views.get(id)?.is_visible);
+      // ToDo shows no task of a free/busy calendar, dated or not.
+      const reached = [...levels.keys()].filter(id => (!visibleOnly || views.get(id)?.is_visible) && !(respectAutoTodo && levels.get(id) === 'freebusy'));
       let query = `
         SELECT e.*, c.auto_todo_enabled, c.is_visible, ${sourceEmailPresentSql('e')} AS source_email_present, ${seriesKeySql('e')} AS series_key
         FROM calendar_events e
@@ -517,8 +631,11 @@ export = {
       let remoteTarget = null;
       if (calendarId) {
         remoteTarget = await loadCalendarAccountRow(userId, calendarId);
-        if (!remoteTarget) return { error: 'Invalid calendar_id', status: 400 };
-        if (!isRemoteProvider(remoteTarget.provider)) remoteTarget = null;
+        // Another person's calendar, or one no person owns: the guard below asks for edit.
+        const reached = !remoteTarget && await calendarShares.levelOn(userId, calendarId);
+        if (!remoteTarget && !reached) return { error: 'Invalid calendar_id', status: 400 };
+        if (reached && source_email_id) return { error: 'A task from an email goes to one of your own lists.', status: 400 };
+        if (!remoteTarget || !isRemoteProvider(remoteTarget.provider)) remoteTarget = null;
         else if (is_todo_only) return { error: 'ToDos without a date cannot be saved to a server calendar.', status: 400 };
         else if (remoteTarget.provider === 'ics' || remoteTarget.read_only) return { error: 'This calendar is read-only.', status: 403, code: 'CALENDAR_READ_ONLY' };
         else if (!remoteTarget.is_active) return { error: 'Sync is paused for this calendar account, so events cannot be added to it.', status: 409, code: 'CALENDAR_SYNC_PAUSED' };
@@ -529,6 +646,7 @@ export = {
       }
 
       const eventId = crypto.randomUUID();
+      let ownerId: string | null = userId;
       // A copy for a server is created holding the new item's lock, taken
       // before its row is visible: a move or edit of it waits until the copy
       // is linked, or the row is gone again (calendar-move-state.ts).
@@ -536,7 +654,10 @@ export = {
         const connection = await db.getConnection();
         try {
           await connection.beginTransaction();
+          // The calendar's guard first. The rows carry its owner's user_id; the event's reminders are the owner's, anyone else's their own.
+          ownerId = (await calendarShares.calendarWrite(connection, userId, calendarId!, 'edit')).ownerId;
           await fenceTaskLocks(connection);
+          const own = ownerId === userId;
           // The email stays for the insert: a Gmail merge removing that copy
           // waits and then names the kept one in this task, or it has
           // removed it already (mail-sync-policy.ts).
@@ -551,7 +672,7 @@ export = {
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [
               eventId,
-              userId,
+              ownerId,
               calendarId,
               title.trim(),
               description || null,
@@ -561,16 +682,17 @@ export = {
               location?.trim() || null,
               color || '#2563eb',
               recurrence || null,
-              reminder_minutes ?? null,
-              reminders ? JSON.stringify(reminders) : null,
+              own ? reminder_minutes ?? null : null,
+              own && reminders ? JSON.stringify(reminders) : null,
               !!is_todo_only,
               sourceEmail ? String(source_email_id) : null,
               sourceEmail ? JSON.stringify(sourceEmail) : null,
             ]
           );
           if (Array.isArray(body.attendees)) {
-            await replaceEventAttendees(userId, eventId, body.attendees, connection);
+            await replaceEventAttendees(ownerId, eventId, body.attendees, connection);
           }
+          if (!own && (reminders || reminder_minutes != null)) await calendarShares.setOwnReminders(connection, userId, eventId, remindersOf(body));
 
           await (require('../services/notifications') as typeof import('../services/notifications')).enqueueCalendarNotification({ userId, eventId }, connection);
           await connection.commit();
@@ -594,8 +716,8 @@ export = {
       };
       const refused = remoteTarget ? await withEventLock(userId, eventId, create) : await create();
       if (refused) return refused;
-      const event = await getCalendarEventWithSubtasks(userId, eventId);
-      return { event };
+      await calendarShares.afterEventWrite(userId, calendarId, { eventId, action: 'created' });
+      return { event: await readEvent(userId, eventId) };
     } catch (error) {
       console.error('Create event error:', error);
       return clientError(error, 'Failed to create event');
@@ -625,6 +747,9 @@ export = {
       // The calendar and server copy the writeback decision below rests on,
       // read first: the local write is refused if either changed meanwhile
       // (a second line behind the item's lock, which a sync does not take).
+      const target = await calendarShares.eventTarget(userId, id);
+      if (!target) return { error: 'Event not found', status: 404 };
+      if (!target.own) return await updateReachedEvent(userId, target, body);
       const decidedFor = await writebackIdentity(db, userId, id);
       const [events] = await db.execute<EventRow[]>('SELECT * FROM calendar_events WHERE id = ? AND user_id = ?', [id, userId]);
       if (events.length === 0) return { error: 'Event not found', status: 404 };
@@ -632,69 +757,11 @@ export = {
       if ((currentEvent.calendar_id || null) !== decidedFor.calendarId) return clientError(eventChanged(), 'Failed to update event');
       const currentCalendar = currentEvent.calendar_id ? await loadCalendarAccountRow(userId, currentEvent.calendar_id) : null;
       currentEvent.calendar_id_remote = isRemoteProvider(currentCalendar?.provider);
-      const updates = [];
-      const params: ExecuteValues[] = [];
-
-      if (Object.prototype.hasOwnProperty.call(body, 'title')) {
-        if (!body.title?.trim()) return { error: 'Title is required', status: 400 };
-        updates.push('title = ?');
-        params.push(body.title.trim());
-      }
-      if (Object.prototype.hasOwnProperty.call(body, 'description')) {
-        updates.push('description = ?');
-        params.push(body.description || null);
-      }
-
-      const startProvided = Object.prototype.hasOwnProperty.call(body, 'start_time');
-      const endProvided = Object.prototype.hasOwnProperty.call(body, 'end_time');
-      const resolvedStart = startProvided ? toMysqlDatetime(body.start_time) : toMysqlDatetime(currentEvent.start_time);
-      const resolvedEnd = endProvided ? toMysqlDatetime(body.end_time) : toMysqlDatetime(currentEvent.end_time);
-      if (startProvided && !resolvedStart) return { error: 'Valid start time is required', status: 400 };
-      if (endProvided && !resolvedEnd) return { error: 'Valid end time is required', status: 400 };
-      if (!resolvedStart || !resolvedEnd) return { error: 'Valid start and end time are required', status: 400 };
-      if (parseDatetimeToMillis(resolvedEnd)! < parseDatetimeToMillis(resolvedStart)!) {
-        return { error: 'End time must be after start time', status: 400 };
-      }
-      if (startProvided) {
-        updates.push('start_time = ?');
-        params.push(resolvedStart);
-      }
-      if (endProvided) {
-        updates.push('end_time = ?');
-        params.push(resolvedEnd);
-      }
-
-      if (Object.prototype.hasOwnProperty.call(body, 'all_day')) {
-        updates.push('all_day = ?');
-        params.push(!!body.all_day);
-      }
-      if (Object.prototype.hasOwnProperty.call(body, 'location')) {
-        updates.push('location = ?');
-        params.push(body.location?.trim() || null);
-      }
-      if (Object.prototype.hasOwnProperty.call(body, 'color')) {
-        updates.push('color = ?');
-        params.push(body.color || '#2563eb');
-      }
-      if (Object.prototype.hasOwnProperty.call(body, 'recurrence') && !currentEvent.calendar_id_remote) {
-        updates.push('recurrence = ?');
-        params.push(body.recurrence || null);
-      }
-      if (Object.prototype.hasOwnProperty.call(body, 'reminder_minutes')) {
-        updates.push('reminder_minutes = ?');
-        params.push(body.reminder_minutes ?? null);
-      }
-      if (Object.prototype.hasOwnProperty.call(body, 'reminders')) {
-        if (body.reminders !== null && body.reminders !== undefined && !Array.isArray(body.reminders)) {
-          return { error: 'Reminders must be an array or null', status: 400 };
-        }
-        updates.push('reminders = ?');
-        params.push(body.reminders ? JSON.stringify(body.reminders) : null);
-      }
-      if (Object.prototype.hasOwnProperty.call(body, 'is_todo_only')) {
-        updates.push('is_todo_only = ?');
-        params.push(!!body.is_todo_only);
-      }
+      // After a hand-over the owner may keep reminders of their own, which win.
+      const ownReminders = (has(body, 'reminders') || has(body, 'reminder_minutes')) && await calendarShares.remindersAreOwn(db, userId, currentEvent);
+      const fields = eventFieldUpdates(body, currentEvent, { remote: !!currentEvent.calendar_id_remote, reminders: !ownReminders });
+      if ('error' in fields) return fields;
+      const { updates, params, resolvedStart, resolvedEnd } = fields;
       if (Object.prototype.hasOwnProperty.call(body, 'calendar_id')) {
         if (!body.calendar_id) {
           // Without its calendar a synced event would keep its server link
@@ -706,6 +773,9 @@ export = {
         } else {
           // Another calendar: moved by pushEventChanges below, not here.
           const [calRows] = await db.execute<CalendarRecordRow[]>('SELECT id FROM calendar_calendars WHERE id = ? AND user_id = ?', [body.calendar_id, userId]);
+          if (calRows.length === 0 && await calendarShares.levelOn(userId, body.calendar_id)) {
+            return clientError(conflict('CALENDAR_MOVE_SHARED', 'An event moves only between calendars of the same owner.'), 'Failed to update event');
+          }
           if (calRows.length === 0) return { error: 'Invalid calendar_id', status: 400 };
         }
       }
@@ -728,8 +798,7 @@ export = {
       // A date or time changed here returns the task to its date's place
       // (D31); one arriving from the server keeps its hand rank. The identity
       // is read first: a synced series' time change replaces the rows.
-      const dateChanged = (startProvided && resolvedStart !== toMysqlDatetime(currentEvent.start_time))
-        || (has(body, 'is_todo_only') && !!body.is_todo_only !== !!currentEvent.is_todo_only);
+      const { dateChanged } = fields;
       const orderIdentity = dateChanged ? await taskOrder.identityOf(db, userId, id) : null;
 
       const writeback = await pushEventChanges(userId, currentEvent, body, {
@@ -753,9 +822,16 @@ export = {
       const fieldsOfMove = !startedMove && ['title', 'description', 'start_time', 'end_time', 'all_day', 'location', 'reminders', 'reminder_minutes', 'is_todo_only', 'recurrence', 'calendar_id'].some(key => has(body, key));
       const identity = startedMove ? null : { ...decidedFor, objectId: typeof writeback.objectId === 'string' ? writeback.objectId : decidedFor.objectId };
       let updatedEvent = await applyLocalEventUpdate(userId, id, { sets: updates, params }, body.attendees, { fieldsOfMove, identity, sourceEmail: relink });
+      if (ownReminders && updatedEvent) {
+        await withTransaction(cx => calendarShares.setOwnReminders(cx, userId, id, remindersOf(body)));
+        updatedEvent = await getCalendarEventWithSubtasks(userId, id);
+      }
       if (dateChanged) {
         await taskOrder.clearRank(db, userId, id, orderIdentity);
         if (updatedEvent) updatedEvent = await getCalendarEventWithSubtasks(userId, id);
+      }
+      if (updatedEvent && (updates.length || startedMove || Array.isArray(body.attendees))) {
+        await calendarShares.afterEventWrite(userId, updatedEvent.calendar_id, { eventId: id, seriesKey: (currentEvent.series_id as string | null) ?? null, action: 'changed' });
       }
       // A move a calendar server has not confirmed yet finishes in the background.
       const moved = writeback.pending ? { pending: writeback.pending, status: 202 } : {};
@@ -785,11 +861,9 @@ export = {
         return { error: 'Invalid todo_status', status: 400 };
       }
 
-      const [currentEvents] = await db.execute<EventRow[]>(
-        'SELECT start_time, end_time FROM calendar_events WHERE id = ? AND user_id = ?',
-        [id, userId]
-      );
-      if (currentEvents.length === 0) return { error: 'Event not found', status: 404 };
+      const target = await calendarShares.eventTarget(userId, id);
+      if (!target) return { error: 'Event not found', status: 404 };
+      const currentEvents = [target.event];
 
       const updates = ['todo_status = ?'];
       const params = [todo_status || null];
@@ -825,7 +899,12 @@ export = {
           return { error: 'End time must be after start time', status: 400 };
         }
 
-        if (movedStart && movedEnd) {
+        if (movedStart && movedEnd && !target.own) {
+          // A calendar others share is UniHub's own: nothing to write back.
+          if (movedStart !== toMysqlDatetime(target.event.start_time)) await taskOrder.clearRank(db, userId, id);
+          updates.push('start_time = ?', 'end_time = ?');
+          params.push(movedStart, movedEnd);
+        } else if (movedStart && movedEnd) {
           timeDecidedFor = await writebackIdentity(db, userId, id);
           const [[current]] = await db.execute<EventRow[]>('SELECT * FROM calendar_events WHERE id = ? AND user_id = ?', [id, userId]);
           if ((current.calendar_id || null) !== timeDecidedFor.calendarId) return clientError(eventChanged(), 'Failed to update todo status');
@@ -845,22 +924,24 @@ export = {
       // when the calendar or server copy it was written back for changed
       // meanwhile (a move finished): checked in the same statement.
       const timeMoved = !!timeDecidedFor;
-      const updateQuery = `UPDATE calendar_events SET ${updates.join(', ')} WHERE id = ? AND user_id = ?${timeMoved
+      const updateQuery = `UPDATE calendar_events SET ${updates.join(', ')} WHERE id = ? AND user_id <=> ?${timeMoved
         ? ` AND NOT EXISTS (SELECT 1 FROM calendar_event_moves m WHERE m.event_id = calendar_events.id AND m.state = 'creating' AND m.target_calendar_id IS NOT NULL)
            AND calendar_id <=> ? AND (SELECT r.remote_object_id FROM calendar_event_external_refs r WHERE r.event_id = calendar_events.id LIMIT 1) <=> ?` : ''}`;
-      params.push(id, userId);
+      params.push(id, target.ownerId);
       if (timeDecidedFor) params.push(timeDecidedFor.calendarId, timeDecidedFor.objectId);
-      // Fenced by the item's lock, which a time move holds (calendar-move-state.ts).
-      const [written] = timeMoved
-        ? await fencedWrite(connection => connection.execute<ResultSetHeader>(updateQuery, params))
-        : await db.execute<ResultSetHeader>(updateQuery, params);
+      // The calendar's guard first; a time move is fenced by the item's lock, which it holds (calendar-move-state.ts).
+      const written = await withTransaction(async connection => {
+        if (!await calendarShares.lockEventWrite(connection, userId, id, target.ownerId, 'edit', target.event.calendar_id ?? null)) return { affectedRows: 0 } as ResultSetHeader;
+        if (timeMoved) await fenceTaskLocks(connection);
+        return (await connection.execute<ResultSetHeader>(updateQuery, params))[0];
+      });
       if (timeMoved && !written.affectedRows) {
         const [moving] = await db.execute<RowDataPacket[]>("SELECT id FROM calendar_event_moves WHERE event_id = ? AND state = 'creating'", [id]);
         return clientError(moving.length ? movePending() : eventChanged(), 'Failed to update todo status');
       }
 
-      const updatedEvent = await getCalendarEventWithSubtasks(userId, id);
-      return { event: updatedEvent };
+      if (written.affectedRows) await calendarShares.afterEventWrite(userId, target.event.calendar_id ?? null, { eventId: id, seriesKey: (target.event.series_id as string | null) ?? null, action: 'ticked' });
+      return { event: await readEvent(userId, id) };
     } catch (error) {
       console.error('Update todo status error:', error);
       return clientError(error, 'Failed to update todo status');
@@ -917,14 +998,10 @@ export = {
       const eventId = getCalendarEventIdFromReq(req)!;
       if (!eventId) return { error: 'Invalid event id', status: 400 };
 
-      const [events] = await db.execute<EventRow[]>('SELECT id FROM calendar_events WHERE id = ? AND user_id = ?', [eventId, userId]);
-      if (events.length === 0) return { error: 'Event not found', status: 404 };
-
-      const [subtasks] = await db.execute<SubtaskRow[]>(
-        'SELECT * FROM calendar_event_subtasks WHERE event_id = ? AND user_id = ? ORDER BY position ASC, created_at ASC',
-        [eventId, userId]
-      );
-      return { subtasks: subtasks.map(serializeCalendarSubtask) };
+      const target = await calendarShares.eventTarget(userId, eventId);
+      if (!target) return { error: 'Event not found', status: 404 };
+      if (!target.own) await calendarShares.assertCalendar(userId, String(target.event.calendar_id), 'read');
+      return { subtasks: (await getCalendarSubtasksForEvents(target.ownerId, [eventId])).get(eventId) ?? [] };
     } catch (error) {
       console.error('Get subtasks error:', error);
       return clientError(error, 'Failed to fetch subtasks');
@@ -939,34 +1016,30 @@ export = {
       const eventId = getCalendarEventIdFromReq(req)!;
       if (!eventId) return { error: 'Invalid event id', status: 400 };
 
-      const [events] = await db.execute<EventRow[]>('SELECT id FROM calendar_events WHERE id = ? AND user_id = ?', [eventId, userId]);
-      if (events.length === 0) return { error: 'Event not found', status: 404 };
-
-      let position = Number.isInteger(body.position) && body.position! >= 0 ? body.position! : null;
-      if (position === null) {
-        const [maxRows] = await db.execute<(RowDataPacket & { max_position: number })[]>(
-          'SELECT COALESCE(MAX(position), -1) AS max_position FROM calendar_event_subtasks WHERE event_id = ? AND user_id = ?',
-          [eventId, userId]
-        );
-        position = Number(maxRows[0]?.max_position ?? -1) + 1;
-      } else {
-        await db.execute(
-          'UPDATE calendar_event_subtasks SET position = position + 1 WHERE event_id = ? AND user_id = ? AND position >= ?',
-          [eventId, userId, position]
-        );
-      }
-
+      const target = await calendarShares.eventTarget(userId, eventId);
+      if (!target) return { error: 'Event not found', status: 404 };
+      const { ownerId } = target;
       const subtaskId = crypto.randomUUID();
-      await db.execute(
-        'INSERT INTO calendar_event_subtasks (id, event_id, user_id, title, is_done, position) VALUES (?, ?, ?, ?, ?, ?)',
-        [subtaskId, eventId, userId, body.title.trim(), !!body.is_done, position]
-      );
-
-      const [subtasks] = await db.execute<SubtaskRow[]>(
-        'SELECT * FROM calendar_event_subtasks WHERE id = ? AND event_id = ? AND user_id = ?',
-        [subtaskId, eventId, userId]
-      );
-      return { subtask: subtasks[0] ? serializeCalendarSubtask(subtasks[0]) : null };
+      // A contributor adds at the end: placing a point among others reorders them.
+      const added = await withTransaction(async cx => {
+        const locked = await calendarShares.lockEventWrite(cx, userId, eventId, ownerId, 'contribute', target.event.calendar_id ?? null);
+        if (!locked) return false;
+        let position = calendarShares.atLeast(locked.level, 'edit') && Number.isInteger(body.position) && body.position! >= 0 ? body.position! : null;
+        if (position === null) {
+          const [maxRows] = await cx.execute<(RowDataPacket & { max_position: number })[]>(
+            'SELECT COALESCE(MAX(position), -1) AS max_position FROM calendar_event_subtasks WHERE event_id = ? AND user_id <=> ?', [eventId, ownerId]);
+          position = Number(maxRows[0]?.max_position ?? -1) + 1;
+        } else {
+          await cx.execute('UPDATE calendar_event_subtasks SET position = position + 1 WHERE event_id = ? AND user_id <=> ? AND position >= ?', [eventId, ownerId, position]);
+        }
+        await cx.execute('INSERT INTO calendar_event_subtasks (id, event_id, user_id, title, is_done, position, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)',
+          [subtaskId, eventId, ownerId, String(body.title).trim(), !!body.is_done, position, userId]);
+        return true;
+      });
+      if (!added) return { error: 'Event not found', status: 404 };
+      await calendarShares.afterEventWrite(userId, target.event.calendar_id ?? null, { eventId, seriesKey: (target.event.series_id as string | null) ?? null, action: 'point' });
+      const subtasks = (await getCalendarSubtasksForEvents(ownerId, [eventId])).get(eventId) ?? [];
+      return { subtask: subtasks.find((point: { id: string }) => point.id === subtaskId) ?? null };
     } catch (error) {
       console.error('Create subtask error:', error);
       return clientError(error, 'Failed to create subtask');
@@ -981,47 +1054,41 @@ export = {
       const subtaskId = getCalendarSubtaskIdFromReq(req)!;
       if (!eventId || !subtaskId) return { error: 'Invalid subtask route', status: 400 };
 
-      const [existing] = await db.execute<SubtaskRow[]>(
-        'SELECT * FROM calendar_event_subtasks WHERE id = ? AND event_id = ? AND user_id = ?',
-        [subtaskId, eventId, userId]
-      );
-      if (existing.length === 0) return { error: 'Subtask not found', status: 404 };
-
-      const updates = [];
+      const target = await calendarShares.eventTarget(userId, eventId);
+      if (!target) return { error: 'Subtask not found', status: 404 };
+      const { ownerId } = target;
+      const updates: string[] = [];
       const params: ExecuteValues[] = [];
-
-      if (Object.prototype.hasOwnProperty.call(body, 'title')) {
+      if (has(body, 'title')) {
         if (!body.title?.trim()) return { error: 'Subtask title is required', status: 400 };
         updates.push('title = ?');
         params.push(body.title.trim());
       }
-
-      if (Object.prototype.hasOwnProperty.call(body, 'is_done')) {
+      if (has(body, 'is_done')) {
         updates.push('is_done = ?');
         params.push(!!body.is_done);
       }
-
-      if (Object.prototype.hasOwnProperty.call(body, 'position')) {
+      if (has(body, 'position')) {
         if (!Number.isInteger(body.position) || body.position! < 0) {
           return { error: 'position must be a non-negative integer', status: 400 };
         }
         updates.push('position = ?');
         params.push(body.position!);
       }
-
-      if (updates.length > 0) {
-        params.push(subtaskId, eventId, userId);
-        await db.execute(
-          `UPDATE calendar_event_subtasks SET ${updates.join(', ')} WHERE id = ? AND event_id = ? AND user_id = ?`,
-          params
-        );
-      }
-
-      const [subtasks] = await db.execute<SubtaskRow[]>(
-        'SELECT * FROM calendar_event_subtasks WHERE id = ? AND event_id = ? AND user_id = ?',
-        [subtaskId, eventId, userId]
-      );
-      return { subtask: subtasks[0] ? serializeCalendarSubtask(subtasks[0]) : null };
+      const outcome = await withTransaction(async cx => {
+        const locked = await calendarShares.lockEventWrite(cx, userId, eventId, ownerId, 'contribute', target.event.calendar_id ?? null);
+        const [[point]] = locked ? await cx.execute<SubtaskRow[]>('SELECT * FROM calendar_event_subtasks WHERE id = ? AND event_id = ? AND user_id <=> ? FOR UPDATE', [subtaskId, eventId, ownerId]) : [[]];
+        if (!locked || !point) return 'missing';
+        // A contributor changes and ticks only the points they added, and moves none.
+        if (!calendarShares.atLeast(locked.level, 'edit') && (has(body, 'position') || point.created_by !== userId)) return 'refused';
+        if (updates.length) await cx.execute(`UPDATE calendar_event_subtasks SET ${updates.join(', ')} WHERE id = ? AND event_id = ? AND user_id <=> ?`, [...params, subtaskId, eventId, ownerId]);
+        return 'done';
+      });
+      if (outcome === 'missing') return { error: 'Subtask not found', status: 404 };
+      if (outcome === 'refused') return pointRefused();
+      if (updates.length) await calendarShares.afterEventWrite(userId, target.event.calendar_id ?? null, { eventId, seriesKey: (target.event.series_id as string | null) ?? null, action: 'changed' });
+      const subtasks = (await getCalendarSubtasksForEvents(ownerId, [eventId])).get(eventId) ?? [];
+      return { subtask: subtasks.find((point: { id: string }) => point.id === subtaskId) ?? null };
     } catch (error) {
       console.error('Update subtask error:', error);
       return clientError(error, 'Failed to update subtask');
@@ -1036,12 +1103,20 @@ export = {
       const subtaskId = getCalendarSubtaskIdFromReq(req)!;
       if (!eventId || !subtaskId) return { error: 'Invalid subtask route', status: 400 };
 
-      const [result] = await db.execute<ResultSetHeader>(
-        'DELETE FROM calendar_event_subtasks WHERE id = ? AND event_id = ? AND user_id = ?',
-        [subtaskId, eventId, userId]
-      );
-      if (result.affectedRows === 0) return { error: 'Subtask not found', status: 404 };
-
+      const target = await calendarShares.eventTarget(userId, eventId);
+      if (!target) return { error: 'Subtask not found', status: 404 };
+      const { ownerId } = target;
+      const outcome = await withTransaction(async cx => {
+        const locked = await calendarShares.lockEventWrite(cx, userId, eventId, ownerId, 'contribute', target.event.calendar_id ?? null);
+        const [[point]] = locked ? await cx.execute<SubtaskRow[]>('SELECT created_by FROM calendar_event_subtasks WHERE id = ? AND event_id = ? AND user_id <=> ? FOR UPDATE', [subtaskId, eventId, ownerId]) : [[]];
+        if (!locked || !point) return 'missing';
+        if (!calendarShares.atLeast(locked.level, 'edit') && point.created_by !== userId) return 'refused';
+        await cx.execute('DELETE FROM calendar_event_subtasks WHERE id = ? AND event_id = ? AND user_id <=> ?', [subtaskId, eventId, ownerId]);
+        return 'done';
+      });
+      if (outcome === 'missing') return { error: 'Subtask not found', status: 404 };
+      if (outcome === 'refused') return pointRefused();
+      await calendarShares.afterEventWrite(userId, target.event.calendar_id ?? null, { eventId, seriesKey: (target.event.series_id as string | null) ?? null, action: 'changed' });
       return { message: 'Subtask deleted' };
     } catch (error) {
       console.error('Delete subtask error:', error);
@@ -1061,27 +1136,21 @@ export = {
         return { error: 'subtask_ids must be a non-empty array', status: 400 };
       }
 
-      const [existingRows] = await db.execute<SubtaskRow[]>(
-        'SELECT id FROM calendar_event_subtasks WHERE event_id = ? AND user_id = ?',
-        [eventId, userId]
-      );
-      const existingIds = new Set(existingRows.map((row) => row.id));
-      if (existingIds.size !== subtaskIds.length || subtaskIds.some((id) => !existingIds.has(id))) {
-        return { error: 'subtask_ids must include all subtasks for the event', status: 400 };
-      }
-
-      for (let index = 0; index < subtaskIds.length; index += 1) {
-        await db.execute(
-          'UPDATE calendar_event_subtasks SET position = ? WHERE id = ? AND event_id = ? AND user_id = ?',
-          [index, subtaskIds[index], eventId, userId]
-        );
-      }
-
-      const [subtasks] = await db.execute<SubtaskRow[]>(
-        'SELECT * FROM calendar_event_subtasks WHERE event_id = ? AND user_id = ? ORDER BY position ASC, created_at ASC',
-        [eventId, userId]
-      );
-      return { subtasks: subtasks.map(serializeCalendarSubtask) };
+      const target = await calendarShares.eventTarget(userId, eventId);
+      if (!target) return { error: 'Event not found', status: 404 };
+      const { ownerId } = target;
+      const complete = await withTransaction(async cx => {
+        if (!await calendarShares.lockEventWrite(cx, userId, eventId, ownerId, 'edit', target.event.calendar_id ?? null)) return false;
+        const [existingRows] = await cx.execute<SubtaskRow[]>('SELECT id FROM calendar_event_subtasks WHERE event_id = ? AND user_id <=> ?', [eventId, ownerId]);
+        const existingIds = new Set(existingRows.map((row) => row.id));
+        if (existingIds.size !== subtaskIds.length || subtaskIds.some((id) => !existingIds.has(id))) return false;
+        for (let index = 0; index < subtaskIds.length; index += 1) {
+          await cx.execute('UPDATE calendar_event_subtasks SET position = ? WHERE id = ? AND event_id = ? AND user_id <=> ?', [index, subtaskIds[index], eventId, ownerId]);
+        }
+        return true;
+      });
+      if (!complete) return { error: 'subtask_ids must include all subtasks for the event', status: 400 };
+      return { subtasks: (await getCalendarSubtasksForEvents(ownerId, [eventId])).get(eventId) ?? [] };
     } catch (error) {
       console.error('Reorder subtasks error:', error);
       return clientError(error, 'Failed to reorder subtasks');
@@ -1094,8 +1163,16 @@ export = {
     try {
       const id = getCalendarEventIdFromReq(req)!;
       if (!id) return { error: 'Invalid event id', status: 400 };
-      const [events] = await db.execute<EventRow[]>('SELECT * FROM calendar_events WHERE id = ? AND user_id = ?', [id, userId]);
-      if (!events.length) return { message: 'Event deleted', bin_item_ids: [] };
+      const target = await calendarShares.eventTarget(userId, id);
+      if (!target) return { message: 'Event deleted', bin_item_ids: [] };
+      const deleted = { eventId: id, seriesKey: (target.event.series_id as string | null) ?? null, action: 'deleted' as const };
+      if (!target.own) {
+        // Into the calendar's bin, under its guard.
+        const binned = await binCalendar.binLocally(userId, target.event);
+        if (binned) await calendarShares.afterEventWrite(userId, target.event.calendar_id ?? null, deleted);
+        return { message: binned ? 'Event moved to the bin' : 'Event deleted', bin_item_ids: binned ? [binned] : [] };
+      }
+      const events = [target.event];
       const scope = new URL(req.url, 'http://localhost').searchParams.get('scope');
       // To the bin; a synced one is deleted at its server first, and a
       // refusal there leaves it as it is (bin-calendar.ts).
@@ -1106,6 +1183,7 @@ export = {
       }
       const outcome = await binCalendar.deleteEventToBin(userId, events[0], scope === 'series' ? 'series' : 'occurrence');
       if ('refused' in outcome) return outcome.refused;
+      if (outcome.binned) await calendarShares.afterEventWrite(userId, target.event.calendar_id ?? null, deleted);
       return { message: outcome.binned ? 'Event moved to the bin' : 'Event deleted', bin_item_ids: outcome.binned ? [outcome.binned] : [] };
     } catch (error) {
       console.error('Delete event error:', error);

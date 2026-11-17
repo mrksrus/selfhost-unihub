@@ -248,11 +248,11 @@ function serializeCalendarEvent(row: CalendarEvent, subtasks: ReturnType<typeof 
 // Each event's points and attendees carry its owner's user_id: the person,
 // the owner of a calendar shared with the caller, or none for a calendar no
 // person owns. The caller has already been allowed to read the events.
-async function getCalendarSubtasksForEvents(ownerId: string | null, eventIds: readonly string[] | null | undefined) {
+async function getCalendarSubtasksForEvents(ownerId: string | null, eventIds: readonly string[] | null | undefined, executor: SqlExecutor = db) {
   if (!eventIds || eventIds.length === 0) return new Map();
 
   const placeholders = eventIds.map(() => '?').join(', ');
-  const [rows] = await db.execute<(RowDataPacket & CalendarSubtask)[]>(
+  const [rows] = await executor.execute<(RowDataPacket & CalendarSubtask)[]>(
     `SELECT s.*, COALESCE(u.full_name, u.email) AS created_by_name FROM calendar_event_subtasks s LEFT JOIN users u ON u.id = s.created_by
      WHERE s.user_id <=> ? AND s.event_id IN (${placeholders}) ORDER BY s.position ASC, s.created_at ASC`,
     [ownerId, ...eventIds]
@@ -267,11 +267,11 @@ async function getCalendarSubtasksForEvents(ownerId: string | null, eventIds: re
   return grouped;
 }
 
-async function getCalendarAttendeesForEvents(ownerId: string | null, eventIds: readonly string[] | null | undefined) {
+async function getCalendarAttendeesForEvents(ownerId: string | null, eventIds: readonly string[] | null | undefined, executor: SqlExecutor = db) {
   if (!eventIds || eventIds.length === 0) return new Map();
 
   const placeholders = eventIds.map(() => '?').join(', ');
-  const [rows] = await db.execute<(RowDataPacket & CalendarAttendee)[]>(
+  const [rows] = await executor.execute<(RowDataPacket & CalendarAttendee)[]>(
     `SELECT * FROM calendar_event_attendees WHERE user_id <=> ? AND event_id IN (${placeholders}) ORDER BY created_at ASC`,
     [ownerId, ...eventIds]
   );
@@ -289,17 +289,34 @@ async function getCalendarAttendeesForEvents(ownerId: string | null, eventIds: r
 const seriesKeySql = (alias: string) => `CASE WHEN ${alias}.series_id IS NOT NULL THEN ${alias}.series_id
   WHEN EXISTS (SELECT 1 FROM calendar_event_external_refs sr WHERE sr.event_id = ${alias}.id AND sr.recurrence_id IS NOT NULL) THEN ${alias}.uid END`;
 
-/** Event rows the viewer may read, serialized with their points, attendees, the viewer's order and pending moves. */
-async function presentEvents(viewerId: string, rows: readonly CalendarEvent[]) {
+/**
+ * Reminders are each person's: their own row (one event's before its
+ * series') wins; without one, the owner has the event's and nobody else any.
+ */
+async function ownReminders<T extends { id: string; user_id?: string | null; reminders?: unknown; reminder_minutes?: unknown; series_id?: unknown }>(viewerId: string, rows: readonly T[], executor: SqlExecutor = db): Promise<T[]> {
+  const [own] = await executor.execute<RowDataPacket[]>('SELECT event_id, series_id, reminders FROM calendar_reminders WHERE user_id = ?', [viewerId]);
+  if (!own.length && rows.every(row => row.user_id === viewerId)) return [...rows];
+  const byEvent = new Map(own.filter(row => row.event_id).map(row => [String(row.event_id), row.reminders]));
+  const bySeries = new Map(own.filter(row => row.series_id).map(row => [String(row.series_id), row.reminders]));
+  return rows.map(row => {
+    const mine = byEvent.get(row.id) ?? (row.series_id ? bySeries.get(String(row.series_id)) : undefined);
+    if (mine !== undefined) return { ...row, reminders: mine, reminder_minutes: null };
+    return row.user_id === viewerId ? row : { ...row, reminders: null, reminder_minutes: null };
+  });
+}
+
+/** Event rows the viewer may read, serialized with their points, attendees, the viewer's own reminders and order, and pending moves. */
+async function presentEvents(viewerId: string, given: readonly CalendarEvent[], executor: SqlExecutor = db) {
+  const rows = await ownReminders(viewerId, given, executor);
   const byOwner = new Map<string | null, string[]>();
   for (const row of rows) byOwner.set(row.user_id ?? null, [...(byOwner.get(row.user_id ?? null) ?? []), row.id]);
   const subtasks = new Map<string, ReturnType<typeof serializeCalendarSubtask>[]>();
   const attendees = new Map<string, ReturnType<typeof serializeCalendarAttendee>[]>();
   for (const [ownerId, ids] of byOwner) {
-    for (const [id, list] of await getCalendarSubtasksForEvents(ownerId, ids)) subtasks.set(id, list);
-    for (const [id, list] of await getCalendarAttendeesForEvents(ownerId, ids)) attendees.set(id, list);
+    for (const [id, list] of await getCalendarSubtasksForEvents(ownerId, ids, executor)) subtasks.set(id, list);
+    for (const [id, list] of await getCalendarAttendeesForEvents(ownerId, ids, executor)) attendees.set(id, list);
   }
-  return attachMoveState(viewerId, await attachRanks(viewerId, rows.map(row => serializeCalendarEvent(row, subtasks.get(row.id) || [], attendees.get(row.id) || []))));
+  return attachMoveState(viewerId, await attachRanks(viewerId, rows.map(row => serializeCalendarEvent(row, subtasks.get(row.id) || [], attendees.get(row.id) || [])), executor), executor);
 }
 
 async function getCalendarEventWithSubtasks(userId: string, eventId: string) {
@@ -338,9 +355,11 @@ function normalizeAttendeesPayload(attendees: unknown) {
   return normalized;
 }
 
-async function replaceEventAttendees(userId: string, eventId: string, attendees: unknown, connection: SqlExecutor = db) {
+// ownerId: the user_id the event's rows carry (null in a calendar no person owns).
+async function replaceEventAttendees(ownerId: string | null, eventId: string, attendees: unknown, connection: SqlExecutor = db) {
+  const userId = ownerId;
   const normalized = normalizeAttendeesPayload(attendees);
-  await connection.execute('DELETE FROM calendar_event_attendees WHERE user_id = ? AND event_id = ?', [userId, eventId]);
+  await connection.execute('DELETE FROM calendar_event_attendees WHERE user_id <=> ? AND event_id = ?', [userId, eventId]);
   for (const attendee of normalized) {
     await connection.execute(
       `INSERT INTO calendar_event_attendees
@@ -377,6 +396,9 @@ async function replaceEventAttendees(userId: string, eventId: string, attendees:
 // leaves the task without a link, keeping its summary.
 async function applyLocalEventUpdate(userId: string, eventId: string, { sets, params }: { sets: string[]; params: ExecuteValues[] }, attendees: unknown,
   { fieldsOfMove = false, identity = null, sourceEmail = null }: { fieldsOfMove?: boolean; identity?: WritebackIdentity | null; sourceEmail?: { id: string; summary: string } | null } = {}) {
+  // The calendar the guard locks first: the event's now, read before the transaction.
+  const [[current]] = await db.execute<RowDataPacket[]>('SELECT calendar_id FROM calendar_events WHERE id = ? AND user_id = ?', [eventId, userId]);
+  if (!current) return null;
   const connection = await db.getConnection();
   try {
     await connection.beginTransaction();
@@ -385,8 +407,9 @@ async function applyLocalEventUpdate(userId: string, eventId: string, { sets, pa
       sets = [...sets, 'source_email_id = ?', 'source_email_json = ?'];
       params = [...params, linked.length ? sourceEmail.id : null, sourceEmail.summary];
     }
-    const [rows] = await connection.execute<RowDataPacket[]>('SELECT id FROM calendar_events WHERE id = ? AND user_id = ? FOR UPDATE', [eventId, userId]);
-    if (rows.length === 0) {
+    // The calendar's guard (an archived calendar refuses), then the row.
+    const { lockEventWrite } = require('./calendar-shares') as typeof import('./calendar-shares');
+    if (!await lockEventWrite(connection, userId, eventId, userId, 'edit', current.calendar_id ?? null)) {
       await connection.rollback();
       return null;
     }
@@ -556,6 +579,7 @@ export {
   getCalendarAttendeesForEvents,
   getCalendarEventWithSubtasks,
   presentEvents,
+  ownReminders,
   seriesKeySql,
   normalizeResponseStatus,
   normalizeAttendeesPayload,

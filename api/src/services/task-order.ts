@@ -138,7 +138,8 @@ function dateRank(row: RankedRow, identity?: Pick<TaskIdentity, 'uid' | 'recurre
  * The order identity of each event: synced when its row is linked to a
  * server copy with a UID, else local by its id. A link without a server copy
  * (after a restore, before the first sync) counts as local until the sync
- * links it again.
+ * links it again. The ids are events the person may read (theirs or of a
+ * calendar they reach); each person's order of them is their own.
  */
 async function identities(userId: string, eventIds: readonly string[], executor: SqlExecutor = db): Promise<Map<string, TaskIdentity>> {
   const result = new Map<string, TaskIdentity>();
@@ -164,8 +165,8 @@ async function identities(userId: string, eventIds: readonly string[], executor:
        LEFT JOIN calendar_remote_objects o ON o.id = r.remote_object_id AND o.user_id = e.user_id
        LEFT JOIN calendar_calendars c ON c.id = o.calendar_id
        LEFT JOIN calendar_accounts a ON a.id = c.account_id
-       WHERE e.user_id = ? AND e.id IN (${chunk.map(() => '?').join(', ')})`,
-      [userId, ...chunk]
+       WHERE e.id IN (${chunk.map(() => '?').join(', ')})`,
+      chunk
     );
     for (const row of rows) {
       const remote = row.uid && row.object_calendar_id ? { calendarId: String(row.object_calendar_id), uid: String(row.uid), recurrenceId: String(row.recurrence_id ?? ''),
@@ -254,15 +255,19 @@ async function place(userId: string, taskId: string, input: unknown): Promise<{ 
   const ranks = await withTransaction(async connection => {
     // One placement at a time per person: ranks are read and written together.
     await connection.execute('SELECT id FROM users WHERE id = ? FOR UPDATE', [userId]);
-    const [own] = await connection.execute<RowDataPacket[]>('SELECT id FROM calendar_events WHERE id = ? AND user_id = ?', [taskId, userId]);
+    // The person's own tasks and those of the lists others share with them (free/busy shows no tasks).
+    const { reachedCalendars } = require('./calendar-shares') as typeof import('./calendar-shares');
+    const lists = [...await reachedCalendars(userId, connection)].filter(([, level]) => level !== 'freebusy').map(([id]) => id);
+    const shared = lists.length ? ` OR e.calendar_id IN (${lists.map(() => '?').join(', ')})` : '';
+    const [own] = await connection.execute<RowDataPacket[]>(`SELECT e.id FROM calendar_events e WHERE e.id = ? AND (e.user_id = ?${shared})`, [taskId, userId, ...lists]);
     if (!own.length) throw notFound('TASK_NOT_FOUND', 'Task not found');
     // The open tasks: what ToDo lists (lists with ToDo on) and not done.
     const [rows] = await connection.execute<(RowDataPacket & RankedRow)[]>(
       `SELECT e.id, e.start_time, e.created_at, e.is_todo_only, e.order_key
        FROM calendar_events e LEFT JOIN calendar_calendars c ON c.id = e.calendar_id
-       WHERE e.user_id = ? AND (e.todo_status IS NULL OR e.todo_status NOT IN ('done', 'cancelled'))
+       WHERE (e.user_id = ?${shared}) AND (e.todo_status IS NULL OR e.todo_status NOT IN ('done', 'cancelled'))
          AND (c.auto_todo_enabled = TRUE OR c.auto_todo_enabled IS NULL)`,
-      [userId]
+      [userId, ...lists]
     );
     const tasks = await attachRanks(userId, rows, connection);
     const byId = new Map(tasks.map(task => [String(task.id), task]));

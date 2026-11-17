@@ -49,7 +49,7 @@ test('shared calendars: levels, reach, free/busy, synced calendars, administrato
   assert.deepEqual([(await listed(blair, team.id)).permission, (await listed(blair, team.id)).owner_kind, (await listed(blair, team.id)).owner], ['manage', 'user', null]);
   const ownRead = (await call(blair, 'GET', `/api/calendar/events/${meeting.id}`)).event;
   assert.deepEqual([ownRead.subtasks.map((point: FixtureValue) => [point.title, point.created_by]), ownRead.attendees.map((person: FixtureValue) => person.email), ownRead.series_key],
-    [[['Bring numbers', null]], ['guest@example.test'], null], 'the owner reads the event with its points and attendees');
+    [[['Bring numbers', ids.member]], ['guest@example.test'], null], 'the owner reads the event with its points and attendees');
   for (const client of [alex, casey, drew, admin]) assert.equal(await listed(client, team.id), undefined, 'nobody else lists it before a share');
 
   // ── (2) Reach: a member shares with their own groups and the people in them, never everyone ──

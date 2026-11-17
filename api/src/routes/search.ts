@@ -6,6 +6,7 @@ import { escapeLike } from '../services/sql';
 import { defineRoutes } from '../http/route';
 import { contactSearchCondition, displayName } from '../services/contacts';
 import { searchBooks } from '../services/address-books';
+import { reachedCalendars } from '../services/calendar-shares';
 
 function isoDate(value: unknown) {
   return value instanceof Date ? value.toISOString() : (value || null);
@@ -54,14 +55,16 @@ export = defineRoutes({
         [userId, like, like, like, like]
       );
 
+      // The person's own events and those of calendars they read; free/busy ones are not searched.
+      const read = modules.get('calendar') ? [...await reachedCalendars(userId)].filter(([, level]) => level !== 'freebusy').map(([id]) => id) : [];
       const [events] = await queryModule('calendar',
         `SELECT id, title, description, start_time, is_todo_only, todo_status
          FROM calendar_events
-         WHERE user_id = ?
+         WHERE (user_id = ?${read.length ? ` OR calendar_id IN (${read.map(() => '?').join(', ')})` : ''})
            AND (title LIKE ? OR description LIKE ? OR location LIKE ?)
          ORDER BY start_time ASC
          LIMIT ${perTypeLimit}`,
-        [userId, like, like, like]
+        [userId, ...read, like, like, like]
       );
 
       const [recordings] = await queryModule('recordings',

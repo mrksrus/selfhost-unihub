@@ -176,8 +176,11 @@ async function saveSnapshot(snapshot: OfflineSnapshot, user: User, epoch: string
   const stillCurrent = () => !signal?.aborted && generation === observed && account === user.id && localStorage.getItem(EPOCH_KEY) === epoch;
   if (!stillCurrent()) throw new Error('The account or offline setting changed. Offline data was not saved.');
   if (snapshot.version !== 1 || snapshot.userId !== user.id) throw new Error('Offline data belongs to a different account.');
+  // Calendars others share carry their owner's user_id, and so do their events.
+  const reached = new Set(Array.isArray(snapshot.calendars) ? snapshot.calendars.filter(row => row.permission != null && row.user_id !== user.id).map(row => row.id) : []);
+  const shared = (name: string, row: Row) => (name === 'calendars' && reached.has(row.id)) || (name === 'events' && reached.has(row.calendar_id));
   for (const name of ['contacts', 'events', 'calendars', 'calendarAccounts', 'mailAccounts', 'folders', 'emails'] as const) {
-    if (!Array.isArray(snapshot[name]) || snapshot[name].some(row => row.user_id != null && row.user_id !== user.id)) throw new Error('The server returned an invalid offline snapshot.');
+    if (!Array.isArray(snapshot[name]) || snapshot[name].some(row => row.user_id != null && row.user_id !== user.id && !shared(name, row))) throw new Error('The server returned an invalid offline snapshot.');
   }
   if (snapshot.emails.length > 100) throw new Error('Offline mail exceeds the 100-message limit.');
   const safeUser: User = { id: user.id, email: user.email, full_name: user.full_name, avatar_url: user.avatar_url, timezone: user.timezone, role: user.role,

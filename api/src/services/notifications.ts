@@ -153,7 +153,7 @@ type Render<S> = (source: S, payload: NotificationPayload) => Rendering;
 interface SourceKind<S> {
   module: 'mail' | 'calendar';
   /** The source as it is now; null when it is gone or no longer news (read, a draft, done, hidden). */
-  load(userId: string, sourceId: string, connection: SqlExecutor): Promise<S | null>;
+  load(userId: string, sourceId: string, connection: SqlExecutor, payload: NotificationPayload): Promise<S | null>;
   /** Whether the queued payload still describes the source (a reminder's occurrence and offset). */
   matches?(source: S, payload: NotificationPayload, now: number): boolean;
   /** The person's filters for this source and the level they resolve to; null when filtered out. */
@@ -208,10 +208,41 @@ async function mailLevel(userId: string, email: MailSource, connection: SqlExecu
   if (settings.notify_folder_mode === 'only' ? !selected : selected) return null;
   return settings.notify_detail;
 }
+/**
+ * An event as one person sees it now: their own, or one of a calendar they
+ * still read (access is asked again at every enqueue and delivery, so
+ * nothing needs deleting when it ends), with their own on/off and reminders.
+ */
+async function reachedCalendarEvent(userId: string, eventId: string, connection: SqlExecutor) {
+  const [events] = await connection.execute<CalendarSource[]>('SELECT e.*, c.is_visible FROM calendar_events e LEFT JOIN calendar_calendars c ON c.id = e.calendar_id WHERE e.id = ?', [eventId]);
+  let event = events[0];
+  if (!event) return null;
+  const shares = require('./calendar-shares') as typeof import('./calendar-shares');
+  if (event.user_id !== userId) {
+    if (!event.calendar_id || !(await shares.levelOn(userId, event.calendar_id, connection).then(level => level && shares.atLeast(level, 'read')))) return null;
+    event = { ...event, is_visible: (await shares.viewsOfCalendars(userId, [event.calendar_id], connection)).get(event.calendar_id)!.is_visible } as CalendarSource;
+  }
+  return (await (require('./calendar') as typeof import('./calendar')).ownReminders(userId, [event], connection))[0];
+}
 async function loadCalendarEvent(userId: string, eventId: string, connection: SqlExecutor) {
-  const [events] = await connection.execute<CalendarSource[]>('SELECT e.*, c.is_visible FROM calendar_events e LEFT JOIN calendar_calendars c ON c.id = e.calendar_id WHERE e.id = ? AND e.user_id = ?', [eventId, userId]);
-  const event = events[0];
+  const event = await reachedCalendarEvent(userId, eventId, connection);
   return !event || event.is_visible === 0 || event.is_visible === false || ['done', 'cancelled'].includes(event.todo_status) ? null : event;
+}
+type ChangeSource = { title: string; calendar_id: string; actor: string; verb: string };
+const CHANGE_VERBS: Readonly<Record<string, string>> = { created: 'added', changed: 'changed', ticked: 'ticked', point: 'added a point to', deleted: 'deleted' };
+/** Another person's change to an event of a calendar the person still reads and asked to hear about; a deleted one is read from the bin. */
+async function loadCalendarChange(userId: string, eventId: string, connection: SqlExecutor, payload: NotificationPayload): Promise<ChangeSource | null> {
+  const [[row]] = await connection.execute<RowDataPacket[]>(payload.action === 'deleted'
+    ? 'SELECT title, calendar_id FROM bin_items WHERE item_id = ? AND calendar_id IS NOT NULL AND restored_at IS NULL ORDER BY deleted_at DESC LIMIT 1'
+    : 'SELECT title, calendar_id FROM calendar_events WHERE id = ?', [eventId]);
+  if (!row?.calendar_id) return null;
+  const shares = require('./calendar-shares') as typeof import('./calendar-shares');
+  const level = await shares.levelOn(userId, String(row.calendar_id), connection);
+  if (!level || !shares.atLeast(level, 'read')) return null;
+  const [[wants]] = await connection.execute<RowDataPacket[]>('SELECT 1 FROM calendar_views WHERE calendar_id = ? AND user_id = ? AND notify_changes = TRUE', [row.calendar_id, userId]);
+  const [[actor]] = await connection.execute<RowDataPacket[]>('SELECT COALESCE(full_name, email) AS name FROM users WHERE id = ?', [String(payload.actorId ?? '')]);
+  if (!wants || !actor) return null;
+  return { title: String(row.title || ''), calendar_id: String(row.calendar_id), actor: String(actor.name), verb: CHANGE_VERBS[String(payload.action)] ?? 'changed' };
 }
 type SnoozeSource = MailSource & { returned_at: string };
 // The message as it came back: still back (not snoozed again), and not a draft.
@@ -239,7 +270,7 @@ async function enqueueSnoozeReturn({ userId, emailId, returnedAt }: { userId: st
 }
 
 // Each calendar on or off; how much shows is the person's reminder level.
-async function calendarLevel(userId: string, event: CalendarSource, connection: SqlExecutor) {
+async function calendarLevel(userId: string, event: Pick<CalendarSource, 'calendar_id'>, connection: SqlExecutor) {
   if (!(await scopedValues('calendar', userId, event.calendar_id, connection)).notify_enabled) return null;
   return (await settingValues('user', userId, userId, connection)).reminder_notification_detail;
 }
@@ -284,6 +315,15 @@ const KINDS: Readonly<Record<string, KindSpec>> = Object.freeze({
     },
     expiresAt: (event, payload) => new Date(asUtcDate(event.start_time).getTime() - Number(payload.reminderMinutes) * 60000 + REMINDER_GRACE_MS),
   }),
+  // Another person changed an event of a calendar the person switched change notifications on for.
+  'calendar-change': defineSourceKind<ChangeSource>({
+    module: 'calendar', load: loadCalendarChange, level: calendarLevel,
+    render: {
+      full: change => ({ title: 'Shared calendar', body: `${change.actor} ${change.verb} ${change.title}` }),
+      none: () => ({ title: 'A shared calendar changed', body: '' }),
+    },
+    expiresAt: (_change, _payload, now) => new Date(now + DAY_MS),
+  }),
   recording: {
     module: 'recordings',
     // An upload that moved on, finished or was cancelled needs no warning.
@@ -320,7 +360,7 @@ const clip = ({ title, body }: Rendering): Rendering => ({ title: String(title |
 // gone, no longer matches or is filtered out, else the text at its level.
 async function prepare(kind: SourceKind<unknown>, userId: string, sourceId: string | null, payload: NotificationPayload, connection: SqlExecutor,
   { source: given, now = Date.now() }: { source?: unknown; now?: number } = {}) {
-  const source = given ?? (sourceId ? await kind.load(userId, sourceId, connection) : null);
+  const source = given ?? (sourceId ? await kind.load(userId, sourceId, connection, payload) : null);
   if (!source || (kind.matches && !kind.matches(source, payload, now))) return null;
   const level = await kind.level(userId, source, connection);
   if (!level) return null;
@@ -453,6 +493,19 @@ async function enqueueCalendarNotification({ userId, eventId }: { userId: string
       url: `${event.is_todo_only ? '/todo' : '/calendar'}?event=${encodeURIComponent(event.id)}`, data: { eventId: event.id } }, transaction);
   });
 }
+/**
+ * After a write to a calendar's events: everyone who switched change
+ * notifications on for that calendar, never the person who changed it; at
+ * most one per event (or series) and person in ten minutes.
+ */
+async function enqueueCalendarChange({ actorId, calendarId, eventId, seriesKey = null, action }: { actorId: string; calendarId: string; eventId: string; seriesKey?: string | null; action: string }) {
+  const [people] = await db.execute<RowDataPacket[]>('SELECT user_id FROM calendar_views WHERE calendar_id = ? AND notify_changes = TRUE AND user_id <> ?', [calendarId, actorId]);
+  const bucket = Math.floor(Date.now() / 600000);
+  for (const { user_id: userId } of people) {
+    await inTransaction(db, cx => enqueueFromSource({ kind: 'calendar-change', userId: String(userId), sourceId: eventId, dedupeKey: `calendar-change:${seriesKey ?? eventId}:${bucket}`,
+      url: action === 'deleted' ? '/calendar' : `/calendar?event=${encodeURIComponent(eventId)}`, data: { eventId, actorId, action } }, cx));
+  }
+}
 async function enqueueTestNotification(userId: string, endpoint: unknown) {
   if (!await subscriptionStatus(userId, endpoint)) throw badRequest('NOTIFICATION_DEVICE_UNSUBSCRIBED', 'Enable notifications on this device first');
   const connection = await db.getConnection();
@@ -472,20 +525,30 @@ async function reconcileReminders(connection: PoolConnection, now: Date, activeR
   const scanAt = revision === (settings[0]?.scanned_revision || 0) ? settings[0]?.last_reminder_scan_at : null;
   const [events] = await connection.execute<(RowDataPacket & { id: string; user_id: string; start_time: unknown; reminders?: unknown; reminder_minutes?: unknown; todo_status: string; is_visible: boolean | number })[]>(`SELECT e.*, c.is_visible FROM calendar_events e
     LEFT JOIN calendar_calendars c ON c.id = e.calendar_id
-    WHERE EXISTS (SELECT 1 FROM push_subscriptions p JOIN sessions s ON s.id = p.session_id AND s.user_id = p.user_id WHERE p.user_id = e.user_id AND s.expires_at > UTC_TIMESTAMP())
+    WHERE (EXISTS (SELECT 1 FROM push_subscriptions p JOIN sessions s ON s.id = p.session_id AND s.user_id = p.user_id WHERE p.user_id = e.user_id AND s.expires_at > UTC_TIMESTAMP())
+      OR EXISTS (SELECT 1 FROM calendar_reminders cr WHERE cr.event_id = e.id OR cr.series_id = e.series_id))
     ${scanAt ? 'AND e.updated_at >= ?' : 'AND e.start_time >= ?'}`, [scanAt ? new Date(asUtcDate(scanAt).getTime() - 2000) : new Date(now.getTime() - REMINDER_GRACE_MS)]);
   await connection.beginTransaction();
   try {
     for (const event of events) {
-      if (activeRestores.get(event.user_id)?.has('calendar')) continue;
+      if (event.user_id && activeRestores.get(event.user_id)?.has('calendar')) continue;
       await connection.execute('DELETE FROM notification_reminders WHERE event_id = ?', [event.id]);
-      if (['done', 'cancelled'].includes(event.todo_status) || event.is_visible === 0 || event.is_visible === false) continue;
+      if (['done', 'cancelled'].includes(event.todo_status)) continue;
       const start = asUtcDate(event.start_time).getTime();
       if (!Number.isFinite(start)) continue;
-      for (const minutes of reminderMinutes(event)) {
-        const dueAt = start - minutes * 60000;
-        if (dueAt < now.getTime() - REMINDER_GRACE_MS) continue;
-        await connection.execute('INSERT INTO notification_reminders (event_id, user_id, minutes, due_at) VALUES (?, ?, ?, ?)', [event.id, event.user_id, minutes, new Date(dueAt)]);
+      // Each person's own reminders (an event's row before its series'); the owner without any has the event's.
+      // Whether they still reach the calendar and have it on is asked when one is due.
+      const [own] = await connection.execute<RowDataPacket[]>('SELECT user_id, reminders FROM calendar_reminders WHERE event_id = ? OR series_id = ? ORDER BY event_id IS NULL',
+        [event.id, event.series_id ?? null]);
+      const people = new Map<string, typeof event>();
+      for (const row of own) if (!people.has(String(row.user_id))) people.set(String(row.user_id), { ...event, reminders: row.reminders, reminder_minutes: null });
+      if (event.user_id && !people.has(event.user_id) && event.is_visible !== 0 && event.is_visible !== false) people.set(event.user_id, event);
+      for (const [person, reminders] of people) {
+        for (const minutes of reminderMinutes(reminders)) {
+          const dueAt = start - minutes * 60000;
+          if (dueAt < now.getTime() - REMINDER_GRACE_MS) continue;
+          await connection.execute('INSERT INTO notification_reminders (event_id, user_id, minutes, due_at) VALUES (?, ?, ?, ?)', [event.id, person, minutes, new Date(dueAt)]);
+        }
       }
     }
     // Keep the cursor before any skipped changes, including a restore that later
@@ -498,22 +561,24 @@ async function reconcileReminders(connection: PoolConnection, now: Date, activeR
 }
 async function enqueueDueReminders(connection: PoolConnection, now: Date, activeRestores: BlockedModules = new Map()) {
   const blockedUsers = [...activeRestores].filter(([, sections]) => sections.has('calendar')).map(([userId]) => userId);
-  const [rows] = await connection.execute<(CalendarSource & { minutes: number })[]>(`SELECT e.*, c.is_visible, r.minutes, r.due_at FROM notification_reminders r
+  const [rows] = await connection.execute<(CalendarSource & { minutes: number; recipient: string })[]>(`SELECT e.*, c.is_visible, r.user_id AS recipient, r.minutes, r.due_at FROM notification_reminders r
     JOIN calendar_events e ON e.id = r.event_id LEFT JOIN calendar_calendars c ON c.id = e.calendar_id
     WHERE r.queued_at IS NULL AND r.due_at <= ?
     ${blockedUsers.length ? `AND r.user_id NOT IN (${blockedUsers.map(() => '?').join(', ')})` : ''}
     ORDER BY r.due_at LIMIT 200`, [now, ...blockedUsers]);
   for (const event of rows) {
-    if (!await isModuleBackgroundEnabled(event.user_id, 'calendar', connection)) continue;
+    const userId = event.recipient;
+    if (!await isModuleBackgroundEnabled(userId, 'calendar', connection)) continue;
     await connection.beginTransaction();
     try {
-      // A reminder its calendar's switch or the occurrence no longer allows is
-      // marked queued all the same, so it does not hold up later ones.
+      // A reminder its calendar's switch, the person's access or the
+      // occurrence no longer allows is marked queued all the same, so it does
+      // not hold up later ones. The event is read again as that person sees it.
       const data = { eventId: event.id, reminderMinutes: event.minutes, dedupeKey: reminderKey(event, event.minutes) };
-      await enqueueFromSource({ kind: 'reminder', userId: event.user_id, sourceId: event.id, dedupeKey: data.dedupeKey, source: event, now: now.getTime(),
+      await enqueueFromSource({ kind: 'reminder', userId, sourceId: event.id, dedupeKey: data.dedupeKey, now: now.getTime(),
         url: `${event.is_todo_only ? '/todo' : '/calendar'}?event=${encodeURIComponent(event.id)}`, data }, connection);
-      if (!await isModuleBackgroundEnabled(event.user_id, 'calendar', connection)) { await connection.rollback(); continue; }
-      await connection.execute('UPDATE notification_reminders SET queued_at = ? WHERE event_id = ? AND minutes = ?', [now, event.id, event.minutes]);
+      if (!await isModuleBackgroundEnabled(userId, 'calendar', connection)) { await connection.rollback(); continue; }
+      await connection.execute('UPDATE notification_reminders SET queued_at = ? WHERE event_id = ? AND user_id = ? AND minutes = ?', [now, event.id, userId, event.minutes]);
       await connection.commit();
     } catch (error) { await connection.rollback(); throw error; }
   }
@@ -709,6 +774,7 @@ export {
   enqueueMailNotification,
   releaseMailNotification,
   enqueueCalendarNotification,
+  enqueueCalendarChange,
   enqueueSnoozeReturn,
   enqueueScheduledSendProblem,
   enqueueTestNotification,

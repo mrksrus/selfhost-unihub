@@ -19,6 +19,8 @@ import {
 } from './calendar';
 import { attachRanks } from './task-order';
 import { attachMoveState } from './calendar-move-state';
+import { atLeast, calendarsWithAccess, presentReached } from './calendar-shares';
+import { seriesKeySql } from './calendar';
 
 interface Section { columns: string; table: string; order: string; filter?: string; limit?: number }
 interface OfflineMail extends Record<string, unknown> {
@@ -66,6 +68,26 @@ const groupByEvent = <T extends { event_id: string }>(rows: readonly T[]) => {
   for (const row of rows) { const values = grouped.get(row.event_id) || []; values.push(row); grouped.set(row.event_id, values); }
   return grouped;
 };
+/**
+ * The calendars others share with the person, at their level and in their
+ * view, with their events as the calendar page shows them (free/busy
+ * redacted, no tasks); a revoked calendar is gone from the next copy.
+ */
+async function offlineReached(connection: SqlExecutor, userId: string) {
+  const reached = await calendarsWithAccess(userId, [], connection);
+  if (!reached.length) return { calendars: [], events: [] };
+  const levels = new Map(reached.map(({ row, access }) => [String(row.id), access.permission]));
+  const ids = [...levels.keys()];
+  const [rows] = await connection.execute<RowDataPacket[]>(`SELECT e.*, ${seriesKeySql('e')} AS series_key FROM calendar_events e
+    WHERE e.calendar_id IN (${ids.map(() => '?').join(', ')}) ORDER BY e.start_time, e.id`, ids);
+  return {
+    calendars: reached.map(({ row, access }) => ({ ...projectRows([serializeCalendarCalendar(row as unknown as CalendarCalendar)], SECTIONS.calendars)[0],
+      is_visible: access.view.is_visible, color: access.view.color, account_provider: 'local', default_for_tasks: false, default_for_events: false,
+      write_block: atLeast(access.permission, 'edit') ? null : 'read_only', takes_undated_tasks: atLeast(access.permission, 'edit'),
+      ...(access.permission === 'freebusy' ? { auto_todo_enabled: false } : {}), ...access })),
+    events: await presentReached(userId, rows as CalendarEvent[], levels, connection),
+  };
+}
 const budgetError = () => Object.assign(new Error('Contacts, shared books, events and the latest 100 messages exceed the 32 MiB offline storage budget. The previous snapshot was kept.'), { status: 413 });
 const fieldsFor = (section: Pick<Section, 'columns'>) => section.columns.split(' ');
 function selectSql(section: Section) {
@@ -111,7 +133,9 @@ async function collectOfflineSnapshot(connection: SqlExecutor, userId: string) {
   // shows the saved order; a snapshot from before 0.27 has none and the app
   // falls back to date order.
   // A move not finished yet shows as such offline too (move_pending).
-  const events = await attachMoveState(userId, await attachRanks(userId, data.events.map(row => serializeCalendarEvent(row, subtasks.get(row.id) || [], attendees.get(row.id) || [])), connection), connection);
+  const own = await attachMoveState(userId, await attachRanks(userId, data.events.map(row => serializeCalendarEvent(row, subtasks.get(row.id) || [], attendees.get(row.id) || [])), connection), connection);
+  const reached = modules.get('calendar') ? await offlineReached(connection, userId) : { calendars: [], events: [] };
+  const events = [...own, ...reached.events];
   let attachmentRows: Record<string, unknown>[] = [];
   if (data.emails.length) {
     const section = { columns: 'id email_id filename content_type size_bytes' };
@@ -143,7 +167,7 @@ async function collectOfflineSnapshot(connection: SqlExecutor, userId: string) {
     pages: await getUserPages(userId, connection),
     contacts: (await loadContacts(connection, userId, data.contacts.map(row => String(row.id)))).map(contact => ({ ...contact, photo: null })), events,
     books: shared.books, directory: shared.directory,
-    calendars: projectRows(data.calendars.map(serializeCalendarCalendar), SECTIONS.calendars),
+    calendars: [...projectRows(data.calendars.map(serializeCalendarCalendar), SECTIONS.calendars), ...reached.calendars],
     calendarAccounts: projectRows(data.calendarAccounts.map(serializeCalendarAccount), SECTIONS.calendarAccounts),
     mailAccounts: data.mailAccounts.map(row => ({ ...row, is_active: !!row.is_active })),
     folders: data.folders.map(row => ({ ...row, is_system: !!row.is_system, connected_account_ids: links.get(row.slug) || [] })), emails, keepSnoozed,

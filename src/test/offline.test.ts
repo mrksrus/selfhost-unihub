@@ -172,6 +172,14 @@ describe('offline account ownership and durable clearing', () => {
     await expect(clearOfflineData()).rejects.toThrow('Offline access is disabled');
     expect(await loadOfflineSession()).toBeNull();
   });
+  it('keeps a calendar others share and its events, but no other person\'s row', async () => {
+    const shared = { ...snapshot(), calendars: [...snapshot().calendars, { id: 'team', user_id: 'B', permission: 'read', is_visible: true, auto_todo_enabled: true }],
+      events: [...snapshot().events, { id: 'meeting', user_id: 'B', calendar_id: 'team', start_time: '2026-09-06T10:00:00Z', end_time: '2026-09-06T11:00:00Z' }] };
+    await saveOfflineSnapshot(shared, user);
+    expect(await readOfflineResponse('/calendar/events/meeting')).toMatchObject({ data: { event: { id: 'meeting' } } });
+    const foreign = { ...snapshot(), events: [...snapshot().events, { id: 'stray', user_id: 'B', calendar_id: 'visible', start_time: '2026-09-06T10:00:00Z', end_time: '2026-09-06T11:00:00Z' }] };
+    await expect(saveOfflineSnapshot(foreign, user)).rejects.toThrow('invalid offline snapshot');
+  });
   it('preserves the previous snapshot if the replacement exceeds browser quota', async () => {
     await saveOfflineSnapshot(snapshot(), user);
     database.failNextPut();
