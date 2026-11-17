@@ -174,7 +174,7 @@ const TodoPage = () => {
     const shared = (task: CalendarEvent) => ({
       task, actions, timezone, calendarColor: calendarColor(task), onEdit: setEditing, onMove: setMoving,
       level: listOf(task)?.permission, listOwner: listOf(task) && ownerName(listOf(task)!),
-      onMoveList: reorderable ? setMovingList : undefined, canReorder: reorderable,
+      onMoveList: reorderable && !(listOf(task) && isReached(listOf(task)!)) ? setMovingList : undefined, canReorder: reorderable,
       // A move not confirmed yet is marked on the row; it can be cancelled with a server at hand.
       movingTo: movingTo(task, calendars), onCancelMove: reorderable ? cancelMove : undefined,
     });
@@ -222,7 +222,7 @@ const TodoPage = () => {
       <NewTaskDialog open={creating} onOpenChange={setCreating} actions={actions} timezone={timezone} calendars={writable} />
       <EditTaskDialog task={editing} onClose={() => setEditing(null)} actions={actions} timezone={timezone} />
       <MoveTaskDialog task={moving} onClose={() => setMoving(null)} actions={actions} timezone={timezone} />
-      <MoveListDialog task={movingList} onClose={() => setMovingList(null)} actions={actions} calendars={movingFrom ? calendars.filter(calendar => sameOwner(calendar, movingFrom)) : writable} />
+      <MoveListDialog task={movingList} onClose={() => setMovingList(null)} actions={actions} calendars={movingFrom ? calendars.filter(calendar => sameOwner(calendar, movingFrom)) : calendars.filter(calendar => !isReached(calendar))} />
     </PageShell>
   );
 };
