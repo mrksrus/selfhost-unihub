@@ -544,6 +544,7 @@ export = {
       );
       if (rows.length === 0) return { error: 'Calendar not found', status: 404 };
       const calendar = rows[0];
+      if (calendar.archived_at) throw forbidden('CALENDAR_FORBIDDEN', 'You cannot change this calendar.');
       const [[owner]] = await db.execute<AccountRow[]>('SELECT provider FROM calendar_accounts WHERE id = ?', [calendar.account_id]);
       if (isRemoteProvider(owner?.provider)) {
         return { error: 'Calendars of this account come from its server. Delete the calendar there, or remove the whole account here.', status: 400 };

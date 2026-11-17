@@ -91,7 +91,7 @@ async function handOver(cx: SqlExecutor, row: Row, to: string | null, actorId: s
   const [moving] = await cx.execute<RowDataPacket[]>('SELECT 1 FROM calendar_event_moves WHERE source_calendar_id = ? OR target_calendar_id = ? LIMIT 1', [row.id, row.id]);
   if (moving.length) throw movePending();
   const from = row.userId;
-  await cx.execute(`UPDATE calendar_calendars SET user_id = ?, account_id = ?, group_id = NULL, is_primary = FALSE, offer_to = NULL, offer_by = NULL
+  await cx.execute(`UPDATE calendar_calendars SET user_id = ?, account_id = ?, external_id = NULL, group_id = NULL, is_primary = FALSE, offer_to = NULL, offer_by = NULL
     WHERE id = ?`, [to, accountId, row.id]);
   if (from) {
     // A person's own row wins over the event's, so their own reminders are kept.

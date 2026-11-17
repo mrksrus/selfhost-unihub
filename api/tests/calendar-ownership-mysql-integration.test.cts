@@ -147,7 +147,7 @@ test('calendar ownership: offers, a manager\'s hand-over, the administrator\'s h
     [alex, 'DELETE', ev(team.event)], [alex, 'PUT', `/api/calendar/calendars/${team.id}/shares`, { principal: { kind: 'user', id: ids.member }, permission: null }],
     [alex, 'POST', hand(team.id), { to: ids.member }], [alex, 'PUT', ev(team.event, '/rsvp'), { response_status: 'accepted', email: 'alex@example.test' }],
     [alex, 'PUT', ev(team.event), { calendar_id: alexDefault }], [alex, 'POST', ev(team.event, '/move'), { calendar_id: alexDefault }],
-    [alex, 'POST', ev(alexOwn.id, '/move'), { calendar_id: team.id }],
+    [alex, 'POST', ev(alexOwn.id, '/move'), { calendar_id: team.id }], [alex, 'DELETE', `/api/calendar/calendars/${team.id}`],
   ] as const) {
     assert.deepEqual(await refused(client, method, url, body), [403, 'CALENDAR_FORBIDDEN'], `archived: ${method} ${url}`);
   }
@@ -166,6 +166,12 @@ test('calendar ownership: offers, a manager\'s hand-over, the administrator\'s h
   assert.deepEqual(await refused(ari, 'POST', adminHand(rota.id), { to: 'organisation', current_password: password }), [400, 'OFFER_INVALID']);
   assert.equal((await call(ari, 'POST', adminHand(rota.id), { to: ids.member, current_password: password })).calendar.owner.id, ids.member);
   assert.deepEqual([await owners(rota.id), (await row('SELECT account_id FROM calendar_calendars WHERE id = ?', [rota.id])).account_id], [[ids.member], blairAccount]);
+
+  // ── A Default calendar moves into an account that has its own Default ──
+  await call(blair, 'PUT', `/api/calendar/calendars/${blairDefault}/shares`, { principal: alexPrincipal, permission: 'read' });
+  await call(blair, 'POST', hand(blairDefault), { to: ids.manager });
+  await call(alex, 'POST', `${hand(blairDefault)}/accept`);
+  assert.deepEqual(await owners(blairDefault), [ids.manager]);
 
   // ── Deprovision before Deactivate: leave it, a colleague, the organisation, the bin ──
   const leave = await newCalendar(blair, blairAccount, 'Leave', [[support, 'read']]);
