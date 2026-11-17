@@ -13,9 +13,11 @@
 // Groups and a group's rules (Wide), the setup link page and the required
 // two-factor set-up (Phone), and since 0.31.0 a shared address book with a
 // contact open and its share dialog (Wide), the book's list and a company
-// directory entry (Phone) and Server -> Shared books (Wide), each in Dark
-// Default and Light Default. Seventy-eight pictures; see docs/UI_BASELINES.md.
-import { expect, expectBaseline, test, THEMES, VIEWPORTS, type Page } from '../support/test.ts';
+// directory entry (Phone) and Server -> Shared books (Wide), and since 0.32.0
+// the calendars others share and a calendar's share dialog (Wide) and an
+// event as a contributor reads it (Phone), each in Dark Default and Light
+// Default. Eighty-four pictures; see docs/UI_BASELINES.md.
+import { expect, expectBaseline, sharedCalendars, test, THEMES, VIEWPORTS, type Page } from '../support/test.ts';
 import { CURRENT_DEVICE_LOCKED, POLICIES_ADMIN_APP_LOCK, POLICIES_EFFECTIVE_APP_LOCK, POLICIES_EFFECTIVE_TWO_FACTOR, USER } from '../support/fixtures.ts';
 
 // The app lock's state is this browser's (a PIN record in IndexedDB
@@ -142,6 +144,25 @@ for (const theme of THEMES) {
         await expect(page.getByRole('list', { name: 'People and groups to add' })).toBeVisible();
         await settle();
         await expectBaseline(page, `book-share-wide-${theme}.png`);
+      });
+
+      // 0.32: the calendars others share, in the panel and the month, and a calendar's share dialog with the five levels.
+      test(`shared calendars (wide, ${theme})`, async ({ page, open, settle }) => {
+        await sharedCalendars(page);
+        await open('/calendar');
+        await expect(page.getByRole('region', { name: 'Shared with me' })).toBeVisible();
+        await settle();
+        await expectBaseline(page, `calendar-shared-wide-${theme}.png`);
+      });
+
+      test(`calendar, share dialog (wide, ${theme})`, async ({ page, open, settle }) => {
+        await sharedCalendars(page);
+        await open('/calendar');
+        await page.getByRole('button', { name: 'Settings for Personal' }).click();
+        await page.getByRole('dialog', { name: 'Personal' }).getByRole('button', { name: 'Share', exact: true }).click();
+        await expect(page.getByRole('list', { name: 'People and groups to add' })).toBeVisible();
+        await settle();
+        await expectBaseline(page, `calendar-share-wide-${theme}.png`);
       });
 
       test.describe('as an administrator', () => {
@@ -298,6 +319,16 @@ for (const theme of THEMES) {
         await expect(page.getByRole('region', { name: 'Groups' })).toBeVisible();
         await settle();
         await expectBaseline(page, `company-entry-phone-${theme}.png`);
+      });
+
+      // 0.32: an event of a group's calendar as a contributor reads it: the fields read-only with the reason, the subtasks with who added each.
+      test(`event for a contributor (phone, ${theme})`, async ({ page, open, settle }) => {
+        await sharedCalendars(page);
+        await open('/calendar');
+        await page.getByRole('button', { name: /Weekly support meeting/ }).click();
+        await expect(page.getByRole('dialog', { name: 'Event' }).getByRole('list', { name: 'Subtasks' })).toBeVisible();
+        await settle();
+        await expectBaseline(page, `event-contribute-phone-${theme}.png`);
       });
 
       // 0.29: the lock in a phone's hand, and the set-up the administrator requires.

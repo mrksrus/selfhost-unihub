@@ -4,7 +4,7 @@
 // reduced motion.
 import { test as base, expect, type Page } from '@playwright/test';
 export type { Page };
-import { createApiRouter, FIXED_NOW, type ApiRouter } from './fixtures.ts';
+import { createApiRouter, FIXED_NOW, SHARED_CALENDARS, SHARED_EVENTS, type ApiRouter } from './fixtures.ts';
 import { markBaselineUsed } from './used-baselines.mts';
 
 export type ThemeMode = 'dark' | 'light' | 'system';
@@ -114,6 +114,13 @@ export async function expectBaseline(page: Page, name: string) {
   // No hover state in a reference picture: the pointer leaves the page.
   await page.mouse.move(-1, -1);
   await expect(page).toHaveScreenshot(name);
+}
+
+/** Answers the calendar list and the events with the calendars others share with the synthetic person (0.32). */
+export async function sharedCalendars(page: Page) {
+  const answer = (body: unknown) => ({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
+  await page.route(url => url.pathname === '/api/calendar/calendars', route => route.fulfill(answer({ calendars: SHARED_CALENDARS })));
+  await page.route(url => url.pathname === '/api/calendar/events', route => route.fulfill(answer({ events: SHARED_EVENTS })));
 }
 
 export async function pointerIsCoarse(page: Page) {

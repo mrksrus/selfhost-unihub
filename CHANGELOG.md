@@ -6,6 +6,42 @@ Read the [upgrade guide](docs/UPGRADING.md) before updating an existing
 installation, and keep a consistent backup of the database, uploads, configuration and
 secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
+## 0.32.0
+
+### Added
+
+- **Share your calendars and task lists.** A calendar kept in UniHub has
+  Share in its settings (the gear beside it in the Calendar panel): give
+  people and groups one of five levels. "Sees busy times" shows only when
+  something is on, as "Busy"; "Can read" shows everything; "Can add
+  subtasks" also adds subtasks to events and tasks and changes only its
+  own; "Can edit" creates, changes, ticks and deletes; "Can manage" also
+  shares. An administrator shares with anyone, a member with the groups they
+  are in and the people in them. A calendar synced from a provider says
+  "Shared at its provider" instead.
+- **Calendars others share with you.** The Calendar panel lists them under
+  "Shared with me", "Groups" and "Organisation", with whose they are and
+  "Read-only", "Busy only" or "Archived" where that applies. Each one is
+  switched on or off and coloured for you alone, on every device. An event
+  you cannot change opens read-only and says why; where you can add
+  subtasks, they come first and each says who added it. Your reminders on an
+  event in someone else's calendar are your own.
+- **"Notify me of others' changes"** in a calendar's settings, for your own
+  UniHub calendars and those shared with you. It is off until you switch it
+  on.
+- **Shared task lists in ToDo.** Tasks of a list shared with you show with
+  the owner's name. Whoever can edit the list ticks its tasks; the order of
+  the tasks stays your own.
+- **A shared calendar's own bin.** The Calendar's Bin has a "Deleted from"
+  row for the calendars others share that you can edit: what anyone deleted
+  from one waits there, and everyone who can edit it restores it.
+
+### Changed
+
+- An event that exists moves only between calendars of one owner, so its
+  Calendar chooser lists those; a new event or task goes to one of your own
+  calendars or one you can edit.
+
 ## 0.31.0
 
 ### Added

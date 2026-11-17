@@ -78,6 +78,22 @@
       "sha256": "539250c1a7bc524e98b5088d149e484dc229f1f396307b16991fc609134b354c",
       "bytes": 128474
     },
+    "calendar-share-wide-dark.png": {
+      "sha256": "58f5dfd4ad50cb50d85c9a59eead80e484819e0c183b4fe9a2769cebd517fcbc",
+      "bytes": 127399
+    },
+    "calendar-share-wide-light.png": {
+      "sha256": "24e1959dd152de13bee076fc7f20a7bf239856c97947f51b7c6f6e900fc45e67",
+      "bytes": 134114
+    },
+    "calendar-shared-wide-dark.png": {
+      "sha256": "1e67a129b87689769a0bd81387321f681a0f739046756aef7402ba1ef4df7792",
+      "bytes": 104276
+    },
+    "calendar-shared-wide-light.png": {
+      "sha256": "5887397363dd63835e27bca6971b0eebe249704fa30166e16fc0f2e0ce5426d3",
+      "bytes": 105512
+    },
     "company-entry-phone-dark.png": {
       "sha256": "e26268da61f4eb330ca87e8006e99db1f5acd00919148f5809fdc68e2e544785",
       "bytes": 45367
@@ -133,6 +149,14 @@
     "devices-wide-light.png": {
       "sha256": "a2ba1fd9e8974a1c9b4d869c8c2d1dadf9a3909b1839f813aec6737ea9d6b058",
       "bytes": 115917
+    },
+    "event-contribute-phone-dark.png": {
+      "sha256": "de92abf0283cf1813cbbf40e274f5d95753f1f171589258fd6afdf9848dcd1b0",
+      "bytes": 47591
+    },
+    "event-contribute-phone-light.png": {
+      "sha256": "b50824ea31685778fbf5eea24f448142b07a40abc0fc6cb0211a652583458038",
+      "bytes": 50899
     },
     "group-policies-wide-dark.png": {
       "sha256": "f259160d2c5678f35108940e1f13313003c59fce75f4a3ceba727474e3f9106c",
@@ -1071,6 +1095,50 @@
         "person-wide-dark.png",
         "person-wide-light.png"
       ],
+      "removed": []
+    },
+    {
+      "date": "2026-11-17T12:22:03.791Z",
+      "reason": "0.32.0 screens I (P-29): the calendars others share and a calendar's share dialog (Wide), an event as a contributor reads it (Phone). New pictures only; no existing picture changed.",
+      "source": {
+        "commit": "d47603e9ffd2077067a7dc533eaa517ae35e9a1b",
+        "branch": "feat/0.32.0-p5-sharing-screens",
+        "dirty": true,
+        "digest": "861025be5c4958d5244aaa146081f97de643cc93e4b9968d66437afb692d3b26"
+      },
+      "render": {
+        "playwright": "1.64.0",
+        "browser": "chromium-headless-shell 156.0.8078.4",
+        "browserArgs": [
+          "--font-render-hinting=none",
+          "--disable-lcd-text",
+          "--force-color-profile=srgb",
+          "--disable-gpu",
+          "--disable-skia-runtime-opts",
+          "--num-raster-threads=1",
+          "--disable-partial-raster"
+        ],
+        "platform": "linux-x64",
+        "fonts": {
+          "@fontsource/inter": "5.3.0",
+          "@fontsource/jetbrains-mono": "5.3.0"
+        },
+        "fontconfig": "isolated",
+        "deviceScaleFactor": 1
+      },
+      "host": {
+        "node": "v26.12.1",
+        "ci": false
+      },
+      "added": [
+        "calendar-share-wide-dark.png",
+        "calendar-share-wide-light.png",
+        "calendar-shared-wide-dark.png",
+        "calendar-shared-wide-light.png",
+        "event-contribute-phone-dark.png",
+        "event-contribute-phone-light.png"
+      ],
+      "changed": [],
       "removed": []
     }
   ]

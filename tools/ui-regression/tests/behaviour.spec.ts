@@ -7,7 +7,7 @@ import type { Page } from '@playwright/test';
 import { POLICIES_EFFECTIVE_TWO_FACTOR, RICH_TASK, TASKS } from '../support/fixtures.ts';
 import { touchViolations } from '../support/geometry.ts';
 import { expectOnlyKnown, KNOWN_DEFECTS } from '../support/known-defects.ts';
-import { expect, pointerIsCoarse, test, THEMES, VIEWPORTS } from '../support/test.ts';
+import { expect, pointerIsCoarse, sharedCalendars, test, THEMES, VIEWPORTS } from '../support/test.ts';
 
 // Synthetic files for the composer's attachments.
 const SYNTHETIC_PDF = { name: 'quarterly-report.pdf', mimeType: 'application/pdf', buffer: Buffer.from('%PDF-1.4 synthetic') };
@@ -326,6 +326,28 @@ test.describe('P-11 touch targets are big enough and never overlap', () => {
     await expect(page.getByRole('region', { name: 'Groups' })).toBeVisible();
     await settle();
     expectOnlyKnown(await touchViolations(page), []);
+  });
+
+  test('Shared calendars: the panel, a calendar\'s settings, its share dialog and an event a contributor reads', async ({ page, open, settle }) => {
+    await sharedCalendars(page);
+    await open('/calendar');
+    await page.getByRole('button', { name: /calendars$/ }).first().click();
+    await expect(page.getByRole('region', { name: 'Shared with me' })).toBeVisible();
+    await settle();
+    expectOnlyKnown(await touchViolations(page, '[role="dialog"]'), [KNOWN_DEFECTS.calendarCheckboxes]);
+    await page.getByRole('button', { name: 'Settings for Personal' }).click();
+    await expect(page.getByRole('dialog', { name: 'Personal' })).toBeVisible();
+    await settle();
+    expectOnlyKnown(await touchViolations(page, '[role="dialog"]'), []);
+    await page.getByRole('dialog', { name: 'Personal' }).getByRole('button', { name: 'Share', exact: true }).click();
+    await expect(page.getByRole('list', { name: 'People and groups to add' })).toBeVisible();
+    await settle();
+    expectOnlyKnown(await touchViolations(page, '[role="dialog"]'), []);
+    await open('/calendar');
+    await page.getByRole('button', { name: /Weekly support meeting/ }).click();
+    await expect(page.getByRole('dialog', { name: 'Event' })).toBeVisible();
+    await settle();
+    expectOnlyKnown(await touchViolations(page, '[role="dialog"]'), []);
   });
 
   test('Contact editor', async ({ page, open, settle }) => {

@@ -497,6 +497,51 @@ const ADMIN_BOOKS = [
   adminBook(book('book-night', 'Night shift handover', 'Numbers the night shift needs', 'manage', [1, 2, 3]), null),
   adminBook(book('book-fair', 'Trade fair 2025', null, 'manage', [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]), 'user-alex', at('06-09T14:00:00.000Z')),
 ];
+// Calendars others share with the synthetic person (0.32): a colleague's at
+// edit and at free/busy, a group's at contribute, the organisation's (one
+// archived), and an own calendar with a pending offer. The reference screens
+// answer the calendar list and the events with these; every other screen
+// keeps the person's own three.
+const colleague = (id: 'user-alex' | 'user-blair') => { const { email, full_name } = PEOPLE.find(entry => entry.id === id)!; return { id, email, full_name }; };
+const reached = (id: string, name: string, color: string, permission: string, whose: object) => ({
+  ...calendar(id, name, color, false, { write_block: permission === 'edit' ? null : 'read_only', takes_undated_tasks: permission === 'edit', auto_todo_enabled: permission !== 'freebusy' }),
+  account_display_name: null, permission, owner_kind: 'user', owner: null, group: null, archived: false, offer: null,
+  view: { is_visible: true, color, notify_changes: false }, ...whose,
+});
+export const SHARED_CALENDARS = [
+  ...CALENDARS.map(entry => ({ ...entry, permission: 'manage', owner_kind: 'user', owner: null, group: null, archived: false,
+    offer: entry.id === 'cal-work' ? { to: colleague('user-blair'), by: null } : null, view: { is_visible: true, color: entry.color, notify_changes: entry.id === 'cal-personal' } })),
+  reached('cal-rota', 'Support rota', '#8b5cf6', 'edit', { user_id: 'user-blair', account_id: 'cal-acct-blair', owner: colleague('user-blair') }),
+  reached('cal-travel', 'Travel', '#ec4899', 'freebusy', { user_id: 'user-alex', account_id: 'cal-acct-alex', owner: colleague('user-alex') }),
+  reached('cal-meetings', 'Team meetings', '#22c55e', 'contribute', { user_id: null, account_id: null, owner_kind: 'group', group: { id: 'grp-support', name: 'Support' } }),
+  reached('cal-holidays', 'Company holidays', '#f97316', 'read', { user_id: null, account_id: null, owner_kind: 'organisation' }),
+  reached('cal-move', 'Office move 2025', '#64748b', 'read', { user_id: null, account_id: null, owner_kind: 'organisation', archived: true }),
+];
+const point = (id: string, title: string, done: boolean, position: number, by: { id: string; full_name: string | null }) =>
+  ({ ...subtask('ev-meeting', id, title, done, position), user_id: null, created_by: by.id, created_by_name: by.full_name });
+/** The group's weekly meeting: a contributor reads it and adds subtasks; each says who added it. */
+export const SHARED_MEETING = task('ev-meeting', {
+  user_id: null, calendar_id: 'cal-meetings', color: '#22c55e', title: 'Weekly support meeting', location: 'Room 2',
+  description: 'Bring what the team should decide. Alex keeps the notes.', start_time: at('06-15T15:00:00.000Z'), end_time: at('06-15T16:00:00.000Z'),
+  subtasks: [
+    point('pt-1', 'Rota for July', true, 0, colleague('user-alex')),
+    point('pt-2', 'New ticket categories', false, 1, colleague('user-blair')),
+    point('pt-3', 'Printer in room 2 keeps jamming', false, 2, USER),
+  ],
+});
+export const SHARED_EVENTS = [
+  ...TASKS.filter(entry => !entry.is_todo_only),
+  SHARED_MEETING,
+  task('ev-busy', { user_id: 'user-alex', calendar_id: 'cal-travel', color: '#ec4899', title: 'Busy', start_time: at('06-15T11:00:00.000Z'), end_time: at('06-15T12:30:00.000Z') }),
+  task('ev-shift', { user_id: 'user-blair', calendar_id: 'cal-rota', color: '#8b5cf6', title: 'Late shift: Blair', start_time: at('06-16T12:00:00.000Z'), end_time: at('06-16T20:00:00.000Z') }),
+  task('ev-holiday', { user_id: null, calendar_id: 'cal-holidays', color: '#f97316', title: 'Midsummer, office closed', all_day: true, start_time: at('06-19T00:00:00.000Z'), end_time: at('06-20T00:00:00.000Z') }),
+];
+const CALENDAR_SHARES = [
+  { principal: { kind: 'group', id: 'grp-support' }, name: 'Support', email: null, permission: 'contribute' },
+  { principal: { kind: 'user', id: 'user-alex' }, name: 'Alex Example', email: 'alex@example.com', permission: 'edit' },
+  { principal: { kind: 'everyone' }, name: 'Everyone', email: null, permission: 'freebusy' },
+];
+
 const bookOf = (url: URL) => BOOKS.find(entry => entry.id === decodeURIComponent(url.pathname.split('/')[3] ?? ''));
 const noBook: ApiReply = { status: 404, body: { error: 'Address book not found', code: 'BOOK_NOT_FOUND' } };
 const bookRoutes = (admin: boolean): Route[] => [
@@ -505,6 +550,13 @@ const bookRoutes = (admin: boolean): Route[] => [
   ['GET', /^\/address-books\/[^/]+\/shares$/, () => ok({ shares: BOOK_SHARES })],
   ['GET', /^\/address-books\/[^/]+\/share-candidates$/, () => ok({ people: PEOPLE.filter(person => ['user-blair', 'user-alex'].includes(person.id)).map(({ id, email, full_name }) => ({ id, email, full_name })),
     groups: GROUPS.map(({ id, name }) => ({ id, name })), everyone: admin })],
+  // A member's reach (0.32): their groups and the people in them, found by name or address as the server's search does.
+  ['GET', /^\/calendar\/calendars\/[^/]+\/shares$/, () => ok({ shares: CALENDAR_SHARES })],
+  ['GET', /^\/calendar\/calendars\/[^/]+\/share-candidates$/, url => {
+    const needle = (url.searchParams.get('q') ?? '').toLowerCase();
+    return ok({ people: PEOPLE.filter(person => ['user-blair', 'user-alex', 'user-katherine'].includes(person.id) && `${person.full_name} ${person.email}`.toLowerCase().includes(needle)).map(({ id, email, full_name }) => ({ id, email, full_name })),
+      groups: GROUPS.filter(group => group.id === 'grp-support' && group.name.toLowerCase().includes(needle)).map(({ id, name }) => ({ id, name })), everyone: admin });
+  }],
   ['GET', /^\/directory$/, () => ok({ entries: DIRECTORY })],
   ['GET', /^\/directory\/me$/, () => ok({ entry: DIRECTORY.find(entry => entry.user_id === USER.id) })],
   ['GET', /^\/admin\/users\/[^/]+\/directory$/, url => ok({ entry: DIRECTORY.find(entry => entry.user_id === url.pathname.split('/')[4]) })],

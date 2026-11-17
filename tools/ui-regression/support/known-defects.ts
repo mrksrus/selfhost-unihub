@@ -18,6 +18,11 @@ export const KNOWN_DEFECTS = {
       'button "sketch" tap area 57×20 px is under 40 px',
     ],
   },
+  calendarCheckboxes: {
+    id: 'UIR-3',
+    summary: 'Calendar panel: the plain checkbox of a calendar row is 16 px and has no tap area of its own; the label around it makes the 44 px row the target (P-11). In the released code before the check first opened the panel (0.32).',
+    matches: /^input "" tap area 16×16 px is under 40 px$/,
+  },
 } satisfies Record<string, KnownDefect>;
 
 /** Fails on any violation not covered by `known`, and on any `known` entry that no longer occurs. */

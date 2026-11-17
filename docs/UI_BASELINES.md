@@ -34,7 +34,7 @@ names, kernels and paths are not recorded.
 config and runs these checks against it in Chromium.
 
 **Reference screens.** Each screen is captured in Dark Default and Light Default,
-seventy-eight pictures in all, compared with zero tolerance:
+eighty-four pictures in all, compared with zero tolerance:
 
 | Picture | Viewport | Steps |
 | --- | --- | --- |
@@ -62,6 +62,9 @@ seventy-eight pictures in all, compared with zero tolerance:
 | `book-share-wide-*` | Wide | The book's share dialog: who has it (the creator "Manages it", a group that can edit, a person who can read), then the people and groups to add under the search with the level beside it. Since 0.31.0. |
 | `company-entry-phone-*` | Phone | Contacts → Company, an entry with a long name: job title and department, the groups as chips, phone, email and the note that it comes from the directory. Since 0.31.0. |
 | `shared-books-wide-*` | Wide | Server → Shared books as the owner: every book with its contacts and creator, one whose creator has left, and a deleted one with Restore. Since 0.31.0. |
+| `calendar-shared-wide-*` | Wide | Calendar as a person others share calendars with: the panel's "Shared with me", "Groups" and "Organisation" with whose each is and the marks "Busy only", "Read-only", "Archived" and a pending offer; the month with their events, a free/busy one as "Busy". Since 0.32.0. |
+| `calendar-share-wide-*` | Wide | A calendar's share dialog as a member: a group that can add subtasks, a person who can edit, Everyone at "Sees busy times" (an administrator's share, which the member can only lower or remove), then the people to add under the search with the level beside it and what the levels mean. Since 0.32.0. |
+| `event-contribute-phone-*` | Phone | An event of a group's calendar as a contributor reads it: the reason under the title, Subtasks first with who added each and the person's own changeable, then the fields read-only. Since 0.32.0. |
 
 **Behaviour checks.** These run against the same build and the same data.
 
@@ -72,7 +75,7 @@ seventy-eight pictures in all, compared with zero tolerance:
 | P-08, N-03, N-04 (partial) | Wide Mail: "Hide panel" removes the column, moves focus to the scope button and stores `unihub:panel:mail`. The fold survives a reload and a visit to Contacts. Contacts keeps its own panel. The scope button opens the sheet and Escape returns focus to it. "Keep panel open" restores the column and focuses its fold button. |
 | P-12, N-05 | Wide Mail: 45 Tab presses cover the rail, then the panel, then the page, in that order. Every stop shows a focus ring (outline or ring shadow) and is on screen. Ctrl+K opens search with its input focused, Escape closes it, and Tab continues afterwards. |
 | P-02, A-01 | With the app script held back, the first paint is already black (default) or the stored Light colour, even when the OS prefers the other mode. After start-up, `theme-color` equals the page colour. Settings switches Light (kept after reload), System (follows a live OS change both ways) and Dark (kept after reload against a light OS). |
-| P-11, M-10, T-02 | Phone, coarse pointer (asserted). On ToDo, the Mail list, the composer, Recordings, the Contacts list and detail, the contact editor, the merge review, Settings → Mail, Backup and restore and Bin: every control in view has a tap area of at least 40 px, counting its `tap-area` pseudo-element. No two neighbouring tap areas overlap; edges that touch along one CSS pixel or less count as touching, and the part of a tap area under the fixed bottom bar does not count (the person sees and taps the bar there). Every control is reachable by hit-testing once scrolled into view, so nothing stays under the bottom bar. Since 0.30.0 also Server → People, a person's page, a group with its Add people dialog (as an administrator) and the two-factor reminder bar. Since 0.31.0 also a shared book with its bin and share dialog, Company and one of its entries, and Server → Shared books. |
+| P-11, M-10, T-02 | Phone, coarse pointer (asserted). On ToDo, the Mail list, the composer, Recordings, the Contacts list and detail, the contact editor, the merge review, Settings → Mail, Backup and restore and Bin: every control in view has a tap area of at least 40 px, counting its `tap-area` pseudo-element. No two neighbouring tap areas overlap; edges that touch along one CSS pixel or less count as touching, and the part of a tap area under the fixed bottom bar does not count (the person sees and taps the bar there). Every control is reachable by hit-testing once scrolled into view, so nothing stays under the bottom bar. Since 0.30.0 also Server → People, a person's page, a group with its Add people dialog (as an administrator) and the two-factor reminder bar. Since 0.31.0 also a shared book with its bin and share dialog, Company and one of its entries, and Server → Shared books. Since 0.32.0 also the Calendar panel with the calendars others share, a calendar's settings and share dialog and an event as a contributor reads it (the dialogs only: the month's day buttons are a known gap of the Calendar page). |
 | P-15, P-26, B-11 | 412 × 560 and 450 × 600, as with the keyboard open in the Android app: the composer fills the screen from the very top, and after typing one line in a new message at least 240 px of the message editor is on screen, counting every clipping box around it and the toolbar pinned above the button bar, with the typed line in view. The header rows scroll away above the message when it gets focus; at full height the layout is the approved picture. |
 
 Every test also fails on an uncaught page error, on an `/api` request that has
@@ -81,7 +84,7 @@ font hosts.
 
 ### Known defects in the pinned code
 
-The checks found two violations in the pinned code. A remaining one is listed
+The checks found two violations in the pinned code and one more in 0.32.0. The remaining ones are listed
 in `tools/ui-regression/support/known-defects.ts` and matched exactly. A check
 fails on any new violation, and it also fails once a listed violation stops
 occurring. The fix then removes the entry and re-approves the affected pictures
@@ -98,6 +101,12 @@ in the same change.
   no 44 px tap area. Only the three exact existing size violations are waived:
   garden 60 × 20 px, ideas 50 × 20 px, sketch 57 × 20 px, each once. Overlap,
   coverage and any other size violation still fail.
+- **UIR-3 (P-11).** In the Calendar panel the plain checkbox of a calendar row
+  measures 16 px, with no tap area of its own; the label around it makes the
+  whole row (44 px on touch screens since 0.32.0) the target. Waived only for
+  the panel's check. The Calendar page has two more gaps the checks do not
+  open yet: the month's day buttons (28 px) and the reminder rows of the event
+  dialog (under 40 px tall).
 
 The light pre-paint colour in `public/theme-init.js` (`#f5f7fa`) differs by one channel
 step from the stylesheet's Light Default page colour (`rgb(246, 247, 248)`).
