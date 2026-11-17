@@ -317,6 +317,7 @@ object AppNotifications {
         val pending = PendingIntent.getActivity(context, 0, open, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
         val kind = payload.optString("kind")
         val channel = channelFor(kind)
+        if (AppLock.moduleOf(payload) == "calendar") Widgets.refreshSoon(context)
         // The app lock covers this notification's module and the app is
         // locked, or would lock if opened now: only the kind's generic text,
         // whatever the server sent (it may not know the phone locked yet).

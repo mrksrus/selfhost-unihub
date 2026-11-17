@@ -1055,6 +1055,7 @@ class MainActivity : Activity() {
         FileActions.pruneLater(this)
         ContactsSync.renewSession(this)
         if (origin != null) NotificationService.startIfWanted(this)
+        Widgets.refreshSoon(this)
     }
 
     override fun onPause() {
@@ -1069,6 +1070,8 @@ class MainActivity : Activity() {
         webView?.onPause()
         CookieManager.getInstance().flush()
         ContactsSync.requestSync(this)
+        // Signed out or another person signed in: the widgets follow before the home screen shows.
+        Widgets.refreshSoon(this)
     }
 
     override fun onStop() {

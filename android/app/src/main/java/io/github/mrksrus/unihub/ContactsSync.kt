@@ -332,11 +332,12 @@ object ContactsSync {
     }
 
     /**
-     * The features the server lists (`contacts-vcard`, `contacts-books`). A
+     * The features the server lists (`contacts-vcard`, `contacts-books`,
+     * `calendar-widgets` for Widgets). A
      * server without GET /api/version is an old one; any other failure
      * postpones the sync, so a passing error never switches the mode.
      */
-    private fun features(context: Context, origin: String, session: String, current: Current): Set<String> {
+    fun features(context: Context, origin: String, session: String, current: Current): Set<String> {
         val answer = get(context, origin, "/api/version", session, current)
         if (answer.status == 404) return emptySet()
         answer.expectOk()

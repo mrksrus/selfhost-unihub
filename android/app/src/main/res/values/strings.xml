@@ -84,4 +84,24 @@
     <string name="notification_locked_calendar">New Calendar Event</string>
     <string name="notification_locked_todo">New ToDo</string>
     <string name="notification_locked_reminder">Reminder</string>
+    <!-- Home-screen widgets (Widgets.kt). -->
+    <string name="widget_agenda_name">Calendar</string>
+    <string name="widget_tasks_name">ToDo</string>
+    <string name="widget_agenda_description">What is coming in the next 14 days</string>
+    <string name="widget_tasks_description">Your open tasks, ticked off from the home screen</string>
+    <string name="widget_loading">Loading…</string>
+    <string name="widget_agenda_empty">Nothing in the next 14 days</string>
+    <string name="widget_tasks_empty">No open tasks</string>
+    <string name="widget_signed_out">Sign in to UniHub to see this</string>
+    <string name="widget_server_update">The server needs an update for widgets</string>
+    <string name="widget_module_off">Calendar is turned off</string>
+    <string name="widget_two_factor">Set up two-factor sign-in to see this</string>
+    <string name="widget_app_lock">Turn on the app lock to see this</string>
+    <string name="widget_refused">UniHub cannot show this now</string>
+    <string name="widget_open">Open UniHub</string>
+    <string name="widget_task_hidden">Task</string>
+    <string name="widget_overdue">Overdue · %1$s</string>
+    <string name="widget_tick">Done</string>
+    <string name="widget_tick_label">Mark done: %1$s</string>
+    <string name="widget_tick_failed">Could not mark the task done. Check your connection.</string>
 </resources>

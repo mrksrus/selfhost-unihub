@@ -401,6 +401,42 @@ page until it has shown its lock screen, and asks the phone.
 - **Apps before 0.29** have no native lock: the page offers them the UniHub PIN
   and says that an update unlocks with the fingerprint.
 
+## Home-screen widgets
+
+From 0.32.0 the app has two widgets: **Calendar** (the next 14 days) and
+**ToDo** (the open tasks, with a tick). Both read one answer,
+`GET /api/widgets` (`api/src/contracts/widgets.ts`), and only from a server
+that lists `calendar-widgets` in its [handshake](#version-handshake); an
+older server gets "The server needs an update for widgets". The app keeps
+that one answer app-private (`Widgets.kt`), together with the server and a
+hash of the session it came from.
+
+- **What they show** is the server's decision. Calendar lists the events of
+  every calendar the person has on (their own, those shared with them, group
+  and organisation calendars), at most 50, each date of a repeating event as
+  its own row; a free/busy calendar shows "Busy". ToDo lists at most 50 open
+  tasks of the lists the person has on, in their own order, with the date in
+  words and an overdue mark; a repeating task appears once among those not
+  yet due. The titles follow the person's notification detail and the
+  administrator's least detail: at "none" events read "Event" and tasks have
+  no title and no tick. The app lock does not hide the widgets; the
+  notification detail is the setting for that.
+- **The tick** marks a task done through the app's own session
+  (`PUT /api/calendar/events/:id/todo-status`), only where the person may
+  edit the list; it works while the app is locked. It is sent at once or not
+  at all: without a connection the app says so and the task stays.
+- **Refresh**: every 30 minutes (a `JobScheduler` job while a widget is
+  placed), when the app comes to the front or goes to the back, after a
+  tick, and when a calendar or ToDo notification arrives. Without a
+  connection the last answer stays.
+- **Emptied** before anything is fetched when the person signs out, another
+  person signs in or the app changes server; and with one line and "Open
+  UniHub" when the server refuses the answer: Calendar turned off
+  (`MODULE_DISABLED`), two-factor sign-in due (`TWO_FACTOR_REQUIRED`) or the
+  app lock required (`APP_LOCK_REQUIRED`).
+- Android 10 and 11 use the same list service as newer versions
+  (`RemoteViewsService`).
+
 ## Version handshake
 
 `GET /api/version` is public, so the app can recognize a server before signing
