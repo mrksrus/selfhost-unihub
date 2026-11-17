@@ -578,7 +578,14 @@ async function importBackupForUser(userId: string, backup: ArchiveEnvelope, {
         await checkRestoreCancelled();
         const row = overwriteUserId(event, userId);
         const targetCalendarId = await resolveOwnedReference(connection, userId, 'calendar_calendars', row.calendar_id, calendarIdMap, { nullable: true });
-        const existingEventId = await findExistingCalendarEventForRestore(connection, row, userId, targetCalendarId, claimedCalendarEventIds);
+        const seriesId = calendarSeriesIdMap.get(String(row.series_id)) ?? null;
+        const recurrenceId = seriesId ? String(row.recurrence_id ?? '').slice(0, 64) : null;
+        let existingEventId = await findExistingCalendarEventForRestore(connection, row, userId, targetCalendarId, claimedCalendarEventIds);
+        // A date nothing else matched is the live date on its key: a series holds each key once.
+        if (!existingEventId && seriesId) {
+          const [[onKey]] = await connection.execute<RowDataPacket[]>('SELECT id FROM calendar_events WHERE series_id = ? AND recurrence_id = ? AND user_id = ?', [seriesId, recurrenceId, userId]);
+          existingEventId = onKey?.id ?? null;
+        }
         const targetEventId = chooseTargetId(row.id, existingEventId, conflictMode);
         calendarEventIdMap.set(row.id, targetEventId);
         claimedCalendarEventIds.add(targetEventId);
@@ -587,11 +594,10 @@ async function importBackupForUser(userId: string, backup: ArchiveEnvelope, {
         const eventIdentity = await restoredIdentity(connection, 'calendar_events', userId, row, !!existingEventId && targetEventId !== existingEventId);
         // created_at and the order key too (0.27): a task without a date is
         // ordered by when it was made, and ties by the archived task's key.
-        const seriesId = calendarSeriesIdMap.get(String(row.series_id)) ?? null;
         await writeOwnedRow(connection, userId, 'calendar_events',
           ['id', 'user_id', 'calendar_id', 'title', 'description', 'start_time', 'end_time', 'all_day', 'location', 'color', 'recurrence', 'reminder_minutes', 'reminders', 'todo_status', 'is_todo_only', 'done_at', 'source_email_id', 'source_email_json', 'created_at', 'order_key', 'uid', 'series_id', 'recurrence_id'],
           [targetEventId, row.user_id, targetCalendarId, row.title || 'Untitled Event', row.description ?? null, normalizeMysqlDateTime(row.start_time), normalizeMysqlDateTime(row.end_time), row.all_day ? 1 : 0, row.location || null, row.color || '#22c55e', row.recurrence || null, row.reminder_minutes ?? null, row.reminders ? (typeof row.reminders === 'string' ? row.reminders : JSON.stringify(row.reminders)) : null, row.todo_status || null, row.is_todo_only ? 1 : 0, normalizeMysqlDateTime(row.done_at), sourceEmailId(row.source_email_id), sourceEmailJson(row.source_email_json), normalizeMysqlDateTime(row.created_at, new Date()), restoredOrderKey(row, targetEventId), eventIdentity,
-            seriesId, seriesId ? String(row.recurrence_id ?? '').slice(0, 64) : null],
+            seriesId, recurrenceId],
           ['calendar_id', 'title', 'description', 'start_time', 'end_time', 'all_day', 'location', 'color', 'recurrence', 'reminder_minutes', 'reminders', 'todo_status', 'is_todo_only', 'done_at', 'source_email_id', 'source_email_json', 'created_at', 'order_key', 'series_id', 'recurrence_id']
         );
         writtenCalendarEvents.push({ row, targetId: targetEventId });

@@ -238,4 +238,18 @@ test('repeating local events: dates in place, one or all, the bin, levels, remin
   await call(blair, 'POST', `/api/bin/${calendarItem.id}/restore`, {});
   assert.deepEqual((await rows('SELECT id, recurrence_id FROM calendar_events WHERE series_id = ? ORDER BY id', [daily.series_key])).map(row => [row.id, row.recurrence_id]), before);
   assert.deepEqual((await datesOf(seriesId)).map(date => date.id), [d1]);
+
+  // ── "Keep existing" after dates left the rule, came back and were renamed: the dates there stay, none twice ──
+  const review = (await call(blair, 'POST', '/api/calendar/events', { title: 'Review', start_time: at(monday + 1, 8), end_time: at(monday + 1, 9), calendar_id: team.id,
+    repeat: { freq: 'DAILY', count: 4 }, time_zone: 'UTC' })).event;
+  const laterZip = path.join(scratch, 'later.zip');
+  await writeZip(await backup.buildBackupArchiveEntriesForUser(ids.member, 'calendar', { workDirectory: scratch }), laterZip);
+  const later = await backup.backupFromZipFile(laterZip);
+  await call(blair, 'PUT', ev(review.id), { repeat: { freq: 'DAILY', count: 2 } });
+  await call(blair, 'PUT', ev(review.id), { repeat: { freq: 'DAILY', count: 4 } });
+  await call(blair, 'PUT', ev(review.id), { title: 'Reviewed', scope: 'series' });
+  const reviewDates = (await datesOf(review.series_key)).map(date => [date.id, date.title]);
+  const kept = await backup.importBackupForUser(ids.member, later.backup, { mode: 'apply', conflict_mode: 'keep_existing', fileSourcesByPath: later.fileSourcesByPath });
+  assert.equal(kept.valid, true, (kept as FixtureValue).errors?.join('\n'));
+  assert.deepEqual((await datesOf(review.series_key)).map(date => [date.id, date.title]), reviewDates);
 });
