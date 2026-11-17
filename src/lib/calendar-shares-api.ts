@@ -11,7 +11,11 @@ import type {
   AdminCalendarsResponse, CalendarShare, CalendarShareCandidatesResponse, CalendarSharesResponse, CalendarView, CalendarViewRequest, CalendarViewResponse,
   DeleteSharedCalendarResponse, SetCalendarShareRequest, SharedCalendarInput, SharedCalendarResponse, SharedCalendarSummary, SharedCalendarUpdate,
 } from '../../api/src/contracts/calendar-shares';
+import type {
+  AdminHandOverRequest, AdminHandOverResponse, ArchiveCalendarRequest, ArchiveCalendarResponse, HandOverRequest, HandOverResponse,
+} from '../../api/src/contracts/calendar-ownership';
 
+export type { SharedCalendarRef } from '../../api/src/contracts/calendar-ownership';
 export type {
   CalendarAccessFields, CalendarOffer, CalendarOwnerKind, CalendarPermission, CalendarShare, CalendarView, PersonRef, SetCalendarShareRequest,
   SharedCalendarInput, SharedCalendarSummary, SharedCalendarUpdate, SubtaskAuthorFields,
@@ -51,6 +55,21 @@ export const calendarSharesApi = {
   // Server › Calendars.
   adminList: async (signal?: AbortSignal): Promise<SharedCalendarSummary[]> => required(unwrap(await api.get<AdminCalendarsResponse>('/admin/calendars', { signal })), 'calendars').calendars,
   adminRestore: async (id: string) => required(unwrap(await api.post<SharedCalendarResponse>(`/admin/calendars/${encodeURIComponent(id)}/restore`, {})), 'calendar').calendar,
+  /** At once, with the administrator's password: to a person's id, to 'organisation', or to 'bin' (with its events into its owner's bin). */
+  adminHandOver: async (id: string, to: string, currentPassword: string) => {
+    unwrap(await api.post<AdminHandOverResponse>(`/admin/calendars/${encodeURIComponent(id)}/hand-over`, { to, current_password: currentPassword } satisfies AdminHandOverRequest));
+  },
+  /** Archived, a calendar is read-only for everyone, its owner too. */
+  adminArchive: async (id: string, archived: boolean, currentPassword: string) => {
+    unwrap(await api.put<ArchiveCalendarResponse>(`/admin/calendars/${encodeURIComponent(id)}/archive`, { archived, current_password: currentPassword } satisfies ArchiveCalendarRequest));
+  },
+
+  // A calendar's owner (contracts/calendar-ownership.ts).
+  /** Offers a person's calendar to someone (the pending offer); a group manager's `now` hands it over at once (null). */
+  handOver: async (id: string, request: HandOverRequest) => unwrap(await api.post<HandOverResponse>(calendarPath(id, '/hand-over'), request))?.offer ?? null,
+  acceptOffer: async (id: string) => { unwrap(await api.post(calendarPath(id, '/hand-over/accept'), {})); },
+  /** Whoever offered withdraws; the person it was offered to declines. */
+  withdrawOffer: async (id: string) => { unwrap(await api.delete(calendarPath(id, '/hand-over'))); },
 };
 
 export const calendarSharesQueryOptions = (id: string) => queryOptions({

@@ -1,4 +1,4 @@
-import { Archive, ArchiveRestore, Bell, BookUser, CloudOff, HardDriveDownload, LayoutGrid, ListFilter, Lock, Mail, Palette, Server, Shield, ShieldCheck, SlidersHorizontal, Trash2, UserRound, Users, UsersRound } from 'lucide-react';
+import { Archive, ArchiveRestore, Bell, BookUser, CalendarDays, CloudOff, HardDriveDownload, LayoutGrid, ListFilter, Lock, Mail, Palette, Server, Shield, ShieldCheck, SlidersHorizontal, Trash2, UserRound, Users, UsersRound } from 'lucide-react';
 import type { ModuleId } from '@/lib/modules';
 import type { Permission } from '@/lib/permissions';
 
@@ -32,6 +32,7 @@ export const SERVER_PAGES: { id: string; label: string; href: string; icon: type
   { id: 'admin-users', label: 'People', href: '/admin/users', icon: Users, permission: 'users.read' },
   { id: 'admin-groups', label: 'Groups', href: '/admin/groups', icon: UsersRound, permission: 'users.read' },
   { id: 'admin-address-books', label: 'Shared books', href: '/admin/address-books', icon: BookUser, permission: 'contacts.books.manage' },
+  { id: 'admin-calendars', label: 'Calendars', href: '/admin/calendars', icon: CalendarDays, permission: 'calendars.manage' },
 ];
 /** "Your groups", for a person who manages one. */
 export const MY_GROUPS_PAGE = { id: 'groups', label: 'Your groups', href: '/groups', icon: UsersRound };

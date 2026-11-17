@@ -13,8 +13,13 @@ import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
 import { buttonVariants } from '@/components/ui/button-variants';
-import { useSetCalendarView } from '@/hooks/use-calendar-shares';
+import { Link } from 'react-router-dom';
+import { useAuth } from '@/contexts/useAuth';
+import { useCalendarOffer, useSetCalendarView } from '@/hooks/use-calendar-shares';
+import { useMyGroups } from '@/hooks/use-organisation';
+import { can } from '@/lib/permissions';
 import { CalendarShareDialog } from '@/components/calendar/CalendarShareDialog';
+import { HandOverDialog } from '@/components/calendar/HandOverDialog';
 import { atLeast, isReached, levelSentence, ownerName } from '@/components/calendar/calendar-access';
 
 const providerOptions: { value: CalendarProvider; label: string; description: string }[] = [
@@ -147,6 +152,37 @@ export function AddCalendarDialog({ accountId, onClose, data }: { accountId: str
 }
 
 /**
+ * Whose a UniHub calendar is, in its settings. A person's calendar changes
+ * hands here: its owner offers it, and so does a manager of a group it is
+ * shared with (the server decides which calendars); a pending offer is
+ * withdrawn here. A group's or the organisation's calendar points to where
+ * it is renamed and deleted.
+ */
+function CalendarOwnership({ calendar }: { calendar: CalendarCalendar }) {
+  const { user } = useAuth();
+  const [handing, setHanding] = useState(false);
+  const offers = useCalendarOffer();
+  const managed = (useMyGroups().data ?? []).filter(group => group.role === 'manager');
+  const reached = isReached(calendar);
+  const offer = calendar.offer && calendar.offer.to.id !== user?.id ? calendar.offer : null;
+  const handsOver = calendar.owner_kind === 'user' && !calendar.archived && !calendar.offer && (reached ? managed.length > 0 && atLeast(calendar, 'read') : true);
+  const managedAt = !reached || calendar.owner_kind === 'user' || !atLeast(calendar, 'manage') ? null
+    : can(user, 'calendars.manage') ? { to: '/admin/calendars', name: 'Server › Calendars' }
+    : managed.some(group => group.id === calendar.group?.id) ? { to: `/groups/${encodeURIComponent(calendar.group!.id)}`, name: `the page of ${calendar.group!.name}` } : null;
+  return <>
+    {(offer || handsOver) && <div className="flex min-h-9 items-center justify-between gap-4 text-sm">
+      <span>{offer ? `Offered to ${offer.to.full_name || offer.to.email}` : 'Owner'}</span>
+      {offer ? <Button variant="outline" size="sm" disabled={offers.end.isPending} onClick={() => offers.end.mutate({ id: calendar.id, withdrawn: true })}>Withdraw offer</Button>
+        : <Button variant="outline" size="sm" onClick={() => setHanding(true)}>Hand over…</Button>}
+    </div>}
+    {managedAt && <p className="text-sm text-muted-foreground">
+      Rename it, change its color for everyone or delete it on <Link to={managedAt.to} className="underline underline-offset-2 hover:text-foreground">{managedAt.name}</Link>.
+    </p>}
+    {handing && <HandOverDialog calendar={calendar} onClose={() => setHanding(false)} />}
+  </>;
+}
+
+/**
  * One calendar's settings. The person's own: colour, ToDo, sharing and
  * removal. One they reach: what they may do, their own colour for it, and
  * sharing for those who manage it. Notifications of other people's changes
@@ -197,12 +233,13 @@ export function CalendarSettingsDialog({ calendar, onClose, data }: { calendar: 
           </div>}
           {current.permission && (remote || atLeast(current, 'manage')) && <div className="flex min-h-9 items-center justify-between gap-4 text-sm">
             <span>Sharing</span>
-            {remote ? <span className="text-right text-muted-foreground">Shared at its provider</span>
+            {remote ? <span className="text-right text-muted-foreground">{account?.provider === 'ics' ? 'Read-only, from its address' : 'Shared at its provider'}</span>
               : <Button variant="outline" size="sm" onClick={() => setSharing(true)}>Share</Button>}
           </div>}
+          {!remote && <CalendarOwnership calendar={current} />}
         </div>}
         <DialogFooter className="gap-2 sm:gap-0">
-          {!remote && !reached && <Button variant="ghost" className="mr-auto text-destructive hover:text-destructive" onClick={() => setConfirmDelete(true)}>Delete calendar</Button>}
+          {!remote && !reached && !current?.archived && <Button variant="ghost" className="mr-auto text-destructive hover:text-destructive" onClick={() => setConfirmDelete(true)}>Delete calendar</Button>}
           <Button onClick={onClose}>Done</Button>
         </DialogFooter>
       </DialogContent>

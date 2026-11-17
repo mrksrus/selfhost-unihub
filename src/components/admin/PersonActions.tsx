@@ -9,9 +9,12 @@ import {
   adminUserQueryKeys, createSetupLink, deleteAdminUser, fetchAdminUserAccounts, resetUserTwoFactor, revokeSetupLink, setUserActive, setUserPassword, setUserRole, transferOwnership,
   type Person, type SetupLink,
 } from '@/lib/admin-api';
+import { invalidateCalendarQueries } from '@/lib/calendar-api';
+import { calendarSharesApi } from '@/lib/calendar-shares-api';
 import { can } from '@/lib/permissions';
 import { PasswordConfirmDialog } from '@/components/admin/PasswordConfirmDialog';
 import { SetupLinkDialog } from '@/components/admin/SetupLink';
+import { NewOwnerSelect } from '@/components/calendar/SharedCalendarActions';
 import { personName, personTarget } from '@/components/admin/person-words';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -23,7 +26,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 // administrator's own password (useSecretMutation keeps it for the request
 // only) and names the person in the dialog. A dialog has a generation: an
 // answer closes only the dialog it was sent from, never one opened since for
-// someone else.
+// someone else. Before a person is deactivated or deleted, each calendar they
+// share gets a choice, carried out first through the administrator's
+// hand-over of that calendar.
 
 export type PersonAction = 'role' | 'password' | 'reset-2fa' | 'deactivate' | 'delete' | 'setup-link' | 'transfer';
 
@@ -71,14 +76,17 @@ export function usePersonActions({ people = [], onDeleted }: { people?: readonly
   const [link, setLink] = useState<{ link: SetupLink; name: string } | null>(null);
   const [newPassword, setNewPassword] = useState('');
   const [heir, setHeir] = useState('');
+  // What happens to each shared calendar of a person who leaves: 'leave', 'organisation', 'bin' or a person's id.
+  const [fates, setFates] = useState<Record<string, string>>({});
   const generations = useRef(0);
-  const open = (action: PersonAction, person: Person) => { setNewPassword(''); setHeir(''); setDialog({ action, person, generation: ++generations.current }); };
+  const open = (action: PersonAction, person: Person) => { setNewPassword(''); setHeir(''); setFates({}); setDialog({ action, person, generation: ++generations.current }); };
   const close = (generation: number) => setDialog(current => (current?.generation === generation ? null : current));
   const refresh = () => { void invalidateOrganisation(client); };
 
-  type Run = { action: PersonAction; person: Person; generation: number; password: string; newPassword: string; heir: string };
+  type Run = { action: PersonAction; person: Person; generation: number; password: string; newPassword: string; heir: string; handOvers: [calendarId: string, to: string][] };
   const run = useSecretMutation({
-    mutationFn: async ({ action, person, password, newPassword: next, heir: to }: Run): Promise<SetupLink | void> => {
+    mutationFn: async ({ action, person, password, newPassword: next, heir: to, handOvers }: Run): Promise<SetupLink | void> => {
+      for (const [calendarId, newOwner] of handOvers) await calendarSharesApi.adminHandOver(calendarId, newOwner, password);
       if (action === 'role') return setUserRole(person.id, person.role === 'admin' ? 'user' : 'admin', password);
       if (action === 'password') return setUserPassword(person.id, next, password);
       if (action === 'reset-2fa') return resetUserTwoFactor(person.id, password);
@@ -88,8 +96,9 @@ export function usePersonActions({ people = [], onDeleted }: { people?: readonly
       return createSetupLink(person.id, password);
     },
     // Reports on the person the request was sent for; the dialog may be open for someone else by now.
-    onSuccess: (answer, { action, person, generation }) => {
+    onSuccess: (answer, { action, person, generation, handOvers }) => {
       refresh();
+      if (handOvers.length) void invalidateCalendarQueries(client);
       close(generation);
       const name = personName(person);
       if (action === 'setup-link' && answer) { setLink({ link: answer, name }); return; }
@@ -104,12 +113,13 @@ export function usePersonActions({ people = [], onDeleted }: { people?: readonly
         'setup-link': { title: 'Setup link created' },
       }[action]);
     },
-    onError: (error: Error, { action, person }) => toast({
+    // A calendar handed over before the refusal stays handed over; the dialog lists what is left.
+    onError: (error: Error, { action, person }) => { refresh(); toast({
       title: {
         role: 'Could not change the role', password: 'Could not set the password', 'reset-2fa': `Could not reset two-factor authentication for ${person.email}`,
         deactivate: 'Could not deactivate the account', delete: 'Could not delete the person', transfer: 'Could not hand over ownership', 'setup-link': 'Could not create a setup link',
       }[action], description: error.message, variant: 'destructive',
-    }),
+    }); },
   });
   // Activating and revoking a link need no password: neither opens anything that was closed for a reason of security.
   const activate = useSessionMutation({
@@ -127,7 +137,13 @@ export function usePersonActions({ people = [], onDeleted }: { people?: readonly
   const email = person?.email ?? '';
   // The shared address books the person manages, named before they are deactivated or deleted.
   const leaving = dialog?.action === 'deactivate' || dialog?.action === 'delete' ? dialog.person.id : '';
-  const managedBooks = useQuery({ queryKey: adminUserQueryKeys.accounts(leaving), queryFn: ({ signal }) => fetchAdminUserAccounts(leaving, signal), enabled: !!leaving && can(user, 'users.manage') }).data?.managed_books ?? [];
+  const leavingWith = useQuery({ queryKey: adminUserQueryKeys.accounts(leaving), queryFn: ({ signal }) => fetchAdminUserAccounts(leaving, signal), enabled: !!leaving && can(user, 'users.manage') }).data;
+  const managedBooks = leavingWith?.managed_books ?? [];
+  // Their calendars shared with someone. Deactivating leaves one as it is unless told otherwise; deleting takes it along unless it goes to the organisation (the default) or a colleague.
+  const sharedCalendars = can(user, 'calendars.manage') ? leavingWith?.shared_calendars ?? [] : [];
+  const deleting = dialog?.action === 'delete';
+  const fateOf = (calendarId: string) => fates[calendarId] ?? (deleting ? 'organisation' : 'leave');
+  const handOvers = sharedCalendars.map(calendar => [calendar.id, fateOf(calendar.id)] as [string, string]).filter(([, to]) => to !== 'leave' && !(deleting && to === 'bin'));
   // The server hands ownership only to an administrator who can sign in.
   const admins = people.filter(entry => entry.role === 'admin' && entry.status === 'active');
   const copy: Record<PersonAction, { title: string; description: ReactNode; action: string; destructive?: boolean }> = {
@@ -148,13 +164,31 @@ export function usePersonActions({ people = [], onDeleted }: { people?: readonly
     <>
       <PasswordConfirmDialog open={!!dialog} onClose={() => setDialog(null)} title={shown?.title ?? ''} description={shown?.description ?? ''} actionLabel={shown?.action ?? ''}
         target={person && dialog?.action !== 'transfer' ? personTarget(person) : undefined} destructive={shown?.destructive} pending={run.isPending} confirmDisabled={incomplete}
-        onConfirm={password => { if (dialog) run.mutate({ ...dialog, password, newPassword, heir }); }}>
+        onConfirm={password => { if (dialog) run.mutate({ ...dialog, password, newPassword, heir, handOvers: leaving ? handOvers : [] }); }}>
         {!!leaving && managedBooks.length > 0 && (
           <div className="text-sm" data-testid="managed-books">
             <p className="font-medium">Shared address books they manage</p>
             <ul className="mt-1 list-disc pl-5 text-muted-foreground">{managedBooks.map(book => <li key={book.id} className="break-words">{book.name}</li>)}</ul>
             <p className="mt-1 text-muted-foreground">They stay; administrators keep managing them.</p>
           </div>
+        )}
+        {!!leaving && sharedCalendars.length > 0 && (
+          <fieldset className="space-y-3 text-sm" data-testid="shared-calendars">
+            <legend className="font-medium">Calendars they share</legend>
+            <p className="text-muted-foreground">
+              {deleting ? 'Choose what happens to each. A calendar deleted with the person is gone for good, for everyone it is shared with.'
+                : 'Choose what happens to each. Left as it is, a calendar keeps working for everyone it is shared with while the person is away.'}
+            </p>
+            {sharedCalendars.map(calendar => (
+              <div key={calendar.id} className="space-y-1.5">
+                <Label htmlFor={`calendar-fate-${calendar.id}`} className="break-words">
+                  {calendar.name} <span className="font-normal text-muted-foreground">({calendar.share_count === 1 ? '1 share' : `${calendar.share_count} shares`}, {calendar.event_count === 1 ? '1 event' : `${calendar.event_count} events`})</span>
+                </Label>
+                <NewOwnerSelect id={`calendar-fate-${calendar.id}`} value={fateOf(calendar.id)} onChange={to => setFates(prev => ({ ...prev, [calendar.id]: to }))} except={leaving}
+                  first={deleting ? [] : [['leave', 'Leave it as it is']]} last={[['bin', deleting ? 'Delete it with the person' : 'Delete it to their bin']]} />
+              </div>
+            ))}
+          </fieldset>
         )}
         {dialog?.action === 'password' && (
           <div className="space-y-2">

@@ -74,6 +74,25 @@ export function useSetCalendarView() {
   });
 }
 
+/** The answers to a pending offer of a calendar: its recipient accepts or declines, whoever offered withdraws. */
+export function useCalendarOffer() {
+  const client = useQueryClient();
+  const { toast } = useToast();
+  const settled = (title: string, description?: string) => { void invalidateCalendarQueries(client); toast({ title, description }); };
+  const onError = (error: Error) => { void invalidateCalendarQueries(client); toast({ title: 'Could not answer the offer', description: error.message, variant: 'destructive' }); };
+  const accept = useSessionMutation({
+    mutationFn: ({ id }: { id: string; name: string }) => calendarSharesApi.acceptOffer(id),
+    onSuccess: (_answer, { name }) => settled(`${name} is your calendar now`, 'Its former owner can still edit it. You decide who it is shared with.'),
+    onError,
+  });
+  const end = useSessionMutation({
+    mutationFn: ({ id }: { id: string; withdrawn?: boolean }) => calendarSharesApi.withdrawOffer(id),
+    onSuccess: (_answer, { withdrawn }) => settled(withdrawn ? 'Offer withdrawn' : 'Offer declined', 'The calendar stays with its owner.'),
+    onError,
+  });
+  return { accept, end };
+}
+
 /** A calendar's Deleted view, for those who may edit it. */
 export function useCalendarBin(calendarId: string | undefined, edits: boolean) {
   const { online } = useCalendarOn();

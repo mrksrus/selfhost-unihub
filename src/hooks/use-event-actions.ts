@@ -38,10 +38,10 @@ export function useEventActions() {
     // A changed series is expanded again; its occurrences get new ids. A
     // changed calendar is a move: a server copy not yet confirmed ('creating')
     // finishes in the background and the event stays where it was meanwhile.
-    onSuccess: ({ replaced, pending, sourceKept }) => {
+    onSuccess: ({ replaced, pending, sourceKept }, { scope: which }) => {
       refresh();
       if (pending === 'creating') toast({ title: 'Moving…', description: 'The calendar server has not confirmed yet. UniHub finishes this in the background.' });
-      else toast({ title: replaced ? 'Series updated' : 'Event updated',
+      else toast({ title: replaced || which === 'series' ? 'Series updated' : 'Event updated',
         ...(sourceKept ? { description: 'Its old copy was changed in another app meanwhile, so it stays in the old calendar too.' } : {}) });
     },
     onError: failed('Could not update the event'),

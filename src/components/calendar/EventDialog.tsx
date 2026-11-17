@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import { format } from 'date-fns';
 import { Loader2, Repeat } from 'lucide-react';
 import {
-  REMINDER_OPTIONS, isRemoteCalendarAccount, localDatetimeToIso, toDatetimeLocalValue,
+  REMINDER_OPTIONS, calendarApi, isRemoteCalendarAccount, localDatetimeToIso, toDatetimeLocalValue,
   type CalendarAccount, type CalendarCalendar, type CalendarEvent, type RecurrenceScope,
 } from '@/lib/calendar-api';
 import type { EventActions } from '@/hooks/use-event-actions';
@@ -26,13 +26,16 @@ import { ListChooser } from '@/components/todo/ListChooser';
 import { Subtasks } from '@/components/todo/TaskRow';
 import { useTaskActions } from '@/hooks/use-task-actions';
 import { atLeast, isReached, readOnlyReason, sameOwner } from '@/components/calendar/calendar-access';
+import { RepeatField } from '@/components/calendar/RepeatField';
+import { followStart, isRepeating, sameRule, type RepeatRule } from '@/components/calendar/repeat';
 
 /** What the dialog shows: a new event (optionally on a day) or an existing one. */
 export type EventDialogTarget = { kind: 'new'; date?: Date } | { kind: 'edit'; event: CalendarEvent } | null;
 
-type PendingScope = { kind: 'update' | 'delete'; event: CalendarEvent; recurring: boolean };
+/** A question before a repeating event changes: this date or all, or (stop) the end of a local series. */
+type PendingScope = { kind: 'update' | 'delete' | 'stop'; event: CalendarEvent; recurring: boolean };
 
-const emptyForm = { calendar_id: '', title: '', description: '', start_time: '', end_time: '', all_day: false, location: '', color: '#3b82f6', reminders: [0] as number[], attendee_emails: '' };
+const emptyForm = { calendar_id: '', title: '', description: '', start_time: '', end_time: '', all_day: false, location: '', color: '#3b82f6', reminders: [0] as number[], attendee_emails: '', repeat: null as RepeatRule | null };
 type Form = typeof emptyForm;
 
 // A new event starts with the account's default reminder (Settings, General).
@@ -44,7 +47,7 @@ function formFor(target: Exclude<EventDialogTarget, null>, timezone: string | nu
       calendar_id: event.calendar_id || '', title: event.title, description: event.description || '',
       start_time: toDatetimeLocalValue(event.start_time, timezone), end_time: toDatetimeLocalValue(event.end_time, timezone),
       all_day: event.all_day, location: event.location || '', color: event.color, reminders: event.reminders || (reached ? [] : [0]),
-      attendee_emails: (event.attendees || []).map(attendee => attendee.email).join(', '),
+      attendee_emails: (event.attendees || []).map(attendee => attendee.email).join(', '), repeat: null,
     };
   }
   const day = target.date ?? new Date();
@@ -87,6 +90,10 @@ export function EventDialog({ target, onClose, calendars, accounts, actions, tim
   const [movePending, setMovePending] = useState<string | null>(null);
   const opening = useRef(0);
   const editing = target?.kind === 'edit' ? target.event : null;
+  // The rule a local series had when the dialog read it, and whether the person changed it by hand
+  // (a rule that only followed a moved start still leaves "This event" open).
+  const [storedRule, setStoredRule] = useState<{ id: string; rule: RepeatRule | null } | null>(null);
+  const [ruleTouched, setRuleTouched] = useState(false);
   const defaultReminder = useQuery({ ...userSettingsQueryOptions, select: selectUserSetting('default_event_reminder') }).data;
 
   const calendarById = useMemo(() => new Map(calendars.map(calendar => [calendar.id, calendar])), [calendars]);
@@ -106,7 +113,20 @@ export function EventDialog({ target, onClose, calendars, accounts, actions, tim
   const busy = eventCalendar?.permission === 'freebusy';
   const reached = !!eventCalendar && isReached(eventCalendar);
   const readOnly = Boolean(editing && (isReadOnly(editing.calendar_id) || levelReason));
-  const ownReminders = !!levelReason && !busy;
+  // An archived calendar of the person's own takes no reminders either: there they are the event's.
+  const ownReminders = !!levelReason && !busy && reached;
+  const isRemote = (event: CalendarEvent) => isRemoteCalendarAccount(accountOf(event.calendar_id));
+  // A date of a repeating event in one of UniHub's own calendars: its rule and zone come with the event itself.
+  const localSeries = !!editing && isRepeating(editing) && !isRemote(editing);
+  const detail = useQuery({
+    queryKey: ['calendar-event-rule', editing?.id], queryFn: ({ signal }) => calendarApi.fetchEvent(editing!.id, signal), enabled: localSeries && !busy, staleTime: 0, gcTime: 0,
+  }).data;
+  // undefined while a series' rule is still on its way: nothing about the rule is sent then.
+  const stored = !localSeries ? null : storedRule?.id === editing?.id ? storedRule!.rule : undefined;
+  const ruleChanged = stored !== undefined && !sameRule(form.repeat, stored);
+  const repeatable = !busy && !editing?.is_todo_only && !editing?.source_email && !isRemoteCalendarAccount(accountOf(form.calendar_id)) && !(readOnly && !form.repeat);
+  // Changing the rule or the calendar concerns every date of a series.
+  const wholeOnly = localSeries && ((ruleTouched && ruleChanged) || form.calendar_id !== editing?.calendar_id);
   const shown = editing ? events?.find(event => event.id === editing.id) ?? editing : null;
   const subtaskLevel = !shown || !eventCalendar || busy || isRemoteCalendarAccount(accountOf(shown.calendar_id)) || (!reached && shown.subtasks.length === 0) ? null
     : eventCalendar.archived || !atLeast(eventCalendar, 'contribute') ? (shown.subtasks.length > 0 ? 'read' as const : null)
@@ -119,9 +139,8 @@ export function EventDialog({ target, onClose, calendars, accounts, actions, tim
   // a new one goes to the person's own calendars or one they may edit. Those
   // that take nothing new are greyed out with the server's reason (contracts/tasks.ts).
   const options = readOnly && eventCalendar ? [eventCalendar]
-    : eventCalendar ? calendars.filter(calendar => sameOwner(calendar, eventCalendar))
+    : eventCalendar ? calendars.filter(calendar => sameOwner(calendar, eventCalendar) && !(localSeries && isRemoteCalendarAccount(accountOf(calendar.id))))
     : calendars.filter(calendar => !isReached(calendar) || !calendar.write_block);
-  const isRemote = (event: CalendarEvent) => isRemoteCalendarAccount(accountOf(event.calendar_id));
 
   // The form is filled while rendering a new target, so the dialog never shows
   // an empty form first. Later calendar refreshes do not reset what was typed.
@@ -130,6 +149,8 @@ export function EventDialog({ target, onClose, calendars, accounts, actions, tim
     // An event opened while its move waits for the calendar server shows that state, with the move's cancellation.
     setMovePending(target?.kind === 'edit' ? movingTo(target.event, calendars) : null);
     opening.current += 1;
+    setStoredRule(null);
+    setRuleTouched(false);
     // A new event starts in the calendar the server marks as the default (Settings → General, else UniHub's choice).
     if (target) {
       const calendar = target.kind === 'edit' && target.event.calendar_id ? calendarById.get(target.event.calendar_id) : undefined;
@@ -137,7 +158,14 @@ export function EventDialog({ target, onClose, calendars, accounts, actions, tim
     }
   }
 
-  const payload = (): Partial<CalendarEvent> & { title: string } => ({
+  // The rule of the series arrives after the form: it joins it once, following a start moved meanwhile.
+  if (editing && localSeries && detail?.id === editing.id && storedRule?.id !== editing.id) {
+    const rule = detail.repeat ?? null;
+    setStoredRule({ id: editing.id, rule });
+    setForm(prev => ({ ...prev, repeat: followStart(rule, new Date(toDatetimeLocalValue(editing.start_time, timezone)), new Date(prev.start_time)) }));
+  }
+
+  const payload = (scope?: RecurrenceScope): Partial<CalendarEvent> & { title: string } => ({
     calendar_id: form.calendar_id || undefined,
     title: form.title.trim(),
     description: form.description || null,
@@ -149,12 +177,14 @@ export function EventDialog({ target, onClose, calendars, accounts, actions, tim
     reminders: form.reminders,
     attendees: form.attendee_emails.split(',').map(email => email.trim().toLowerCase()).filter(Boolean)
       .map(email => ({ email, response_status: 'needsAction' as const })) as CalendarEvent['attendees'],
+    // A rule goes with a new event, and with a change of every date (null ends the series); one date keeps the series' rule.
+    ...(repeatable && (editing ? ruleChanged && scope !== 'occurrence' : form.repeat) ? { repeat: form.repeat } : {}),
   });
 
   const save = (scope?: RecurrenceScope) => {
     if (editing) {
       const submitted = { id: editing.id, opening: opening.current, calendarName: calendarById.get(form.calendar_id)?.name ?? 'its new calendar' };
-      actions.update.mutate({ id: editing.id, event: payload(), scope }, {
+      actions.update.mutate({ id: editing.id, event: payload(scope), scope }, {
         onSuccess: result => {
           if (submitted.opening !== opening.current || formTarget?.kind !== 'edit' || formTarget.event.id !== submitted.id) return;
           if (result.pending === 'creating') setMovePending(submitted.calendarName); else onClose();
@@ -176,19 +206,20 @@ export function EventDialog({ target, onClose, calendars, accounts, actions, tim
       setPendingScope({ kind: 'update', event: editing, recurring: true });
       return;
     }
+    if (editing && localSeries) { setPendingScope({ kind: ruleChanged && !form.repeat ? 'stop' : 'update', event: editing, recurring: true }); return; }
     save();
   };
 
-  /** Local events are deleted at once; server events are confirmed, repeating ones with a scope. */
+  /** Local events are deleted at once (they wait in the bin); repeating ones ask for a scope, server events are confirmed. */
   const requestDelete = (event: CalendarEvent) => {
-    if (!isRemote(event)) { actions.remove.mutate({ id: event.id }, { onSuccess: onClose }); return; }
-    setPendingScope({ kind: 'delete', event, recurring: Boolean(event.recurrence) });
+    if (!isRemote(event) && !localSeries) { actions.remove.mutate({ id: event.id }, { onSuccess: onClose }); return; }
+    setPendingScope({ kind: 'delete', event, recurring: localSeries || Boolean(event.recurrence) });
   };
 
   const runScope = (scope?: RecurrenceScope) => {
     if (!pendingScope) return;
-    if (pendingScope.kind === 'update') save(scope);
-    else actions.remove.mutate({ id: pendingScope.event.id, scope }, { onSuccess: onClose });
+    if (pendingScope.kind === 'delete') actions.remove.mutate({ id: pendingScope.event.id, scope }, { onSuccess: onClose });
+    else save(scope);
     setPendingScope(null);
   };
 
@@ -206,9 +237,9 @@ export function EventDialog({ target, onClose, calendars, accounts, actions, tim
       <DialogContent className="max-h-[90dvh] overflow-y-auto sm:max-w-[560px]">
         <DialogHeader>
           <DialogTitle>{busy ? 'Busy' : readOnly ? 'Event' : editing ? 'Edit event' : 'New event'}</DialogTitle>
-          {(readOnly || editing?.recurrence) && (
+          {(readOnly || (editing && isRepeating(editing))) && (
             <DialogDescription>
-              {editing?.recurrence && <Repeat className="mr-1.5 inline h-3.5 w-3.5 align-[-0.125em]" aria-hidden />}
+              {editing && isRepeating(editing) && <Repeat className="mr-1.5 inline h-3.5 w-3.5 align-[-0.125em]" aria-hidden />}
               {readOnly ? levelReason ?? 'This calendar is read-only. Change the event where the calendar is published.'
                 : 'Repeating event. Saving asks whether to change only this event or the whole series.'}
             </DialogDescription>
@@ -258,7 +289,8 @@ export function EventDialog({ target, onClose, calendars, accounts, actions, tim
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <div className="space-y-2">
                 <Label htmlFor="event-start">Start</Label>
-                <Input id="event-start" type="datetime-local" value={form.start_time} onChange={event => setForm(prev => ({ ...prev, start_time: event.target.value }))} />
+                <Input id="event-start" type="datetime-local" value={form.start_time}
+                  onChange={event => setForm(prev => ({ ...prev, start_time: event.target.value, repeat: followStart(prev.repeat, new Date(prev.start_time), new Date(event.target.value)) }))} />
               </div>
               <div className="space-y-2">
                 <Label htmlFor="event-end">End</Label>
@@ -269,6 +301,8 @@ export function EventDialog({ target, onClose, calendars, accounts, actions, tim
               <Label htmlFor="event-all-day" className="font-normal">All day</Label>
               <Switch id="event-all-day" checked={form.all_day} onCheckedChange={checked => setForm(prev => ({ ...prev, all_day: checked }))} />
             </div>
+            {repeatable && <RepeatField key={editing?.id ?? 'new'} value={form.repeat} start={new Date(form.start_time)} disabled={stored === undefined}
+              onChange={repeat => { setRuleTouched(true); setForm(prev => ({ ...prev, repeat })); }} />}
             {/* A free/busy holder gets the times only; below edit, a field nobody filled in is left out. */}
             {!busy && !(levelReason && !form.location) && <div className="space-y-2">
               <Label htmlFor="event-location">Location</Label>
@@ -325,10 +359,18 @@ export function EventDialog({ target, onClose, calendars, accounts, actions, tim
     <AlertDialog open={pendingScope !== null} onOpenChange={open => { if (!open) setPendingScope(null); }}>
       <AlertDialogContent>
         <AlertDialogHeader>
-          <AlertDialogTitle>{pendingScope?.kind === 'update' ? 'Change repeating event' : pendingScope?.recurring ? 'Delete repeating event' : 'Delete event'}</AlertDialogTitle>
+          <AlertDialogTitle>{pendingScope?.kind === 'stop' ? 'Stop repeating?' : pendingScope?.kind === 'update' ? 'Change repeating event' : pendingScope?.recurring ? 'Delete repeating event' : 'Delete event'}</AlertDialogTitle>
           <AlertDialogDescription>
-            {pendingScope?.kind === 'update'
-              ? 'Apply the change to this event only, or to every event in the series? Changing the series time also resets ToDo progress of its events.'
+            {pendingScope?.kind === 'stop' ? 'This event stays, as a single event. The other events of the series go to the bin together and can be restored from there.'
+              : pendingScope?.kind === 'update' ? (!localSeries
+                ? 'Apply the change to this event only, or to every event in the series? Changing the series time also resets ToDo progress of its events.'
+                : <>
+                  {!wholeOnly ? 'Apply the change to this event only, or to every event in the series? Each event keeps its ToDo progress and subtasks.'
+                    : ruleTouched && ruleChanged ? 'The new rule applies to every event in the series. Dates that no longer fit it are removed; those with ToDo progress, subtasks or attendees go to the bin as single events.'
+                    : 'A repeating event moves to another calendar only as a whole, with every event in the series.'}
+                  {form.all_day !== editing?.all_day && ' Switching all events between all-day and timed makes their dates anew: dates with ToDo progress, subtasks or attendees go to the bin as single events.'}
+                </>)
+              : localSeries ? 'Delete only this event, or every event in the series? What you delete goes to the bin.'
               : pendingScope?.recurring
                 ? 'Delete only this event, or every event in the series? It is also deleted on the calendar server.'
                 : `Delete “${pendingScope?.event.title ?? ''}”? It is also deleted on the calendar server.`}
@@ -336,8 +378,8 @@ export function EventDialog({ target, onClose, calendars, accounts, actions, tim
         </AlertDialogHeader>
         <AlertDialogFooter>
           <AlertDialogCancel>Cancel</AlertDialogCancel>
-          {pendingScope?.recurring ? <>
-            <AlertDialogAction className={buttonVariants({ variant: 'outline' })} onClick={() => runScope('occurrence')}>This event</AlertDialogAction>
+          {pendingScope?.kind === 'stop' ? <AlertDialogAction onClick={() => runScope()}>Stop repeating</AlertDialogAction> : pendingScope?.recurring ? <>
+            {!(pendingScope.kind === 'update' && wholeOnly) && <AlertDialogAction className={buttonVariants({ variant: 'outline' })} onClick={() => runScope('occurrence')}>This event</AlertDialogAction>}
             <AlertDialogAction onClick={() => runScope('series')}>All events</AlertDialogAction>
           </> : <AlertDialogAction className={buttonVariants({ variant: 'destructive' })} onClick={() => runScope()}>Delete</AlertDialogAction>}
         </AlertDialogFooter>

@@ -3,7 +3,7 @@ import { formatDistanceToNowStrict } from 'date-fns';
 import { MoreHorizontal, Plus, Settings2, Trash2 } from 'lucide-react';
 import { isRemoteCalendarAccount, type CalendarAccount, type CalendarCalendar } from '@/lib/calendar-api';
 import type { CalendarAccounts } from '@/hooks/use-calendar-accounts';
-import { useSetCalendarView } from '@/hooks/use-calendar-shares';
+import { useCalendarOffer, useSetCalendarView } from '@/hooks/use-calendar-shares';
 import { useAuth } from '@/contexts/useAuth';
 import { isReached, ownerName } from '@/components/calendar/calendar-access';
 import { cn } from '@/lib/utils';
@@ -76,6 +76,7 @@ export function CalendarPanel({ data, shownIds, onShow, onNewEvent, onAddAccount
   const { accounts, calendars, accountsQuery, calendarsQuery } = data;
   const { user } = useAuth();
   const setView = useSetCalendarView();
+  const offers = useCalendarOffer();
   const reached = useMemo(() => calendars.filter(isReached), [calendars]);
   // The server refuses what a policy forbids; the entries only show the reason (F13).
   const removePolicy = usePolicy('accounts.remove');
@@ -118,7 +119,22 @@ export function CalendarPanel({ data, shownIds, onShow, onNewEvent, onAddAccount
             retrying={accountsQuery.isFetching || calendarsQuery.isFetching} /></div>
         ) : accountsQuery.isLoading || calendarsQuery.isLoading ? (
           <LoadingState compact label="Loading calendars…" />
-        ) : groups.length === 0 && reached.length === 0 ? (
+        ) : <>
+          {/* A calendar someone offers the person: theirs once they accept. */}
+          {calendars.filter(calendar => calendar.offer?.to.id === user?.id).map(calendar => {
+            const from = calendar.offer!.by ?? calendar.owner;
+            return (
+              <section key={calendar.id} aria-label={`Offer of ${calendar.name}`} className="mx-3 mb-2 rounded-md border border-border p-3 text-sm">
+                <p><span className="font-medium">{from?.full_name || from?.email || 'Someone'}</span> offers you the calendar <span className="font-medium">{calendar.name}</span>.</p>
+                <p className="mt-1 text-xs text-muted-foreground">If you accept, it is yours with all its events. {ownerName(calendar) ?? 'Its owner'} can still edit it.</p>
+                <div className="mt-2.5 flex gap-2">
+                  <Button size="sm" disabled={offers.accept.isPending || offers.end.isPending} onClick={() => offers.accept.mutate({ id: calendar.id, name: calendar.name })}>Accept</Button>
+                  <Button size="sm" variant="outline" disabled={offers.accept.isPending || offers.end.isPending} onClick={() => offers.end.mutate({ id: calendar.id })}>Decline</Button>
+                </div>
+              </section>
+            );
+          })}
+        {groups.length === 0 && reached.length === 0 ? (
           <p className="px-4 py-2 text-sm text-muted-foreground">No calendars yet. Add an account to start.</p>
         ) : groups.map(({ account, calendars: accountCalendars }) => {
           const remote = isRemoteCalendarAccount(account);
@@ -171,6 +187,7 @@ export function CalendarPanel({ data, shownIds, onShow, onNewEvent, onAddAccount
             </section>
           );
         })}
+        </>}
         {!calendarsQuery.isLoading && !calendarsQuery.error && REACHED.map(([kind, title]) => {
           const list = reached.filter(calendar => calendar.owner_kind === kind);
           return list.length > 0 && (

@@ -15,7 +15,7 @@ import { PageBody, PageHeader, PageShell } from '@/components/layout/PageShell';
 import { Chip, ChipGroup } from '@/components/ui/chips';
 import { SortableList } from '@/components/ui/sortable-list';
 import { TaskRow } from '@/components/todo/TaskRow';
-import { movingTo, orderTasks, taskSection } from '@/lib/tasks';
+import { movingTo, onceInLater, orderTasks, taskSection } from '@/lib/tasks';
 import { EditTaskDialog, MoveListDialog, MoveTaskDialog, NewTaskDialog } from '@/components/todo/TaskDialogs';
 import { isReached, ownerName, sameOwner } from '@/components/calendar/calendar-access';
 
@@ -119,10 +119,11 @@ const TodoPage = () => {
     document.getElementById(`task-${linkedTask}`)?.scrollIntoView?.({ block: 'center' });
   }, [linkedTask]);
 
-  const tasks = useMemo(() => (tasksQuery.data ?? []).filter(task => !calendarId || task.calendar_id === calendarId), [tasksQuery.data, calendarId]);
+  const listed = useMemo(() => onceInLater(tasksQuery.data ?? [], timezone), [tasksQuery.data, timezone]);
+  const tasks = useMemo(() => listed.filter(task => !calendarId || task.calendar_id === calendarId), [listed, calendarId]);
   const groups = useMemo(() => groupTasks(tasks, timezone), [tasks, timezone]);
   const calendarColor = (task: CalendarEvent) => calendars.length > 1 ? calendars.find(calendar => calendar.id === task.calendar_id)?.color : undefined;
-  const openCount = (id: string) => (tasksQuery.data ?? []).filter(task => active(task) && task.calendar_id === id).length;
+  const openCount = (id: string) => listed.filter(task => active(task) && task.calendar_id === id).length;
   // Reordering needs a server to keep it: not offline, and not while the list is still loading.
   const reorderable = !isOfflineMode() && !tasksQuery.isPending;
   const cancelMove = (task: CalendarEvent) => actions.cancelMove.mutate({ id: task.id, from: calendars.find(calendar => calendar.id === task.calendar_id)?.name, to: movingTo(task, calendars) ?? undefined });

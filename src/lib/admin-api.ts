@@ -222,6 +222,12 @@ const ACTIONS: Record<string, string> = {
   'group.member_removed': 'Removed from a group',
   'admin.group_manager_set': 'Changed a group manager',
   'admin.directory_changed': 'Corrected a directory entry',
+  // A calendar's change of owner.
+  'calendar.handed_over': 'Handed over a calendar as a group manager',
+  'admin.calendar_handed_over': 'Handed over a calendar',
+  'admin.calendar_archived': 'Archived a calendar',
+  'admin.calendar_unarchived': 'Unarchived a calendar',
+  'admin.calendar_binned': 'Deleted a calendar to its owner\'s bin',
 };
 const ROLE_NAMES: Record<string, string> = { owner: 'owner', admin: 'admin', user: 'member' };
 

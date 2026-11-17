@@ -711,6 +711,20 @@ describe('the list chooser', () => {
     await waitFor(() => expect(api.post).toHaveBeenCalledWith('/calendar/events', expect.objectContaining({ title: 'Buy stamps', calendar_id: 'list-home', is_todo_only: true })));
   });
 
+  it('offers no Move to another list for a task of a list someone shares for editing', async () => {
+    const team = calendar({ id: 'list-team', name: 'Team', user_id: 'blair', permission: 'edit', owner_kind: 'user', owner: { id: 'blair', full_name: 'Blair Example', email: 'blair@example.com' } });
+    serverEvents = [undated[0], task('Team notes', { user_id: 'blair', calendar_id: 'list-team', is_todo_only: true, sort_rank: 150 })];
+    const answer = vi.mocked(api.get).getMockImplementation()!;
+    vi.mocked(api.get).mockImplementation(async (path, options) => path === '/calendar/calendars' ? { data: { calendars: [...lists, team] } } : answer(path, options));
+    mount(<TodoPage />);
+    // An editor changes the task as their own, but only its owner's lists could take it: the move stays with the Calendar's event dialog.
+    const shared = await openMenu('Team notes');
+    expect(within(shared).getByRole('menuitem', { name: 'Edit' })).toBeInTheDocument();
+    expect(within(shared).queryByRole('menuitem', { name: 'Move to another list' })).not.toBeInTheDocument();
+    fireEvent.keyDown(shared, { key: 'Escape' });
+    expect(within(await openMenu('Pay rent')).getByRole('menuitem', { name: 'Move to another list' })).toBeInTheDocument();
+  });
+
   it('offers Move to another list and sends the task there; a refused move says why', async () => {
     vi.mocked(api.post).mockResolvedValueOnce({ error: 'Moving to another list is not available yet.', status: 501, code: 'NOT_IMPLEMENTED' });
     mount(<TodoPage />);

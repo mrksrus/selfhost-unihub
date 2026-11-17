@@ -1,17 +1,21 @@
 import { useState } from 'react';
-import { useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { ChevronLeft } from 'lucide-react';
+import { ChevronLeft, Plus } from 'lucide-react';
 import { useAuth } from '@/contexts/useAuth';
+import { useAdminCalendars } from '@/hooks/use-calendar-shares';
+import { useModules } from '@/hooks/use-modules';
 import { invalidateOrganisation, useGroup } from '@/hooks/use-organisation';
 import { useSecretMutation } from '@/hooks/use-secret-mutation';
 import { useSessionMutation } from '@/hooks/use-session-mutation';
 import { useToast } from '@/hooks/use-toast';
 import { deleteGroup } from '@/lib/admin-api';
+import { calendarApi, calendarQueryKeys } from '@/lib/calendar-api';
 import { hasCode } from '@/lib/api-error';
 import { updateGroup } from '@/lib/groups-api';
 import { can } from '@/lib/permissions';
 import { PasswordConfirmDialog } from '@/components/admin/PasswordConfirmDialog';
+import { calendarMeta, useSharedCalendarActions } from '@/components/calendar/SharedCalendarActions';
 import { GroupDialog } from '@/components/organisation/GroupDialog';
 import { GroupMembers } from '@/components/organisation/GroupMembers';
 import { groupMeta } from '@/components/organisation/GroupRow';
@@ -29,6 +33,7 @@ import { PageBody, PageHeader, PageShell } from '@/components/layout/PageShell';
 // what its manager may do, which is adding and removing members and renaming
 // it; a member who manages nothing sees its managers. The server decides
 // which of these the person gets (`can_manage`, 404 for a group out of sight).
+// Whoever manages the group also makes and manages its calendars.
 
 const GroupPage = ({ admin = false }: { admin?: boolean }) => {
   const { id = '' } = useParams();
@@ -44,6 +49,13 @@ const GroupPage = ({ admin = false }: { admin?: boolean }) => {
   const editRules = admin && can(user, 'server.settings');
   const view = editRules && params.get('view') === 'rules' ? 'rules' : 'members';
   const group = query.data?.group;
+  // The group's calendars: an administrator has them from Server › Calendars, a manager from their own calendar list.
+  const calendarsOn = useModules().isEnabled('calendar') && !!query.data?.can_manage;
+  const everyCalendar = useAdminCalendars().data;
+  const myCalendars = useQuery({ queryKey: calendarQueryKeys.calendars, queryFn: ({ signal }) => calendarApi.fetchCalendars(signal), enabled: calendarsOn && !can(user, 'calendars.manage') }).data;
+  const calendars = (can(user, 'calendars.manage') ? everyCalendar?.filter(calendar => !calendar.deleted_at) : myCalendars?.filter(calendar => calendar.owner_kind === 'group'))
+    ?.filter(calendar => calendar.group?.id === id) ?? [];
+  const calendarActions = useSharedCalendarActions();
 
   const rename = useSessionMutation({
     mutationFn: (input: { name: string; description: string | null }) => updateGroup(id, input),
@@ -73,6 +85,13 @@ const GroupPage = ({ admin = false }: { admin?: boolean }) => {
         {view === 'rules' ? <PolicyEditor scope={{ groupId: id }} groupName={group.name} /> : (
           <>
             <GroupMembers groupId={id} data={query.data} personHref={admin && can(user, 'users.read') ? userId => `/admin/users/${encodeURIComponent(userId)}` : undefined} />
+            {calendarsOn && (
+              <SettingsSection title="Calendars" description="Every member sees a calendar of the group and adds subtasks to its events and tasks. The group's managers schedule in it, share it further and delete it."
+                action={<Button variant="outline" onClick={() => calendarActions.open({ action: 'new', groupId: id })}><Plus aria-hidden="true" />New calendar</Button>}>
+                {calendars.length === 0 ? <p className="py-4 text-sm text-muted-foreground">This group has no calendar yet.</p>
+                  : <ul aria-label="Calendars of the group" className="divide-y divide-border">{calendars.map(calendar => calendarActions.row(calendar, 'share_count' in calendar ? calendarMeta(calendar) : calendar.archived && 'Archived', { manage: true }))}</ul>}
+              </SettingsSection>
+            )}
             {!editRules && (
               <SettingsSection title="Rules">
                 <SettingsBlock>
@@ -110,6 +129,7 @@ const GroupPage = ({ admin = false }: { admin?: boolean }) => {
         )}
       </PageHeader>
       <PageBody width="reading">{body}</PageBody>
+      {calendarActions.dialogs}
       <GroupDialog open={renaming} group={group} pending={rename.isPending} onClose={() => setRenaming(false)} onSubmit={input => rename.mutate(input)} />
       <PasswordConfirmDialog open={deleting} onClose={() => setDeleting(false)} title={`Delete ${group?.name ?? 'this group'}?`}
         description="The group, its memberships and its rules are deleted. People who were in it keep their accounts and data; only the rules for everyone and of their other groups still apply to them, which may be looser."

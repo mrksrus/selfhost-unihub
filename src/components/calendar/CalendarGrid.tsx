@@ -5,6 +5,7 @@ import { formatEventTime, type CalendarEvent } from '@/lib/calendar-api';
 import type { CalendarView } from '@/hooks/use-calendar-view';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
+import { isRepeating } from '@/components/calendar/repeat';
 
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const dayKey = (date: Date) => format(date, 'yyyy-MM-dd');
@@ -47,7 +48,7 @@ export function EventLine({ event, timezone, onOpen }: { event: CalendarEvent; t
         <span aria-hidden="true" className="rounded-full" style={{ backgroundColor: event.color }} />
         <span className="min-w-0">
           <span className="flex items-center gap-1.5">
-            {event.recurrence && <Repeat className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-label="Repeats" />}
+            {isRepeating(event) && <Repeat className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-label="Repeats" />}
             <span className={cn('min-w-0 break-words', event.todo_status === 'done' && 'text-muted-foreground line-through')}>{event.title}</span>
             {event.todo_status === 'done' && <CheckCircle2 className="h-4 w-4 shrink-0 text-success" aria-label="Done" />}
           </span>

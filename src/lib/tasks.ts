@@ -24,6 +24,22 @@ export function taskSection(task: Pick<CalendarEvent, 'is_todo_only' | 'start_ti
   return formatEventTime(task.start_time, 'yyyy-MM-dd', timezone) === today ? 'today' : 'later';
 }
 
+/**
+ * ToDo's tasks: an open repeating item shows once in "Later", at its next
+ * date; ticking that date brings the one after it. Overdue and today's dates
+ * all stay, and the calendar still shows every date.
+ */
+export function onceInLater<T extends Pick<CalendarEvent, 'series_key' | 'todo_status' | 'is_todo_only' | 'start_time' | 'end_time'>>(tasks: readonly T[], timezone: string | null, now = new Date()): T[] {
+  const later = (task: T) => !!task.series_key && task.todo_status !== 'done' && task.todo_status !== 'cancelled' && taskSection(task, timezone, now) === 'later';
+  const next = new Map<string, T>();
+  for (const task of tasks) {
+    if (!later(task)) continue;
+    const first = next.get(task.series_key!);
+    if (!first || Date.parse(task.start_time) < Date.parse(first.start_time)) next.set(task.series_key!, task);
+  }
+  return tasks.filter(task => !later(task) || next.get(task.series_key!) === task);
+}
+
 /** The name of the list a task is being moved to, for the "Moving to…" marker; null when no move waits on the person. */
 export function movingTo(task: Pick<CalendarEvent, 'move_pending'>, calendars: readonly Pick<CalendarCalendar, 'id' | 'name'>[]): string | null {
   const pending = task.move_pending;
