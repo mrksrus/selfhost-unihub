@@ -266,6 +266,12 @@ async function updateSettings<S extends SettingScope>(scope: S, userId: string, 
   return getSettings(scope, userId, id, executor);
 }
 
+/** A calendar's settings go with it to its new owner; a calendar no person owns keeps none. */
+async function moveCalendarSettings(cx: SqlExecutor, calendarId: string, toUserId: string | null) {
+  if (toUserId) await cx.execute('UPDATE calendar_settings SET user_id = ? WHERE calendar_id = ?', [toUserId, calendarId]);
+  else await cx.execute('DELETE FROM calendar_settings WHERE calendar_id = ?', [calendarId]);
+}
+
 // Restore keeps archived values only for keys and values the registry knows;
 // references are remapped by the caller.
 function restorableValue(scope: SettingScope, key: string, text: unknown): string | null {
@@ -1150,6 +1156,7 @@ async function setSignupMode(mode: SignupMode, executor: SqlExecutor = db) {
 
 export {
   SETTINGS,
+  moveCalendarSettings,
   POLICIES,
   resolvePolicy,
   resolvePolicies,

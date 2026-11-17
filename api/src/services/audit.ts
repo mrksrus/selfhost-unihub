@@ -33,6 +33,8 @@ const AUDIT_ACTIONS = [
   'admin.group_created', 'admin.group_deleted', 'admin.group_manager_set', 'group.renamed', 'group.member_added', 'group.member_removed',
   // An administrator's correction of a person's company directory entry (0.31).
   'admin.directory_changed',
+  // A calendar's change of owner at once, its archive and binning (calendar-ownership.ts).
+  'calendar.handed_over', 'admin.calendar_handed_over', 'admin.calendar_archived', 'admin.calendar_unarchived', 'admin.calendar_binned',
 ] as const;
 type AuditAction = typeof AUDIT_ACTIONS[number];
 type AuditDetails = Record<string, string | number | boolean | null>;

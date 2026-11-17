@@ -6,6 +6,7 @@ import { isModuleEnabled } from './module-settings';
 import { isSectionRestoreActive } from './restore-locks';
 import { assertMayChangeAdmin } from './invites';
 import { managedBooksOf } from './address-books';
+import { sharedCalendarsOf } from './calendar-ownership';
 
 // The administrator's path for one person (F13, accounts.admin_manage): a
 // policy that forbids the person an action never makes it impossible. Each
@@ -70,6 +71,7 @@ async function personAccounts(userId: string): Promise<AdminUserAccountsResponse
       is_active: !!Number(row.is_active), sync_status: row.sync_status ?? null, last_synced_at: iso(row.last_synced_at), mail_account_id: row.mail_account_id ?? null,
     })),
     managed_books: await managedBooksOf(userId),
+    shared_calendars: await sharedCalendarsOf(userId),
   };
 }
 

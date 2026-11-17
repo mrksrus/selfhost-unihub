@@ -425,6 +425,6 @@ export {
   calendarWrite, atLeast, levelOn, eventTarget, lockEventWrite, setOwnReminders, remindersAreOwn, peopleReaching, afterEventWrite, hintCalendarReach,
   reachedCalendars, calendarsWithAccess, presentReached, reachedEvent, busy, viewsOfCalendars,
   assertCalendar, calendarShares, setCalendarShare, calendarShareCandidates, setCalendarView,
-  createSharedCalendar, updateSharedCalendar, deleteSharedCalendar, adminCalendars, restoreSharedCalendar,
+  createSharedCalendar, updateSharedCalendar, deleteSharedCalendar, adminCalendars, restoreSharedCalendar, summary,
 };
 export type { CalendarChange };

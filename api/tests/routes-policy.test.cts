@@ -336,6 +336,7 @@ const NOT_DESTRUCTIVE: Readonly<Record<string, string>> = {
   'POST /api/address-books/:id/contacts/bulk-delete': 'moves the contacts to the book\'s bin',
   // Shared calendars: a group's or the organisation's calendar is hidden and kept for an administrator's restore.
   'DELETE /api/calendar/shared-calendars/:id': 'hides the calendar; an administrator restores it',
+  'DELETE /api/calendar/calendars/:id/hand-over': 'withdraws or declines an offer; no data',
 };
 const removesData = (key: string) => {
   const [method, path] = key.split(' ');

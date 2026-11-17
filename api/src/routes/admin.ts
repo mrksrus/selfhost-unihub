@@ -30,6 +30,7 @@ import { defineRoutes } from '../http/route';
 import { can } from '../security/permissions';
 import type { Permission } from '../security/permissions';
 import { personFromParam } from '../services/admin-path';
+import { withdrawOffersOf } from '../services/calendar-ownership';
 
 type Request = RouteRequest & { url: string; params: Record<string, string> };
 interface Input {
@@ -537,6 +538,7 @@ export = defineRoutes({
         await assertCaller(connection);
         await connection.execute('UPDATE users SET is_active = ? WHERE id = ?', [!!is_active, id]);
         if (!is_active) await endUserSessions(id, connection);
+        if (!is_active) await withdrawOffersOf(connection, id);
         return true;
       }));
       if (!found) return { error: 'User not found', status: 404 };

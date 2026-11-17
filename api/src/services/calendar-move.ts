@@ -444,14 +444,14 @@ async function resumeDueMoves(signal?: AbortSignal) {
 
 async function loadCalendar(userId: string, calendarId: string) {
   const [rows] = await db.execute<RowDataPacket[]>(
-    `SELECT c.id, c.read_only, a.provider FROM calendar_calendars c
+    `SELECT c.id, c.read_only, c.archived_at, a.provider FROM calendar_calendars c
      JOIN calendar_accounts a ON a.id = c.account_id AND a.user_id = c.user_id
      WHERE c.id = ? AND c.user_id = ? LIMIT 1`,
     [calendarId, userId]
   );
   if (!rows[0]) return null;
   const remote: SyncTarget | null = calendarSync.REMOTE_PROVIDERS.has(rows[0].provider) ? await calendarSync.loadCalendarContext(userId, calendarId) : null;
-  return { id: String(rows[0].id), readOnly: !!Number(rows[0].read_only), remote };
+  return { id: String(rows[0].id), readOnly: !!Number(rows[0].read_only), archived: rows[0].archived_at != null, remote };
 }
 
 // The only shape a move can carry whole: one event that is not part of a
@@ -572,6 +572,8 @@ async function admitMove(userId: string, eventId: string, targetCalendarId: stri
     throw badRequest('CALENDAR_TODO_REMOTE', 'Tasks without a date stay in UniHub: a server calendar holds dated events only.');
   }
   const source = event.calendar_id ? await loadCalendar(userId, event.calendar_id) : null;
+  // An archived calendar is read-only for its owner too: nothing moves in or out.
+  if (target.archived || source?.archived) throw forbidden('CALENDAR_FORBIDDEN', 'You cannot change this calendar.');
   const link = source?.remote ? await calendarSync.loadEventLink(userId, eventId) : null;
   if (source?.remote) {
     if (link) {

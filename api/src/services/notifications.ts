@@ -324,6 +324,19 @@ const KINDS: Readonly<Record<string, KindSpec>> = Object.freeze({
     },
     expiresAt: (_change, _payload, now) => new Date(now + DAY_MS),
   }),
+  // A calendar offered to the person, handed over from them, or archived (calendar-ownership.ts).
+  'calendar-ownership': defineSourceKind<NonNullable<Awaited<ReturnType<typeof import('./calendar-ownership').ownershipNotice>>>>({
+    module: 'calendar', load: (userId, calendarId, connection, payload) => (require('./calendar-ownership') as typeof import('./calendar-ownership')).ownershipNotice(userId, calendarId, connection, payload),
+    // Not a calendar's events: its switch does not apply, the person's detail does.
+    level: async (userId, _notice, connection) => (await settingValues('user', userId, userId, connection)).reminder_notification_detail,
+    render: {
+      full: ({ notice, name, other }) => notice === 'offered' ? { title: 'Calendar offered to you', body: `${other} offers you ${name}` }
+        : notice === 'archived' ? { title: 'Calendar archived', body: `${name} is read-only now` }
+          : { title: 'Calendar handed over', body: `${name} now belongs to ${other}` },
+      none: () => ({ title: "A calendar's owner changed", body: '' }),
+    },
+    expiresAt: (_notice, _payload, now) => new Date(now + 7 * DAY_MS),
+  }),
   recording: {
     module: 'recordings',
     // An upload that moved on, finished or was cancelled needs no warning.
@@ -779,6 +792,7 @@ export {
   enqueueScheduledSendProblem,
   enqueueTestNotification,
   enqueueEvent,
+  enqueueFromSource,
   enqueueStalledRecordingUploads,
   eventStillCurrent,
   processNotificationJobs,

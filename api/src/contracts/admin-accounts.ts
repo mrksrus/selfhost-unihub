@@ -15,6 +15,7 @@
 import type { BackupJob } from './backup';
 import type { BinModule } from './bin';
 import type { ManagedBook } from './address-books';
+import type { SharedCalendarRef } from './calendar-ownership';
 
 /** Every change through this path carries the administrator's password. */
 export interface AdminReauthentication { current_password: string }
@@ -54,6 +55,8 @@ export interface AdminUserAccountsResponse {
   calendar_accounts: AdminCalendarAccount[];
   /** The shared address books the person created and manages; they stay when the person leaves, and administrators keep managing them. */
   managed_books: ManagedBook[];
+  /** The person's calendars shared with someone, for the choice per calendar before Deactivate or Delete. */
+  shared_calendars: SharedCalendarRef[];
 }
 
 /**

@@ -998,6 +998,8 @@ export = {
 
       const event = await getCalendarEventWithSubtasks(userId, id);
       if (!event) return { error: 'Event not found', status: 404 };
+      // An archived calendar refuses it, the owner's too.
+      if (event.calendar_id) await calendarShares.assertCalendar(userId, event.calendar_id, 'edit');
       const context = event.calendar_id ? await loadCalendarWithAccount(userId, event.calendar_id) : null;
       const accountEmail = context?.account?.account_email?.toLowerCase() || null;
       const effectiveEmail = attendeeEmail || accountEmail;
