@@ -108,6 +108,7 @@ test('[32-08..32-11] both widgets on the home screen: a tick reaches the server,
 
     // The whole app locked: the widgets keep their titles and the tick still works.
     adb('shell', 'am', 'start', '-n', `${PACKAGE}/.MainActivity`);
+    for (const end = Date.now() + 60_000; Date.now() < end && !adb('shell', 'dumpsys window | grep mCurrentFocus').includes(PACKAGE); await sleep(1000));
     await page.goto(new URL('/settings?section=app-lock', page.url()).href);
     await touch(page, page.getByText('Whole app', { exact: true }));
     await waitForUnlockPrompt();
@@ -132,6 +133,8 @@ test('[32-08..32-11] both widgets on the home screen: a tick reaches the server,
     await setPolicies({ 'notifications.detail': 'full' });
 
     // Signed out (the app's session ended): the widget empties, with "Open UniHub".
+    // The page's handle goes first: a second one to the same app keeps the next sign-in from finishing.
+    await device.close();
     await resetAppLock();
     await refreshed();
     const out = await home(shows('Sign in to UniHub to see this'), 'the widget says to sign in');
@@ -150,6 +153,6 @@ test('[32-08..32-11] both widgets on the home screen: a tick reaches the server,
     await api('DELETE', `/api/calendar/events/${hidden.id}`);
   } finally {
     for (const item of [meeting, task, locked]) await api('DELETE', `/api/calendar/events/${item.id}`).catch(() => {});
-    await device.close();
+    await device.close().catch(() => {});
   }
 });
