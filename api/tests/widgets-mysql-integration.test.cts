@@ -90,6 +90,7 @@ test('widgets: agenda and tasks of own, shared and group calendars at the person
   assert.deepEqual([byId.get(planning.id).can_tick, byId.get(rota).can_tick], [true, true], 'edit and manage tick');
   assert.ok(!byId.has(doctor.id) && !byId.has(secret.id) && !byId.has(done.id), 'no tasks from free/busy, none done');
   assert.equal(seen.more_tasks, 0);
+  assert.equal(seen.time_zone, 'Europe/Berlin', 'the zone the dates are written in, for the agenda\'s times');
 
   // Blair contributes to Support: its task without a tick.
   const blairs = await widgets(blair);

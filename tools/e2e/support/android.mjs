@@ -38,14 +38,14 @@ export function dumpScreen() {
   }
 }
 
-/** Android's on-screen nodes: text, description and centre. */
+/** Android's on-screen nodes: text, description, centre and size in pixels. */
 export function screenNodes() {
   const xml = dumpScreen();
   return [...xml.matchAll(/<node [^>]*>/g)].map(match => {
     const attrs = Object.fromEntries([...match[0].matchAll(/([\w-]+)="([^"]*)"/g)].map(m => [m[1], m[2]]));
     const box = /\[(\d+),(\d+)\]\[(\d+),(\d+)\]/.exec(attrs.bounds ?? '');
     return { text: attrs.text ?? '', desc: attrs['content-desc'] ?? '', id: attrs['resource-id'] ?? '', pkg: attrs.package ?? '',
-      password: attrs.password === 'true', x: box ? (+box[1] + +box[3]) / 2 : 0, y: box ? (+box[2] + +box[4]) / 2 : 0 };
+      password: attrs.password === 'true', x: box ? (+box[1] + +box[3]) / 2 : 0, y: box ? (+box[2] + +box[4]) / 2 : 0, w: box ? box[3] - box[1] : 0, h: box ? box[4] - box[2] : 0 };
   });
 }
 

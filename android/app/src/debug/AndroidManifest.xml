@@ -11,5 +11,12 @@
             android:name=".TestWidgets"
             android:exported="true"
             android:permission="android.permission.DUMP" />
+        <!-- noHistory: the next picture's host replaces this one. -->
+        <activity
+            android:name=".TestWidgetHost"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:noHistory="true"
+            android:permission="android.permission.DUMP" />
     </application>
 </manifest>
