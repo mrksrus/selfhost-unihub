@@ -25,7 +25,7 @@ test('widgets: agenda and tasks of own, shared and group calendars at the person
     assert.equal(reply.status, status, `${method} ${url}: ${JSON.stringify(reply.body).slice(0, 300)}`);
     return reply.body;
   };
-  const widgets = async (client: Client) => {
+  const widgets = async (client: Client): Promise<FixtureValue> => {
     const reply = await client.request('GET', '/api/widgets?tz=Europe/Berlin', undefined, app);
     assert.equal(reply.status, 200, JSON.stringify(reply.body).slice(0, 300));
     return reply.body;
