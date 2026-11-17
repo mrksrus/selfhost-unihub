@@ -135,7 +135,8 @@ export async function customRepeat(page: Page) {
   await custom.getByRole('button', { name: 'Wednesday' }).click();
   await custom.getByRole('combobox', { name: 'Ends' }).click();
   await page.getByRole('option', { name: 'After', exact: true }).click();
-  // The reference picture shows no focus ring left behind by the last choice.
+  // The closed list hands focus back to its control a moment later; the picture shows no focus ring left behind.
+  await expect(custom.getByRole('combobox', { name: 'Ends' })).toBeFocused();
   await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
   // Focus returning from a closed list may scroll the dialog; the picture is taken from its top.
   await dialog.evaluate(element => element.scrollTo(0, 0));
