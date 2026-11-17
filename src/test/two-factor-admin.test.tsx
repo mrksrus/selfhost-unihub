@@ -149,6 +149,8 @@ describe('deleting and deactivating someone', () => {
     const submit = await screen.findByRole('button', { name: 'Delete person' });
     expect(submit).toBeDisabled();
     fireEvent.change(screen.getByLabelText('Your password'), { target: { value: 'wrong' } });
+    // Confirming waits for the person's shared books and calendars.
+    await waitFor(() => expect(submit).toBeEnabled());
     fireEvent.click(submit);
     await waitFor(() => expect(toast).toHaveBeenCalledWith(expect.objectContaining({ description: 'Current password is incorrect' })));
     expect(screen.getByText('Delete plain@example.test?')).toBeInTheDocument();
@@ -163,6 +165,7 @@ describe('deleting and deactivating someone', () => {
     mount();
     await choose('plain@example.test', 'Deactivate');
     fireEvent.change(await screen.findByLabelText('Your password'), { target: { value: 'synthetic-admin-password' } });
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Deactivate' })).toBeEnabled());
     fireEvent.click(screen.getByRole('button', { name: 'Deactivate' }));
     await waitFor(() => expect(api.put).toHaveBeenCalledWith('/admin/users/user-3/activate', { is_active: false, current_password: 'synthetic-admin-password' }));
     await waitFor(() => expect(screen.queryByText('Deactivate plain@example.test?')).not.toBeInTheDocument());

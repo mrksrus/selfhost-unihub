@@ -29,15 +29,17 @@ export function taskSection(task: Pick<CalendarEvent, 'is_todo_only' | 'start_ti
  * date; ticking that date brings the one after it. Overdue and today's dates
  * all stay, and the calendar still shows every date.
  */
-export function onceInLater<T extends Pick<CalendarEvent, 'series_key' | 'todo_status' | 'is_todo_only' | 'start_time' | 'end_time'>>(tasks: readonly T[], timezone: string | null, now = new Date()): T[] {
+export function onceInLater<T extends Pick<CalendarEvent, 'calendar_id' | 'series_key' | 'todo_status' | 'is_todo_only' | 'start_time' | 'end_time'>>(tasks: readonly T[], timezone: string | null, now = new Date()): T[] {
   const later = (task: T) => !!task.series_key && task.todo_status !== 'done' && task.todo_status !== 'cancelled' && taskSection(task, timezone, now) === 'later';
+  // One series per calendar: a synced invitation can sit in two of a person's calendars under one UID.
+  const key = (task: T) => `${task.calendar_id}:${task.series_key}`;
   const next = new Map<string, T>();
   for (const task of tasks) {
     if (!later(task)) continue;
-    const first = next.get(task.series_key!);
-    if (!first || Date.parse(task.start_time) < Date.parse(first.start_time)) next.set(task.series_key!, task);
+    const first = next.get(key(task));
+    if (!first || Date.parse(task.start_time) < Date.parse(first.start_time)) next.set(key(task), task);
   }
-  return tasks.filter(task => !later(task) || next.get(task.series_key!) === task);
+  return tasks.filter(task => !later(task) || next.get(key(task)) === task);
 }
 
 /** The name of the list a task is being moved to, for the "Moving to…" marker; null when no move waits on the person. */

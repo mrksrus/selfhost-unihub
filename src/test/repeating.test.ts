@@ -36,7 +36,7 @@ describe('a repeat rule follows its event\'s start', () => {
 describe('repeating items in ToDo', () => {
   const now = new Date('2026-06-15T10:00:00Z');
   const item = (id: string, start: string, patch: object = {}) => ({
-    id, series_key: 'standup' as string | null, todo_status: null as 'done' | null, is_todo_only: false, start_time: `${start}T09:00:00Z`, end_time: `${start}T09:30:00Z`, ...patch,
+    id, calendar_id: 'work', series_key: 'standup' as string | null, todo_status: null as 'done' | null, is_todo_only: false, start_time: `${start}T09:00:00Z`, end_time: `${start}T09:30:00Z`, ...patch,
   });
 
   it('shows a repeating item once in Later, at its next date; overdue and today\'s dates all stay', () => {
@@ -45,7 +45,9 @@ describe('repeating items in ToDo', () => {
       item('after', '2026-06-17'), item('next', '2026-06-16'), item('far', '2026-06-18'),
       // A date already ticked stays for Done; a single task and another series are not touched.
       item('done-ahead', '2026-06-19', { todo_status: 'done' }), item('single', '2026-06-20', { series_key: null }), item('other', '2026-06-21', { series_key: 'review' }),
+      // The same invitation in a second calendar keeps its own next date.
+      item('copy', '2026-06-22', { calendar_id: 'home' }),
     ];
-    expect(onceInLater(tasks, 'UTC', now).map(task => task.id)).toEqual(['missed-1', 'missed-2', 'today', 'next', 'done-ahead', 'single', 'other']);
+    expect(onceInLater(tasks, 'UTC', now).map(task => task.id)).toEqual(['missed-1', 'missed-2', 'today', 'next', 'done-ahead', 'single', 'other', 'copy']);
   });
 });

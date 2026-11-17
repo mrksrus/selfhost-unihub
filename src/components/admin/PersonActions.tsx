@@ -158,7 +158,8 @@ export function usePersonActions({ people = [], onDeleted }: { people?: readonly
     transfer: { title: 'Hand over ownership?', description: 'The new owner alone makes and removes administrators. You stay an administrator and cannot take ownership back yourself.', action: 'Hand over ownership', destructive: true },
   };
   const shown = dialog ? copy[dialog.action] : null;
-  const incomplete = dialog?.action === 'password' ? !newPassword : dialog?.action === 'transfer' ? !heir : false;
+  // Deleting or deactivating waits for the person's books and calendars: without them no calendar would be handed over.
+  const incomplete = dialog?.action === 'password' ? !newPassword : dialog?.action === 'transfer' ? !heir : !!leaving && can(user, 'users.manage') && !leavingWith;
 
   const dialogs = (
     <>
