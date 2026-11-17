@@ -383,7 +383,7 @@ export const POLICIES_ADMIN_APP_LOCK = {
 };
 
 // ── 0.30 organisation: people, groups, a group's rules, setup links, required two-factor authentication ──
-const ALL_PERMISSIONS = ['users.read', 'users.manage', 'server.settings', 'storage.read', 'audit.read', 'groups.manage', 'admins.manage', 'owner.transfer', 'contacts.books.manage'];
+const ALL_PERMISSIONS = ['users.read', 'users.manage', 'server.settings', 'storage.read', 'audit.read', 'groups.manage', 'admins.manage', 'owner.transfer', 'contacts.books.manage', 'calendars.manage'];
 /** The administrator of the server pages is the owner: every permission, so every control shows. */
 const OWNER = { ...USER, role: 'owner' as const, permissions: ALL_PERMISSIONS, manages_groups: false, two_factor_enabled: true };
 export const GROUPS = [
@@ -536,6 +536,25 @@ export const SHARED_EVENTS = [
   task('ev-shift', { user_id: 'user-blair', calendar_id: 'cal-rota', color: '#8b5cf6', title: 'Late shift: Blair', start_time: at('06-16T12:00:00.000Z'), end_time: at('06-16T20:00:00.000Z') }),
   task('ev-holiday', { user_id: null, calendar_id: 'cal-holidays', color: '#f97316', title: 'Midsummer, office closed', all_day: true, start_time: at('06-19T00:00:00.000Z'), end_time: at('06-20T00:00:00.000Z') }),
 ];
+/** The calendar list with a colleague's calendar offered to the synthetic person. */
+export const OFFERED_CALENDARS = SHARED_CALENDARS.map(entry => entry.id === 'cal-rota' ? { ...entry, offer: { to: { id: USER.id, email: USER.email, full_name: USER.full_name }, by: colleague('user-blair') } } : entry);
+// Server › Calendars: the organisation's and the groups' calendars, people's shared ones by name and counts, and a deleted one.
+const adminCalendar = (id: string, name: string, color: string, counts: [shares: number, events: number], whose: object = {}) => ({
+  id, name, color, owner_kind: 'organisation', owner: null as ReturnType<typeof colleague> | null, group: null, share_count: counts[0], event_count: counts[1],
+  archived_at: null as string | null, deleted_at: null as string | null, created_at: at('02-03T09:00:00.000Z'), ...whose,
+});
+const ADMIN_CALENDARS = [
+  adminCalendar('cal-holidays', 'Company holidays', '#f97316', [1, 14]),
+  adminCalendar('cal-move', 'Office move 2025', '#64748b', [2, 37], { archived_at: at('05-30T12:00:00.000Z') }),
+  adminCalendar('cal-meetings', 'Team meetings', '#22c55e', [1, 52], { owner_kind: 'group', group: { id: 'grp-support', name: 'Support' } }),
+  adminCalendar('cal-close', 'Year-end close', '#0ea5e9', [1, 9], { owner_kind: 'group', group: { id: 'grp-finance', name: 'Finance' } }),
+  adminCalendar('cal-rota', 'Support rota', '#8b5cf6', [2, 31], { owner_kind: 'user', owner: colleague('user-blair') }),
+  adminCalendar('cal-fair', 'Trade fair planning', '#ec4899', [1, 6], { owner_kind: 'user', owner: colleague('user-blair') }),
+  adminCalendar('cal-party', 'Summer party 2025', '#eab308', [1, 4], { deleted_at: at('06-09T14:00:00.000Z') }),
+];
+/** A person's calendars shared with someone, for the choice before they are deactivated or deleted. */
+const sharedCalendarsOf = (userId: string) => ADMIN_CALENDARS.filter(entry => entry.owner?.id === userId).map(({ id, name, share_count, event_count }) => ({ id, name, share_count, event_count }));
+
 const CALENDAR_SHARES = [
   { principal: { kind: 'group', id: 'grp-support' }, name: 'Support', email: null, permission: 'contribute' },
   { principal: { kind: 'user', id: 'user-alex' }, name: 'Alex Example', email: 'alex@example.com', permission: 'edit' },
@@ -669,7 +688,8 @@ function defaultRoutes(emails: typeof EMAILS, admin = false): Route[] {
     ['GET', /^\/admin\/users$/, () => ok({ users: PEOPLE })],
     ['GET', /^\/admin\/users\/[^/]+\/devices$/, () => ok({ devices: DEVICES.slice(1) })],
     ['GET', /^\/admin\/users\/[^/]+\/accounts$/, url => ok({ user_id: url.pathname.split('/')[4], mail_accounts: [], calendar_accounts: [],
-      managed_books: url.pathname.split('/')[4] === 'user-grace' ? [{ id: 'book-press', name: 'Press contacts' }] : [] })],
+      managed_books: url.pathname.split('/')[4] === 'user-grace' ? [{ id: 'book-press', name: 'Press contacts' }] : [], shared_calendars: sharedCalendarsOf(url.pathname.split('/')[4]) })],
+    ['GET', /^\/admin\/calendars$/, () => ok({ calendars: ADMIN_CALENDARS })],
     ['GET', /^\/admin\/users\/[^/]+\/backups$/, () => ok({ jobs: [] })],
     ['GET', /^\/admin\/users\/[^/]+\/bin$/, () => ok({ items: [], retention: '30', next_cursor: null })],
     ['GET', /^\/admin\/groups$/, () => ok({ groups: GROUPS })],

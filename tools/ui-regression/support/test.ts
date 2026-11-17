@@ -4,7 +4,7 @@
 // reduced motion.
 import { test as base, expect, type Page } from '@playwright/test';
 export type { Page };
-import { createApiRouter, FIXED_NOW, SHARED_CALENDARS, SHARED_EVENTS, type ApiRouter } from './fixtures.ts';
+import { createApiRouter, FIXED_NOW, OFFERED_CALENDARS, SHARED_CALENDARS, SHARED_EVENTS, type ApiRouter } from './fixtures.ts';
 import { markBaselineUsed } from './used-baselines.mts';
 
 export type ThemeMode = 'dark' | 'light' | 'system';
@@ -116,11 +116,28 @@ export async function expectBaseline(page: Page, name: string) {
   await expect(page).toHaveScreenshot(name);
 }
 
-/** Answers the calendar list and the events with the calendars others share with the synthetic person (0.32). */
-export async function sharedCalendars(page: Page) {
+/** Answers the calendar list and the events with the calendars others share with the synthetic person (0.32); `offered`: one of them is offered to the person. */
+export async function sharedCalendars(page: Page, { offered = false } = {}) {
   const answer = (body: unknown) => ({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
-  await page.route(url => url.pathname === '/api/calendar/calendars', route => route.fulfill(answer({ calendars: SHARED_CALENDARS })));
+  await page.route(url => url.pathname === '/api/calendar/calendars', route => route.fulfill(answer({ calendars: offered ? OFFERED_CALENDARS : SHARED_CALENDARS })));
   await page.route(url => url.pathname === '/api/calendar/events', route => route.fulfill(answer({ events: SHARED_EVENTS })));
+}
+
+/** Opens a new event on the Calendar page and gives it a custom repeat rule, scrolled to the top of the dialog's view (0.32). */
+export async function customRepeat(page: Page) {
+  await page.getByRole('button', { name: 'New event' }).first().click();
+  const dialog = page.getByRole('dialog', { name: 'New event' });
+  await dialog.getByLabel('Title').fill('Support stand-up');
+  await dialog.getByRole('combobox', { name: 'Repeat' }).click();
+  await page.getByRole('option', { name: 'Custom…' }).click();
+  const custom = dialog.getByRole('group', { name: 'Custom repeat' });
+  await custom.getByRole('spinbutton', { name: 'Every how many' }).fill('2');
+  await custom.getByRole('button', { name: 'Wednesday' }).click();
+  await custom.getByRole('combobox', { name: 'Ends' }).click();
+  await page.getByRole('option', { name: 'After', exact: true }).click();
+  // The reference picture shows no focus ring left behind by the last choice.
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+  await dialog.getByText('Start', { exact: true }).scrollIntoViewIfNeeded();
 }
 
 export async function pointerIsCoarse(page: Page) {

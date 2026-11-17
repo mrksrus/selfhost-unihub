@@ -35,6 +35,43 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 - **A shared calendar's own bin.** The Calendar's Bin has a "Deleted from"
   row for the calendars others share that you can edit: what anyone deleted
   from one waits there, and everyone who can edit it restores it.
+- **Repeating events in UniHub's own calendars.** The event dialog has
+  Repeat: daily, weekly, every weekday, monthly on a day or on the first to
+  last weekday, yearly, or a rule of your own (every so many days, weeks,
+  months or years, on which weekdays, ending never, on a date or after a
+  number of times). A series keeps its local time across daylight-saving
+  changes. Saving or deleting one of its dates asks "This event" or "All
+  events"; each date keeps its own ToDo progress, subtasks and reminders
+  when all events change. Calendars synced from a provider keep getting
+  their repeating events from the provider.
+- **Group calendars.** A group's manager makes a calendar for the group on
+  the group's page under Settings › Your groups (an administrator under
+  Server › Groups): every member sees it and adds subtasks to its events
+  and tasks, the managers schedule in it, share it further, rename and
+  delete it.
+- **Server › Calendars** for administrators: the calendars of the
+  organisation and of the groups (New calendar, name and colour, Share,
+  Delete, and Restore for a deleted one) and every person's calendar that is
+  shared with someone, by its name and numbers only.
+- **A calendar can change its owner.** "Hand over…" in the settings of one
+  of your own UniHub calendars offers it to a colleague; they find the
+  offer at the top of their Calendar panel and accept or decline, and you
+  can withdraw it. Once accepted, the calendar is theirs with all its
+  events, you can still edit it, and everyone it is shared with keeps it.
+  A manager of a group a calendar is shared with can offer it to a member
+  of that group or hand it over at once. An administrator hands any
+  calendar of Server › Calendars to a person or to the organisation at
+  once, with their password; the former owner is told.
+- **Archive a calendar.** An administrator archives a calendar under
+  Server › Calendars: everyone still sees it, nobody changes it, its owner
+  included, until an administrator unarchives it.
+- **Shared calendars when a person leaves.** The Deactivate and Delete
+  dialogs under Server › People list the calendars the person shares and
+  ask what happens to each: leave it as it is (only when deactivating, the
+  default), hand it to a colleague, make it an organisation calendar (the
+  default when deleting) or delete it.
+- The activity log names the hand-over, archive and deletion of a calendar
+  by an administrator or a group manager.
 - **Calendar and ToDo widgets on Android.** The app puts the next 14 days
   and your open tasks on the home screen, from your own, shared, group and
   organisation calendars; tick a task off right there. They follow your
@@ -43,6 +80,11 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
 ### Changed
 
+- **ToDo shows a repeating item once under "Later"**, at its next date,
+  instead of every date of the next two years; ticking it brings the next
+  one. Overdue and today's dates all stay, and the calendar still shows
+  every date. This also applies to repeating events of calendars synced
+  from a provider.
 - An event that exists moves only between calendars of one owner, so its
   Calendar chooser lists those; a new event or task goes to one of your own
   calendars or one you can edit.

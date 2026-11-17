@@ -14,10 +14,12 @@
 // two-factor set-up (Phone), and since 0.31.0 a shared address book with a
 // contact open and its share dialog (Wide), the book's list and a company
 // directory entry (Phone) and Server -> Shared books (Wide), and since 0.32.0
-// the calendars others share and a calendar's share dialog (Wide) and an
-// event as a contributor reads it (Phone), each in Dark Default and Light
-// Default. Eighty-four pictures; see docs/UI_BASELINES.md.
-import { expect, expectBaseline, sharedCalendars, test, THEMES, VIEWPORTS, type Page } from '../support/test.ts';
+// the calendars others share and a calendar's share dialog (Wide), an event
+// as a contributor reads it (Phone), an offered calendar, the hand-over
+// dialog, Server -> Calendars and the calendars of a leaving person (Wide)
+// and a custom repeat rule (Phone), each in Dark Default and Light Default.
+// Ninety-four pictures; see docs/UI_BASELINES.md.
+import { customRepeat, expect, expectBaseline, sharedCalendars, test, THEMES, VIEWPORTS, type Page } from '../support/test.ts';
 import { CURRENT_DEVICE_LOCKED, POLICIES_ADMIN_APP_LOCK, POLICIES_EFFECTIVE_APP_LOCK, POLICIES_EFFECTIVE_TWO_FACTOR, USER } from '../support/fixtures.ts';
 
 // The app lock's state is this browser's (a PIN record in IndexedDB
@@ -165,8 +167,43 @@ for (const theme of THEMES) {
         await expectBaseline(page, `calendar-share-wide-${theme}.png`);
       });
 
+      // 0.32: a calendar offered to the person, in the panel, and the owner handing one of their own to a colleague.
+      test(`calendar offered to the person (wide, ${theme})`, async ({ page, open, settle }) => {
+        await sharedCalendars(page, { offered: true });
+        await open('/calendar');
+        await expect(page.getByRole('region', { name: 'Offer of Support rota' })).toBeVisible();
+        await settle();
+        await expectBaseline(page, `calendar-offer-wide-${theme}.png`);
+      });
+
+      test(`calendar, hand-over dialog (wide, ${theme})`, async ({ page, open, settle }) => {
+        await sharedCalendars(page);
+        await open('/calendar');
+        await page.getByRole('button', { name: 'Settings for Personal' }).click();
+        await page.getByRole('dialog', { name: 'Personal' }).getByRole('button', { name: 'Hand over…' }).click();
+        await page.getByRole('dialog', { name: 'Hand over Personal' }).getByText('Blair Example', { exact: true }).click();
+        await settle();
+        await expectBaseline(page, `calendar-hand-over-wide-${theme}.png`);
+      });
+
       test.describe('as an administrator', () => {
         test.use({ admin: true });
+
+      // 0.32: Server -> Calendars, and the calendars a leaving person shares in the Deactivate dialog.
+      test(`calendars of the server (wide, ${theme})`, async ({ page, open, settle }) => {
+        await open('/admin/calendars');
+        await expect(page.getByRole('button', { name: 'Restore Summer party 2025' })).toBeVisible();
+        await settle();
+        await expectBaseline(page, `server-calendars-wide-${theme}.png`);
+      });
+
+      test(`deactivate a person who shares calendars (wide, ${theme})`, async ({ page, open, settle }) => {
+        await open('/admin/users/user-blair');
+        await page.getByRole('button', { name: 'Deactivate', exact: true }).click();
+        await expect(page.getByRole('combobox', { name: /^Support rota/ })).toBeVisible();
+        await settle();
+        await expectBaseline(page, `person-leaving-calendars-wide-${theme}.png`);
+      });
 
       test(`shared books of the server (wide, ${theme})`, async ({ page, open, settle }) => {
         await open('/admin/address-books');
@@ -329,6 +366,14 @@ for (const theme of THEMES) {
         await expect(page.getByRole('dialog', { name: 'Event' }).getByRole('list', { name: 'Subtasks' })).toBeVisible();
         await settle();
         await expectBaseline(page, `event-contribute-phone-${theme}.png`);
+      });
+
+      // 0.32: a new event with a repeat rule of its own: every second week on two days, a number of times.
+      test(`event with a custom repeat (phone, ${theme})`, async ({ page, open, settle }) => {
+        await open('/calendar');
+        await customRepeat(page);
+        await settle();
+        await expectBaseline(page, `event-repeat-phone-${theme}.png`);
       });
 
       // 0.29: the lock in a phone's hand, and the set-up the administrator requires.

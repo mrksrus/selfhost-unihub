@@ -7,7 +7,7 @@ import type { Page } from '@playwright/test';
 import { POLICIES_EFFECTIVE_TWO_FACTOR, RICH_TASK, TASKS } from '../support/fixtures.ts';
 import { touchViolations } from '../support/geometry.ts';
 import { expectOnlyKnown, KNOWN_DEFECTS } from '../support/known-defects.ts';
-import { expect, pointerIsCoarse, sharedCalendars, test, THEMES, VIEWPORTS } from '../support/test.ts';
+import { customRepeat, expect, pointerIsCoarse, sharedCalendars, test, THEMES, VIEWPORTS } from '../support/test.ts';
 
 // Synthetic files for the composer's attachments.
 const SYNTHETIC_PDF = { name: 'quarterly-report.pdf', mimeType: 'application/pdf', buffer: Buffer.from('%PDF-1.4 synthetic') };
@@ -350,6 +350,24 @@ test.describe('P-11 touch targets are big enough and never overlap', () => {
     expectOnlyKnown(await touchViolations(page, '[role="dialog"]'), []);
   });
 
+  test('Calendar: an offered calendar in the panel, the hand-over dialog and a custom repeat', async ({ page, open, settle }) => {
+    await sharedCalendars(page, { offered: true });
+    await open('/calendar');
+    await page.getByRole('button', { name: /calendars$/ }).first().click();
+    await expect(page.getByRole('region', { name: 'Offer of Support rota' })).toBeVisible();
+    await settle();
+    expectOnlyKnown(await touchViolations(page, '[role="dialog"]'), [KNOWN_DEFECTS.calendarCheckboxes]);
+    await page.getByRole('button', { name: 'Settings for Personal' }).click();
+    await page.getByRole('dialog', { name: 'Personal' }).getByRole('button', { name: 'Hand over…' }).click();
+    await expect(page.getByRole('radio', { name: /Blair Example/ })).toBeVisible();
+    await settle();
+    expectOnlyKnown(await touchViolations(page, '[role="dialog"]:has(#hand-over-search)'), []);
+    await open('/calendar');
+    await customRepeat(page);
+    await settle();
+    expectOnlyKnown(await touchViolations(page, '[role="dialog"]'), []);
+  });
+
   test('Contact editor', async ({ page, open, settle }) => {
     await open('/contacts?contact=c-1');
     await page.getByRole('button', { name: 'Edit', exact: true }).click();
@@ -429,6 +447,17 @@ test.describe('P-11 touch targets are big enough and never overlap', () => {
       await expect(page.getByRole('button', { name: 'Restore Trade fair 2025' })).toBeVisible();
       await settle();
       expectOnlyKnown(await touchViolations(page), []);
+    });
+
+    test('Server, Calendars and a calendar\'s menu', async ({ page, open, settle }) => {
+      await open('/admin/calendars');
+      await expect(page.getByRole('button', { name: 'Restore Summer party 2025' })).toBeVisible();
+      await settle();
+      expectOnlyKnown(await touchViolations(page), []);
+      await page.getByRole('button', { name: 'Actions for Team meetings' }).click();
+      await expect(page.getByRole('menuitem', { name: 'Hand over…' })).toBeVisible();
+      await settle();
+      expectOnlyKnown(await touchViolations(page, '[role="menu"]'), []);
     });
 
     test('Server, a group and its Add people dialog', async ({ page, open, settle }) => {

@@ -23,20 +23,20 @@
   },
   "baselines": {
     "admin-policies-app-lock-wide-dark.png": {
-      "sha256": "d808c9d7ed759db065f38198f8b2a62618701b0b0d2c0c81c36762d07ccf317e",
-      "bytes": 156063
+      "sha256": "a7af8fd530127b35ded36d56a6ddd3fe30fd8767bc6808dbd876e0409d50c77a",
+      "bytes": 157907
     },
     "admin-policies-app-lock-wide-light.png": {
-      "sha256": "0cbae7efd6512fcdbdba8d924a955da76c62334425e9b0bbee0d536ea49ab1c4",
-      "bytes": 159300
+      "sha256": "3d6a2128aa5933f153d7cd4e8b9cadd00c2ce883b8601567c8e946b17ae93b82",
+      "bytes": 161018
     },
     "admin-policies-wide-dark.png": {
-      "sha256": "571cdd4865dcd3c144b051e37a4302201490b322df114540b87c7da5a9ded6bb",
-      "bytes": 134779
+      "sha256": "809a3d6588016211775e79ad24b349b7112ba18e927af37fa0889a799ce71aa2",
+      "bytes": 136590
     },
     "admin-policies-wide-light.png": {
-      "sha256": "fd322c8d65268bdbe5c5c437beb5b2a4b249a425556edc944636cc7622c3b27b",
-      "bytes": 137579
+      "sha256": "a78e14824f0284438bc56c3a872618a4add22dcc237502145f175d33a6409ec2",
+      "bytes": 139332
     },
     "bin-phone-dark.png": {
       "sha256": "368ab0af0cef3b0f14868e91ee743795b4f19657eb06561b0aa30f87fc8140d1",
@@ -77,6 +77,22 @@
     "book-wide-light.png": {
       "sha256": "539250c1a7bc524e98b5088d149e484dc229f1f396307b16991fc609134b354c",
       "bytes": 128474
+    },
+    "calendar-hand-over-wide-dark.png": {
+      "sha256": "0c0c04f396acbc8359d92602f6258215022f09ee517f382345d95eb5ed995c45",
+      "bytes": 91364
+    },
+    "calendar-hand-over-wide-light.png": {
+      "sha256": "e2c6cca7b84fd64b33b660913c67048f17b4f31ff40fd68cae82b528d179c92a",
+      "bytes": 96280
+    },
+    "calendar-offer-wide-dark.png": {
+      "sha256": "221d64d6eda891e66ce578759f281b127ead82f369f16119c0818a160cadf31b",
+      "bytes": 119959
+    },
+    "calendar-offer-wide-light.png": {
+      "sha256": "17694bb5680b2bf4c4a984ca6af89c731ffab7e54088c8c3326f81d53f6a6ba7",
+      "bytes": 121567
     },
     "calendar-share-wide-dark.png": {
       "sha256": "58f5dfd4ad50cb50d85c9a59eead80e484819e0c183b4fe9a2769cebd517fcbc",
@@ -158,21 +174,29 @@
       "sha256": "b50824ea31685778fbf5eea24f448142b07a40abc0fc6cb0211a652583458038",
       "bytes": 50899
     },
+    "event-repeat-phone-dark.png": {
+      "sha256": "29164d14c31c01fbf3403aabcaa503f8debc3d8da7bf5d529c2a32bb56f03fb8",
+      "bytes": 41423
+    },
+    "event-repeat-phone-light.png": {
+      "sha256": "d2781f4e95e14d96d7b1da5044755417a1dcba3aa4b2a9d154265aced4c1b1a8",
+      "bytes": 44852
+    },
     "group-policies-wide-dark.png": {
-      "sha256": "f259160d2c5678f35108940e1f13313003c59fce75f4a3ceba727474e3f9106c",
-      "bytes": 155517
+      "sha256": "5860f079bf1dd64dd24e36eac4bb38ab9b90bed915023f12714bd63e8f1a3172",
+      "bytes": 157355
     },
     "group-policies-wide-light.png": {
-      "sha256": "fd097133ab5a66f8270ad8deeafb7f18cf315295ed736332cd13be989b531e64",
-      "bytes": 158063
+      "sha256": "57432121595993d56938fe96e0b17edef35b248a1dc6acba142d3a8b209a3442",
+      "bytes": 159818
     },
     "groups-wide-dark.png": {
-      "sha256": "91301b5e0d41b9525297e6d664872b2538d5a94c7a1371d948f702205a180707",
-      "bytes": 99577
+      "sha256": "0992980b3f3df97f22914cdf263e7b034582c2a4d26bcee1404eb8c80d0db569",
+      "bytes": 101379
     },
     "groups-wide-light.png": {
-      "sha256": "1087e1437547717501c27e6051667fb293a0978e34cb3b82d262a0db7c0d0277",
-      "bytes": 100142
+      "sha256": "a952fc8323da5fcf797fcbd294c1447498b2d0ca673119b7047a5a597a03a6ed",
+      "bytes": 101935
     },
     "invite-phone-dark.png": {
       "sha256": "897315652a4ec3265644620fae8a1858a72aafd6628cb9630103c0818cd56d20",
@@ -247,20 +271,28 @@
       "bytes": 111601
     },
     "people-wide-dark.png": {
-      "sha256": "a7df7c698068301bebd1256aa4051de84aa14d60d1415faafcb401e8aa883fe3",
-      "bytes": 146112
+      "sha256": "0e7e40d8d8a36c02b1606b89564b33c87dd89103cf01cf3718a151c36e059560",
+      "bytes": 147931
     },
     "people-wide-light.png": {
-      "sha256": "ed5f91ade338a8f38ece11c31318e4d04ea4e5ee1d6239d268be6a010923e1ad",
-      "bytes": 148691
+      "sha256": "8659d83e6a321c60dfe346e47e51108fd975caf516376bcd7a2b501bdcc76e7a",
+      "bytes": 150419
+    },
+    "person-leaving-calendars-wide-dark.png": {
+      "sha256": "eee6e26fa6d548b2e775f834e8391e8438dfb4f203dbf494f1eb0b3cf4d6e623",
+      "bytes": 133781
+    },
+    "person-leaving-calendars-wide-light.png": {
+      "sha256": "9cc24c81a4697e24e5b95dca06d3cb1811f28935b171a4e37673e1b4c74af388",
+      "bytes": 137535
     },
     "person-wide-dark.png": {
-      "sha256": "56bf5a6222410a65e1c5fe5294766418c4b0b3723ad4004313a4e182b8ef7e29",
-      "bytes": 146904
+      "sha256": "f758b81254c2314d7baadcdc256802943bfb098ec0c95c5ff51a6ffc09b4d02a",
+      "bytes": 148718
     },
     "person-wide-light.png": {
-      "sha256": "4108e13a04b0997bf12c81fa1af403db3272bee84ef00187cee3fcd6eab913c2",
-      "bytes": 149843
+      "sha256": "bcc4a1417a6566391907c5f1fe095d60f146601c4919a576adecbd789bab43f5",
+      "bytes": 151588
     },
     "recordings-phone-dark.png": {
       "sha256": "30b8530f865fd11b7e05379b33d2bb208fef68a34c36933b94d1f77df017952b",
@@ -269,6 +301,14 @@
     "recordings-phone-light.png": {
       "sha256": "6e9a87d9bdb1f55b76d07c9ee08518de9d64bd6899493b48a61a61a8a9be0a12",
       "bytes": 50768
+    },
+    "server-calendars-wide-dark.png": {
+      "sha256": "68d67d0a4e2e2ddc39ba3ec01615cdc31ac0307e246777eaf2c038730e4ded3b",
+      "bytes": 149323
+    },
+    "server-calendars-wide-light.png": {
+      "sha256": "ccbd95dd7710f863e5ca0224e76c1d4077a155bba5e78b81d24e2998c4b5685c",
+      "bytes": 151441
     },
     "settings-app-lock-phone-dark.png": {
       "sha256": "bb4541e80707badd4bb3b434512d21718006a99a8e78a84d2de284130cec89ca",
@@ -311,12 +351,12 @@
       "bytes": 122827
     },
     "shared-books-wide-dark.png": {
-      "sha256": "150712d68ff29a5a9b4faeb8f9e97dde61f7df0063f20debadfe13684119fe18",
-      "bytes": 126070
+      "sha256": "4ee8ecd8a5ff7d333420d3e51e939a67748ad2206e4faa0e842442df128bdfe5",
+      "bytes": 127872
     },
     "shared-books-wide-light.png": {
-      "sha256": "7669d08f08f0dc81a76f11a400f89953e64a1dad6d042f7542551d9e07ed6240",
-      "bytes": 127095
+      "sha256": "54ad0e22c633fb66b86aad71e03e31b939033ee39477c536dac5fb47dd979e58",
+      "bytes": 128887
     },
     "todo-drag-phone-dark.png": {
       "sha256": "cd9aa4c9edec5346bcb78c6293cc60dfd33ffc7e58414d6f795d1df032fa8698",
@@ -1139,6 +1179,111 @@
         "event-contribute-phone-light.png"
       ],
       "changed": [],
+      "removed": []
+    },
+    {
+      "date": "2026-11-17T15:23:10.274Z",
+      "reason": "0.32.0 screens II: new pictures for a custom repeat, an offered calendar, the hand-over dialog, Server > Calendars and the calendars of a leaving person; Server > Calendars is a new entry of the Settings panel, so every Wide picture of an administrator's Settings page changes by that entry. Recorded by the part's frontend agent for the integrator's decision.",
+      "source": {
+        "commit": "db6ca1d2ba84efd878543cdb74ba0d58489c42ef",
+        "branch": "feat/0.32.0-p6-screens",
+        "dirty": true,
+        "digest": "45c928f4c35519cefb2a6147f4d79cbf07ad1c7e0741cde5cb92a5f67b06bead"
+      },
+      "render": {
+        "playwright": "1.64.0",
+        "browser": "chromium-headless-shell 156.0.8078.4",
+        "browserArgs": [
+          "--font-render-hinting=none",
+          "--disable-lcd-text",
+          "--force-color-profile=srgb",
+          "--disable-gpu",
+          "--disable-skia-runtime-opts",
+          "--num-raster-threads=1",
+          "--disable-partial-raster"
+        ],
+        "platform": "linux-x64",
+        "fonts": {
+          "@fontsource/inter": "5.3.0",
+          "@fontsource/jetbrains-mono": "5.3.0"
+        },
+        "fontconfig": "isolated",
+        "deviceScaleFactor": 1
+      },
+      "host": {
+        "node": "v26.12.1",
+        "ci": false
+      },
+      "added": [
+        "calendar-hand-over-wide-dark.png",
+        "calendar-hand-over-wide-light.png",
+        "calendar-offer-wide-dark.png",
+        "calendar-offer-wide-light.png",
+        "event-repeat-phone-dark.png",
+        "event-repeat-phone-light.png",
+        "person-leaving-calendars-wide-dark.png",
+        "person-leaving-calendars-wide-light.png",
+        "server-calendars-wide-dark.png",
+        "server-calendars-wide-light.png"
+      ],
+      "changed": [
+        "admin-policies-app-lock-wide-dark.png",
+        "admin-policies-app-lock-wide-light.png",
+        "admin-policies-wide-dark.png",
+        "admin-policies-wide-light.png",
+        "group-policies-wide-dark.png",
+        "group-policies-wide-light.png",
+        "groups-wide-dark.png",
+        "groups-wide-light.png",
+        "people-wide-dark.png",
+        "people-wide-light.png",
+        "person-wide-dark.png",
+        "person-wide-light.png",
+        "shared-books-wide-dark.png",
+        "shared-books-wide-light.png"
+      ],
+      "removed": []
+    },
+    {
+      "date": "2026-11-17T15:29:10.606Z",
+      "reason": "0.32.0 screens II: the custom repeat with its weekdays in one row and a short Ends choice, and Server > Calendars with rules between people's calendars. Recorded by the part's frontend agent for the integrator's decision.",
+      "source": {
+        "commit": "db6ca1d2ba84efd878543cdb74ba0d58489c42ef",
+        "branch": "feat/0.32.0-p6-screens",
+        "dirty": true,
+        "digest": "030c6b14533f109d74bc8bfe4f0302258368b149cc2c847a3ca53eb5675eaa17"
+      },
+      "render": {
+        "playwright": "1.64.0",
+        "browser": "chromium-headless-shell 156.0.8078.4",
+        "browserArgs": [
+          "--font-render-hinting=none",
+          "--disable-lcd-text",
+          "--force-color-profile=srgb",
+          "--disable-gpu",
+          "--disable-skia-runtime-opts",
+          "--num-raster-threads=1",
+          "--disable-partial-raster"
+        ],
+        "platform": "linux-x64",
+        "fonts": {
+          "@fontsource/inter": "5.3.0",
+          "@fontsource/jetbrains-mono": "5.3.0"
+        },
+        "fontconfig": "isolated",
+        "deviceScaleFactor": 1
+      },
+      "host": {
+        "node": "v26.12.1",
+        "ci": false
+      },
+      "added": [],
+      "changed": [
+        "event-repeat-phone-dark.png",
+        "event-repeat-phone-light.png",
+        "server-calendars-wide-dark.png",
+        "server-calendars-wide-light.png"
+      ],
       "removed": []
     }
   ]
