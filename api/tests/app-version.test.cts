@@ -26,7 +26,7 @@ test('the handshake lists what the apps look for: notifications (0.22.1 on), the
   // An app syncs every contact field only while contacts-vcard is listed; the
   // 0.22.1 to 0.25.1 apps need android-notifications for as long as they are
   // in the window; an app puts shared books on the phone only while contacts-books is listed.
-  assert.deepEqual([...versionInfo().features].sort(), ['android-notifications', 'contacts-books', 'contacts-vcard']);
+  assert.deepEqual([...versionInfo().features].sort(), ['android-notifications', 'calendar-widgets', 'contacts-books', 'contacts-vcard']);
 });
 
 test('no Android offer when the image was built without the app or its metadata is unusable', (t) => {

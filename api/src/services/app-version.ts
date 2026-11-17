@@ -20,7 +20,8 @@ const MIN_APP = '0.21.0';
 // The 0.26 app syncs every contact field only while this is listed, else the 3+3 fields.
 // contacts-books (0.31.0): the shared address books and Company on the phone,
 // read-only (GET /api/address-books/phone and each book's contacts).
-const FEATURES: string[] = ['android-notifications', 'contacts-vcard', 'contacts-books'];
+// calendar-widgets (0.32.0): GET /api/widgets for the home-screen widgets.
+const FEATURES: string[] = ['android-notifications', 'contacts-vcard', 'contacts-books', 'calendar-widgets'];
 
 // Written by android/scripts/build-apk.sh next to the APK in the image.
 const DOWNLOADS_DIR = process.env.UNIHUB_DOWNLOADS_DIR || '/app/downloads';
