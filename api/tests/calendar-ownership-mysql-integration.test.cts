@@ -162,10 +162,12 @@ test('calendar ownership: offers, a manager\'s hand-over, the administrator\'s h
     [alex, 'PUT', ev(team.event), { calendar_id: alexDefault }], [alex, 'POST', ev(team.event, '/move'), { calendar_id: alexDefault }],
     [alex, 'POST', ev(alexOwn.id, '/move'), { calendar_id: team.id }], [alex, 'DELETE', `/api/calendar/calendars/${team.id}`],
     [alex, 'DELETE', `/api/calendar/accounts/${alexAccount}`], [alex, 'POST', '/api/settings/clear-calendar'],
+    [alex, 'PUT', `/api/calendar/calendars/${team.id}`, { name: 'Team', is_visible: false }],
   ] as const) {
     assert.deepEqual(await refused(client, method, url, body), [403, 'CALENDAR_FORBIDDEN'], `archived: ${method} ${url}`);
   }
   assert.equal((await call(blair, 'GET', ev(team.event))).event.title, 'Team meeting 2031', 'reads go on');
+  assert.equal((await call(alex, 'PUT', `/api/calendar/calendars/${team.id}`, { name: 'Team', color: '#0f766e' })).calendar.color, '#0f766e', 'the owner still names and colours it');
   assert.equal((await call(alex, 'GET', ev(alexOwn.id))).event.calendar_id, alexDefault);
   await call(alex, 'DELETE', `/api/calendar/accounts/${spare}`);
   await call(ari, 'PUT', `/api/admin/calendars/${team.id}/archive`, { archived: false, current_password: password });

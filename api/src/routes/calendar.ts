@@ -478,6 +478,8 @@ export = {
       const [existingRows] = await db.execute<CalendarRecordRow[]>('SELECT * FROM calendar_calendars WHERE id = ? AND user_id = ?', [id, userId]);
       if (existingRows.length === 0) return { error: 'Calendar not found', status: 404 };
       const existing = existingRows[0];
+      // An archived calendar keeps only its owner's name and colour changes.
+      if (existing.archived_at && Object.keys(body ?? {}).some(key => key !== 'name' && key !== 'color')) throw forbidden('CALENDAR_FORBIDDEN', 'You cannot change this calendar.');
       const [[owner]] = await db.execute<AccountRow[]>('SELECT provider FROM calendar_accounts WHERE id = ?', [existing.account_id]);
       const remote = isRemoteProvider(owner?.provider);
       if (remote && has(body, 'name') && body.name?.trim() !== existing.name) {
