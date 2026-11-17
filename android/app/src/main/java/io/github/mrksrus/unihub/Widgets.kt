@@ -324,8 +324,9 @@ object Widgets {
         override fun onCreate() {}
         override fun onDataSetChanged() {
             val answer = answer(context)
-            rows = items(answer, kind)
             zone = zone(answer)
+            // Grouped by local day: all-day events sit at UTC midnight, so the server's order can split a day.
+            rows = items(answer, kind).let { if (kind == "agenda") it.sortedWith(compareBy({ start(it)?.toLocalDate() }, { !it.optBoolean("all_day") }, { start(it)?.toInstant() })) else it }
             roomy = roomy(context, widgetId)
         }
         override fun onDestroy() {}
@@ -372,7 +373,7 @@ object Widgets {
                 val tick = row.optBoolean("can_tick")
                 views.setViewVisibility(R.id.row_tick, View.VISIBLE)
                 views.setInt(R.id.row_circle, "setImageAlpha", if (tick) 255 else 90)
-                views.setContentDescription(R.id.row_tick, if (tick) context.getString(R.string.widget_tick_label, title) else null)
+                views.setContentDescription(R.id.row_tick, if (tick) context.getString(R.string.widget_tick_label, title) else title)
                 val open = Intent().putExtra(MainActivity.EXTRA_PATH, "/todo?task=" + Uri.encode(row.optString("id")))
                 views.setOnClickFillInIntent(R.id.row, open)
                 // Always set: a row's views are used again, and a circle left alone would keep the task it ticked before.
