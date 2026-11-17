@@ -5,6 +5,48 @@
 For a new installation, use [Installation](INSTALLATION.md). This page includes
 version-specific upgrade guidance. Preserve existing data and keys when upgrading.
 
+## 0.32.0 Shared calendars
+
+**Make a database backup first.** One automatic database upgrade runs at the
+first start: **step 30** adds what shared, group and organisation calendars,
+repeating events, each calendar's bin and each person's reminders need:
+three tables (`calendar_series`, `calendar_reminders`, `calendar_views`) and
+new columns in `calendar_calendars`, `calendar_events`,
+`calendar_event_subtasks`, `calendar_event_attendees`, `bin_items` and
+`notification_reminders`, whose key now names the person. It changes no
+row's meaning, but MariaDB copies each of those six tables once, and the
+server does not answer until it is done. It took about 20 seconds per
+100,000 events (19.4 and 19.9 seconds in two runs, with 30,000 subtasks,
+20,000 attendees and 50,000 queued reminders) on a NAS with an Intel Xeon
+E3-1230 v3 and MariaDB 11.8; the Docker health check's 360-second start
+period covers about 1.8 million events on such a machine. A start stopped
+part-way runs the step again safely.
+
+Going back to 0.31.x means restoring that backup: 0.31.x does not know step
+30 and refuses to start ("Database upgrade history is unknown or out of
+order"). Personal backups are now **data schema 8**, which carries repeating
+events; 0.31.x and older refuse a backup made by 0.32.0, and 0.32.0 imports
+every older one. Shared, group and organisation calendars are in the
+instance backup only
+([Data recovery](DATA_RECOVERY.md#backup-versions-and-restore-behavior)).
+
+- **Nothing is shared after the upgrade.** Every calendar keeps its owner,
+  there are no group or organisation calendars yet, and notifications of
+  other people's changes are off until each person switches them on.
+  Administrators and the owner have the new permission `calendars.manage`
+  (Server › Calendars) with their role.
+- **API clients.** `GET /api/calendar/calendars` and `/api/calendar/events`
+  now also return calendars and events others share with the person; a
+  script that treats every listed calendar as the person's own checks
+  `owner` and `permission` ([Calendar](CALENDAR.md#shared-group-and-organisation-calendars)).
+  A `recurrence` value a script wrote into a UniHub event before stays
+  ignored: the event stays single, and repeating events are made with
+  `repeat`.
+- **Android app.** The Calendar and ToDo widgets need the 0.32.0 app (offered
+  under Settings → General → App); older apps keep working without them.
+- **No new configuration.** No environment variable, port, container or
+  volume is added.
+
 ## 0.31.0 Shared address books
 
 **Make a database backup first.** One automatic database upgrade runs at the

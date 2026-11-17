@@ -343,7 +343,7 @@ Admin routes require an authenticated user whose role grants the route's
 permission. `api/src/security/permissions.ts` maps roles to permissions
 (`users.read`, `users.manage`, `server.settings`, `storage.read`,
 `audit.read`, `groups.manage`, `admins.manage`, `owner.transfer`,
-`contacts.books.manage`): the owner
+`contacts.books.manage`, `calendars.manage`): the owner
 has all of them, an `admin` all but `admins.manage` and `owner.transfer`, and
 a member (`user`) none. Every route declared with `auth: 'admin'` must name
 its permission, and the request boundary checks it before the handler runs.
@@ -378,10 +378,14 @@ same map through the `permissions` of `/api/auth/me`.
 | PUT | `/api/admin/policies` | Save changed policies with the admin's password (`server.settings`) |
 | GET, PUT | `/api/admin/groups/:id/policies` | The same for one group: only values at least as strict as Everyone's, and `clear` to give a key back to Everyone (`server.settings`; `404 GROUP_NOT_FOUND`) |
 | POST | `/api/admin/policies/preview` | `{ "group_id" }` or none for Everyone: before requiring 2FA, how many people it covers have none and who of them is already in a grace; changes nothing (`server.settings`) |
-| GET | `/api/admin/users/:id/accounts`, `/backups`, `/bin` | A person's mail and calendar accounts (no credentials) and the shared books they manage (`managed_books`), backups and bin (`users.read`) |
+| GET | `/api/admin/users/:id/accounts`, `/backups`, `/bin` | A person's mail and calendar accounts (no credentials), the shared books they manage (`managed_books`) and their calendars shared with someone (`shared_calendars`: name, share and event counts), backups and bin (`users.read`) |
 | GET, PUT | `/api/admin/users/:id/directory` | Read or correct the person's company directory entry (`users.manage`) |
 | GET | `/api/admin/address-books` | Every shared address book, deleted ones too, with its creator (`contacts.books.manage`) |
 | POST | `/api/admin/address-books/:id/restore` | Restore a deleted book with its contacts and shares (`contacts.books.manage`) |
+| GET | `/api/admin/calendars` | Server › Calendars: every calendar no person owns, deleted ones too, and every person's calendar shared with someone, by name and counts (`calendars.manage`) |
+| POST | `/api/admin/calendars/:id/restore` | Restore a deleted group or organisation calendar with its events and shares (`calendars.manage`) |
+| POST | `/api/admin/calendars/:id/hand-over` | Hand a calendar over at once to a person, the organisation or its owner's bin; admin's password (`calendars.manage`) |
+| PUT | `/api/admin/calendars/:id/archive` | Archive or unarchive a calendar; admin's password (`calendars.manage`) |
 | POST, PUT, DELETE | `/api/admin/users/:id/mail-accounts[/:accountId]` | Add, change, disconnect (`?purge=true`: and delete UniHub's copy of its mail) a person's mail account (`users.manage`) |
 | POST, PUT, DELETE | `/api/admin/users/:id/calendar-accounts[/:accountId]` | Add, change, remove a person's calendar account (`users.manage`) |
 | DELETE | `/api/admin/users/:id/backups/:jobId` | Delete a person's backup (`users.manage`) |
@@ -415,7 +419,11 @@ account concerned), people and groups (`admin.user_created`,
 `admin.group_manager_set`, `admin.directory_changed` with the fields
 changed, and a manager's `group.renamed`,
 `group.member_added`, `group.member_removed`; a policy change names its
-target, the installation or the group), and the removal of a person's mail
+target, the installation or the group), a calendar's change of owner
+(`admin.calendar_handed_over`, `admin.calendar_binned`,
+`admin.calendar_archived`, `admin.calendar_unarchived`, and a group
+manager's hand-over at once, `calendar.handed_over`, each with the
+calendar's id and the person whose calendar it was), and the removal of a person's mail
 data: disconnecting a mail account (`mail.account_disconnected`) and deleting
 it with UniHub's copy of its mail (`mail.account_purged`). Each entry names
 the actor, the account concerned, the address and the request id; details hold
@@ -545,6 +553,24 @@ and their data ([Admin Endpoints](#admin-endpoints)). Both dialogs first name
 the shared address books the person manages: the books stay, and
 administrators keep managing them.
 
+Both dialogs then list the person's calendars that are shared with someone
+(`shared_calendars`) and ask what happens to each:
+
+| Choice | Deactivate | Delete |
+| --- | --- | --- |
+| Leave it as it is: the shares keep working while the person is away | default | not offered |
+| Hand it to a colleague (an active person) | yes | yes |
+| Make it an organisation calendar | yes | default |
+| Delete it: to the person's bin when deactivating; with the person when deleting | yes | yes |
+
+Each choice other than "leave", and other than deleting it with the person,
+is one call of the administrator's hand-over
+(`POST /api/admin/calendars/:id/hand-over`), made before the person is
+deactivated or deleted ([Calendar](CALENDAR.md#change-of-owner-and-archive)).
+Deactivating withdraws the pending offers to the person, by them and of
+their calendars. Deleting a person also removes every share of their
+calendars that go with them.
+
 An administrator sees a person's devices (`GET /api/admin/users/:id/devices`)
 and signs one or all of them out with their password. Live connections
 close, the Android app finds itself signed out at its next request, and the
@@ -574,8 +600,14 @@ from Settings > Your groups (`/api/groups`). They may:
 - remove members
 - see the members and the rules the group adds, read-only
 
-They cannot create or delete groups, name or remove managers, change rules or
-open the Server pages. A member sees their groups and each group's managers.
+For calendars a manager also creates their group's calendars and manages
+them (name and colour, sharing, delete) on the group's page, and hands over a
+person's calendar on which their group holds `read` or more to a member of
+that group, as an offer or at once
+([Calendar](CALENDAR.md#change-of-owner-and-archive)).
+
+They cannot create or delete groups, name or remove managers, change rules,
+restore a deleted group calendar or open the Server pages. A member sees their groups and each group's managers.
 A group someone cannot see is `404 GROUP_NOT_FOUND`; one they may see but
 not manage is `403 GROUP_FORBIDDEN`.
 
@@ -608,6 +640,20 @@ department under Settings › Profile. An administrator with `users.manage`
 corrects them on the person's page under Server › People; only the changed
 fields are sent, and the activity log records `admin.directory_changed`.
 Members cannot change another person's entry.
+
+## Shared calendars
+
+**Server › Calendars** lists the organisation's and the groups' calendars
+(New calendar for the organisation or a group, name and colour, Share, Hand
+over, Archive or Unarchive, Delete), every person's calendar that is shared
+with someone by its name and numbers only (Hand over, Archive or
+Unarchive), and under **Deleted** the deleted group and organisation
+calendars with **Restore**. It needs `calendars.manage` (the owner and
+administrators); Hand over and Archive ask for the administrator's password.
+A person's calendar nobody shares is not listed, and an administrator's
+calendar is the installation owner's alone to hand over or archive. Who may
+do what in a calendar, its bin and the routes are in
+[Calendar](CALENDAR.md#shared-group-and-organisation-calendars).
 
 ## User settings
 

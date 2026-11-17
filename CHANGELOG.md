@@ -8,6 +8,13 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
 ## 0.32.0
 
+Shared calendars: share your calendars and task lists, calendars for groups
+and for the organisation, repeating events in UniHub's own calendars, a
+calendar's change of owner, and Calendar and ToDo widgets on Android. The
+first start after the upgrade runs database upgrade 30, which takes about 20
+seconds per 100,000 events; back up first (see
+[Upgrading](docs/UPGRADING.md#0320-shared-calendars)).
+
 ### Added
 
 - **Share your calendars and task lists.** A calendar kept in UniHub has
@@ -25,16 +32,22 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
   switched on or off and coloured for you alone, on every device. An event
   you cannot change opens read-only and says why; where you can add
   subtasks, they come first and each says who added it. Your reminders on an
-  event in someone else's calendar are your own.
-- **"Notify me of others' changes"** in a calendar's settings, for your own
-  UniHub calendars and those shared with you. It is off until you switch it
-  on.
+  event in someone else's calendar are your own. Search, the offline copy
+  and the widgets include them; a calendar no longer shared with you leaves
+  them.
 - **Shared task lists in ToDo.** Tasks of a list shared with you show with
-  the owner's name. Whoever can edit the list ticks its tasks; the order of
+  whose list it is. Whoever can edit the list ticks its tasks; the order of
   the tasks stays your own.
-- **A shared calendar's own bin.** The Calendar's Bin has a "Deleted from"
-  row for the calendars others share that you can edit: what anyone deleted
-  from one waits there, and everyone who can edit it restores it.
+- **Group calendars.** A group's manager makes a calendar for the group on
+  the group's page under Settings › Your groups (an administrator under
+  Server › Groups): every member sees it and adds subtasks to its events
+  and tasks, and the managers schedule in it, share it further, rename and
+  delete it.
+- **Server › Calendars** for administrators: the calendars of the
+  organisation, such as holidays or a support rota, and of the groups (New
+  calendar, name and colour, Share, Delete, and Restore for a deleted one),
+  and every person's calendar that is shared with someone, by its name and
+  numbers only.
 - **Repeating events in UniHub's own calendars.** The event dialog has
   Repeat: daily, weekly, every weekday, monthly on a day or on the first to
   last weekday, yearly, or a rule of your own (every so many days, weeks,
@@ -44,15 +57,15 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
   events"; each date keeps its own ToDo progress, subtasks and reminders
   when all events change. Calendars synced from a provider keep getting
   their repeating events from the provider.
-- **Group calendars.** A group's manager makes a calendar for the group on
-  the group's page under Settings › Your groups (an administrator under
-  Server › Groups): every member sees it and adds subtasks to its events
-  and tasks, the managers schedule in it, share it further, rename and
-  delete it.
-- **Server › Calendars** for administrators: the calendars of the
-  organisation and of the groups (New calendar, name and colour, Share,
-  Delete, and Restore for a deleted one) and every person's calendar that is
-  shared with someone, by its name and numbers only.
+- **"Notify me of others' changes"** in a calendar's settings, for your own
+  UniHub calendars and those shared with you: a notification when someone
+  else adds, changes, ticks or deletes something there. It is off until you
+  switch it on.
+- **A shared calendar's own bin.** The Calendar's Bin has a "Deleted from"
+  row for the calendars others share that you can edit: what anyone deleted
+  from one waits there, and everyone who can edit it restores it. A
+  restored event comes back without other people's own reminders and their
+  place for it in their task order.
 - **A calendar can change its owner.** "Hand over…" in the settings of one
   of your own UniHub calendars offers it to a colleague; they find the
   offer at the top of their Calendar panel and accept or decline, and you
@@ -77,7 +90,8 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
   organisation calendars; tick a task off right there. They follow your
   notification detail (the app lock does not hide them) and empty when you
   sign out. Resize them from three cells wide to the whole screen; a tap on
-  an event or task opens it in UniHub. They need a server of this version.
+  an event or task opens it in UniHub. They need the 0.32.0 app and a
+  server of this version.
 
 ### Changed
 
@@ -89,6 +103,14 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 - An event that exists moves only between calendars of one owner, so its
   Calendar chooser lists those; a new event or task goes to one of your own
   calendars or one you can edit.
+- **Personal backups** carry repeating events (data schema 8). UniHub
+  0.31.x and older cannot read a backup made by 0.32.0; 0.32.0 reads every
+  older one.
+- **Reference pictures.** New pictures of the shared calendars, the share
+  dialog, an event for a contributor, a custom repeat, an offered calendar,
+  Hand over…, Server › Calendars and the Deactivate dialog; the Server
+  pictures of an administrator gain "Calendars" in the panel: added content
+  within the accepted design.
 
 ## 0.31.0
 

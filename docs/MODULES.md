@@ -31,6 +31,18 @@ refresh. Their own directory fields under Settings › Profile stay open, and
 the books themselves keep working for everyone else
 ([Contacts](CONTACTS.md#shared-address-books)).
 
+Shared, group and organisation calendars, offers of a calendar, the
+calendars' bins, per-person reminders, change notifications and the
+widgets belong to Calendar. With Calendar off for a person, the calendars
+others share with them are gone for them with their reminders and
+notifications, their widgets say so, their phones and offline copies lose
+them at the next refresh, and they cannot be offered a calendar. The
+calendars themselves keep working for everyone else, also a person's own
+calendar they shared, and its series keep growing only after Calendar is on
+again ([Calendar](CALENDAR.md#shared-group-and-organisation-calendars)).
+Server › Calendars and a group page's Calendars need the administrator's own
+Calendar on; the page says so.
+
 Contacts and recordings have no automatic provider worker to pause.
 Temporary-upload housekeeping continues to remove expired incomplete uploads.
 The contacts housekeeping (merged contacts past their 30-day undo, expired

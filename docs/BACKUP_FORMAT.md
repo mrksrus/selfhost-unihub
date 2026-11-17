@@ -2,8 +2,8 @@
 
 **ALPHA: account backup, import and restore are experimental. Do not rely on them as your only copy of important data. Keep an independent, consistent backup of the database, uploads, deployment configuration and secrets, especially before deleting mail from your email provider.**
 
-0.28.0 and later write account backups with data schema 7 and retain readers for schemas 1–6
-(0.27.x wrote schema 6, 0.26.x schema 5, 0.10.13 to 0.25.x schema 4). Every new
+0.32.0 and later write account backups with data schema 8 and retain readers for schemas 1–7
+(0.28.x to 0.31.x wrote schema 7, 0.27.x schema 6, 0.26.x schema 5, 0.10.13 to 0.25.x schema 4). Every new
 backup is an AES-encrypted ZIP file that other programs open with the recovery
 password (below); the `.unihub-backup` container of 0.27 and unencrypted ZIP
 archives of earlier releases still import. `manifest.json` is the version file.
@@ -87,7 +87,7 @@ or a `.`/`..` part.
 
 | Field | Current value | Meaning |
 | --- | --- | --- |
-| Data `version` | 7 | Meaning and shape of exported records |
+| Data `version` | 8 | Meaning and shape of exported records |
 | ZIP `format` | `unihub-restorable-backup` | Identifies a restorable archive |
 | ZIP `format_version` | 2 | Archive layout (1 before 0.28) |
 | Encryption | WinZip AES-256 (AE-2) ZIP | `UNIHUBBK1` container version 1 in 0.27, still read |
@@ -110,6 +110,7 @@ framing and a password-wrapped data key; its archives are still read.
 | 5 | Automatic | Contacts in the vCard model: values, kept properties, photos, merged-away UIDs and dismissed duplicates |
 | 6 | Automatic | The hand order of tasks (`task_order`) and the default task list and calendar settings |
 | 7 | Automatic | Data classes: no provider copies; stable `uid` of calendars, events and recordings; synced-task state as overlays; the bin (`bin_items`, `recording_bin` files); `contents` |
+| 8 | Automatic | Repeating events of UniHub calendars: `calendar_series` and each date's `series_id` and `recurrence_id`; a bin item's `calendar_id` |
 | Unknown version | Rejected before restore | Requires a compatible reader |
 
 Schema 3 preserves account-scoped folder metadata, source and filing identities,
@@ -335,6 +336,31 @@ rules (`setting_policies`, `policy.<key>`), their revision and the instance
 backup's schedule (`system_settings`), and each person's confirmation of the
 rules (`policy_notices`) are never archived: a restore leaves the destination
 server's rules in force, and its people confirm them there.
+
+0.32.0 introduces schema 8 (upgrade step 30) for repeating events in
+UniHub's own calendars. The Calendar section carries `calendar_series` (the
+series' iCalendar text: rule, time zone, changed and removed dates) and, on
+`calendar_events`, `series_id` and `recurrence_id`; a series cannot be
+rebuilt from its dates, which hold neither its zone, its removed dates nor
+the dates outside the window. A restore maps series ids as it maps event
+ids, matching a series by its id or by its UID in the same calendar: Replace
+matching writes the archived series over the live one, Keep existing leaves
+it, Keep both copies it with a new id and UID. Each archived date is matched
+by its identity like any event, else by its key in the same series, so no
+date is written twice. A bin item keeps its `calendar_id`, so a restored item shows
+in its calendar's bin. Nothing is converted (`backup-formats/v8.ts`):
+archives of schemas 1 to 7 carry no series and import unchanged, and a
+schema 7 archive that carries a step-30 field is refused as not made by
+UniHub. Shares, views, other people's reminders, offers, the archive mark
+and group and organisation calendars are organisation data and never in a
+personal backup ([Calendar](CALENDAR.md#backup-and-restore-alpha)). The
+readable `.ics` copy writes each series once, as stored, not a VEVENT per
+date; the dates' ToDo state and subtasks are in the backup itself.
+
+Applications that read only schemas 1–7 (0.31.x and older) refuse a schema 8
+backup before restoring anything: "Unsupported backup data version: 8. This
+UniHub version reads versions 1, 2, 3, 4, 5, 6 and 7; a newer backup may
+need a newer UniHub release."
 
 Applications that read only schemas 1–6 (0.27.x and older) refuse a schema 7
 backup before restoring anything.

@@ -21,8 +21,8 @@ See [Recovery contracts](DATA_RECOVERY.md) for developer requirements and
 
 
 
-This guide describes UniHub **0.28**. New backups use data schema 7; imports
-read schemas 1 to 7 automatically. See [Backup Format](BACKUP_FORMAT.md) for
+This guide describes UniHub **0.28**. New backups use data schema 8 (0.32.0
+on; 7 from 0.28.0); imports read schemas 1 to 8 automatically. See [Backup Format](BACKUP_FORMAT.md) for
 the compatibility contract.
 
 ## Purpose

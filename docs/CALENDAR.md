@@ -17,6 +17,10 @@ Current capabilities:
 - day/week/month calendar views in the frontend
 - standalone to-dos, subtasks, reminders, attendees, RSVP state
 - per-calendar visibility, color, primary flag, and auto-ToDo settings
+- repeating events in UniHub's own calendars (0.32.0)
+- sharing UniHub's own calendars and task lists with people and groups at
+  five levels, group and organisation calendars, each shared calendar's own
+  bin, a calendar's change of owner and its archive (0.32.0)
 
 ## Provider Model
 
@@ -136,6 +140,8 @@ Core tables:
 - `calendar_event_external_refs`
 - `calendar_remote_objects`
 - `calendar_overlay_restores` (a synced task's own state waiting for its sync, see [Synced tasks keep their own state](#synced-tasks-keep-their-own-state))
+- `calendar_series` (a repeating event of a UniHub calendar, see [Repeating events](#repeating-events-in-unihubs-calendars))
+- `calendar_views`, `calendar_reminders` and `grants` of kind `calendar` (see [Shared calendars](#shared-group-and-organisation-calendars))
 
 Important fields:
 
@@ -158,6 +164,15 @@ Important fields:
 | `calendar_events` | `reminders` | JSON array of reminder offsets in minutes |
 | `calendar_events` | `source_email_id`, `source_email_json` | The email a task or event was made from (0.20.0): the id (no foreign key) and a snapshot of its header, see [Tasks from email](#tasks-from-email) |
 | `calendar_event_external_refs` | `remote_object_id`, `recurrence_id` | Links each local occurrence to its server object; `recurrence_id` is UTC `YYYYMMDDTHHMMSSZ` |
+| `calendar_calendars` | `user_id`, `account_id`, `group_id` | The owner: a person with their local account; both NULL for a calendar no person owns, a group calendar when `group_id` is set (deleting the group sets it NULL, which makes it an organisation calendar) |
+| `calendar_calendars` | `archived_at`, `deleted_at`, `offer_to`, `offer_by` | Archived by an administrator; a deleted group or organisation calendar waiting for its purge; the one pending ownership offer |
+| `calendar_events`, `calendar_event_subtasks`, `calendar_event_attendees` | `user_id` | The calendar owner's, whoever wrote the row; NULL in a calendar no person owns |
+| `calendar_events` | `series_id`, `recurrence_id` | A date of a repeating UniHub event and its original time (the same key format as above); unique together |
+| `calendar_event_subtasks` | `created_by` | Who added the subtask; a contributor changes only their own |
+| `calendar_series` | `calendar_id`, `uid`, `ics` | The series as one iCalendar text: the rule, the creator's time zone, removed dates (`EXDATE`) and changed ones (`RECURRENCE-ID`). It has no owner column: it belongs to its calendar |
+| `calendar_views` | `calendar_id`, `user_id`, `is_visible`, `color`, `notify_changes` | A person's own view of a calendar they reach; no row means on, the calendar's colour, no change notifications. For the owner only `notify_changes` counts |
+| `calendar_reminders` | `user_id`, `event_id` or `series_id`, `reminders` | A person's own reminders on an event, or on every date of a series, of a calendar they do not own |
+| `bin_items` | `calendar_id` | The calendar whose bin shows the item (no foreign key, so a deleted calendar does not take its bin with it) |
 
 ## Default Calendar
 
@@ -188,6 +203,298 @@ An event appears in ToDo-oriented views when:
 Turning off `auto_todo_enabled` hides existing events from ToDo projections
 without deleting the events.
 
+**A repeating item in "Later".** ToDo's "Later" shows a repeating item once,
+at its next date: the first open date per series (`series_key`) and calendar.
+"Overdue" and "Today" keep every date, so a missed date stays until it is
+ticked, and ticking a date brings the next one. This holds for UniHub's own
+series and for synced ones; the view and list counts follow it, the ToDo
+widget does the same ([Android](ANDROID.md#home-screen-widgets)), and the
+calendar still shows every date.
+
+## Repeating events in UniHub's calendars
+
+From 0.32.0 an event or task in a UniHub calendar can repeat. Calendars synced
+from a provider keep getting their repeating events from the provider
+([Sync](#sync), [Writeback](#writeback)). The request and response shapes,
+with every error code, are in `api/src/contracts/calendar-series.ts`.
+
+- **Storage.** A series is one `calendar_series` row holding the iCalendar
+  text, with one `calendar_events` row per date from 365 days back to 730
+  days ahead (at most 1,100 dates), the same window and the same engine
+  (`calendar-ical.ts`) as synced series. `services/calendar-series.ts`
+  applies the series to its rows in place by recurrence key: a date found
+  keeps its row and id, with its ToDo state, subtasks, attendees, order and
+  reminders; a new date is inserted. Every reader (the calendar, ToDo,
+  widgets, offline, search, reminders, free/busy) reads rows, so each date
+  behaves like a single event there; search shows each date.
+- **Daily extension.** Once a day per calendar with series, from the
+  calendar sync pass, the dates that came into the window are added; nothing
+  is changed or removed, and a date that falls out of the window keeps its
+  row as history. A calendar whose owner's calendar restore runs waits; one
+  whose owner has Calendar off waits a day.
+- **Rules.** Daily; weekly on any weekdays; monthly on one day (months
+  without that day are skipped, as RFC 5545 says) or on one ordinal weekday
+  (first to fourth, or last); yearly. Interval 1 to 99; ending never, after 1
+  to 999 dates, or on a date (the end of that day in the series' zone). The
+  week starts on the person's `week_start`. Anything else is refused
+  (`RRULE_UNSUPPORTED`); hourly rules, extra dates (`RDATE`) and "this and
+  following" are not offered.
+- **Time zone.** A series keeps its creator's time zone (`time_zone`, an IANA
+  name; the person's own when left out), so 09:00 stays 09:00 across a
+  daylight-saving change there, and people elsewhere see the same instants.
+  An all-day series repeats dates in that zone.
+- **One date or all.** `PUT` and `DELETE` of a date take `scope`
+  (`occurrence`, the default, or `series`). One date is changed as an
+  exception in the series and its row; a changed date keeps its own time when
+  the series' time moves later. All dates changes the series and every date
+  in the window, keeping ids and each date's state; a move of the series'
+  time moves every date's key with it. Attendees are each date's own, also
+  when all dates change. Switching all dates between all-day and timed, or
+  changing the rule, treats the dates as new: a date that leaves the rule and
+  holds something of its own (a ToDo state, subtasks or attendees) goes to
+  the bin as a single event, one that holds nothing is removed. `repeat:
+  null` keeps the edited date as a single event and puts the series in the
+  bin; `repeat` on a single event makes it the first date of a series.
+- **Deleting.** One date adds an `EXDATE` to the series and moves its row to
+  the bin; restored, it comes back as a single event with what it held (the
+  series keeps the gap). All dates go to the bin as one item with the series
+  and every row, and come back as the series with the same ids. A calendar
+  deleted to the bin takes its series with it.
+- **Moving.** A series moves only whole, to a UniHub calendar of the same
+  owner; one date never moves to another list (`409 SERIES_MOVE_REFUSED`).
+- **Reminders.** The event's reminders are the series' `VALARM`s on every
+  date (one date's in its exception). Anyone else's own reminders are for the
+  whole series or for one date, which wins ([Reminders](#each-persons-reminders)).
+- **Who.** `edit` creates, changes and deletes series and dates;
+  `contribute` adds subtasks to one date; `read` sets its own reminders.
+- **Old values.** A local event that held a `recurrence` value written by
+  an API client before 0.32.0 stays a single event; that value was never
+  expanded and still is not. The repeat mark and the "This event" or "All
+  events" choice follow `series_id` for local events.
+- **Backups.** Personal backups carry series from data schema 8; the
+  readable `.ics` copy in the archive writes each series once, as it is
+  stored ([Backup and Restore](#backup-and-restore-alpha)).
+
+## Shared, group and organisation calendars
+
+From 0.32.0 a calendar kept in UniHub can be shared with people and groups.
+Calendars synced from a provider (CalDAV, subscriptions) are shared at the
+provider, never through UniHub (`400 CALENDAR_NOT_SHAREABLE`; a grant on one
+reaches nobody). A task list is a calendar, so the same holds for ToDo
+lists. The request and response shapes, with every error code, are in
+`api/src/contracts/calendar-shares.ts` and
+`api/src/contracts/calendar-ownership.ts`.
+
+**Three kinds of calendar.** A person's calendar belongs to them (`user_id`).
+An organisation calendar belongs to nobody: an administrator makes it, for
+example for holidays or a support rota. A group calendar is a calendar
+nobody owns that names a group (`group_id`); deleting the group turns it
+into an organisation calendar and keeps everything in it. Every row of a
+calendar (events, subtasks, attendees, settings, bin items) carries its
+owner's `user_id`, NULL without a person, whoever wrote it; that keeps a
+person's backup, Delete data, deletion and a hand-over correct.
+
+### Levels
+
+A person's level on a calendar is one of five; each includes the ones
+before. The access service (`services/access.ts`, kind `calendar`) answers it
+from the grants to the person, to their groups and to Everyone, at the most
+any of them gives.
+
+| Level | Shown as | May |
+| --- | --- | --- |
+| `freebusy` | Sees busy times | Start, end and all-day of each event as "Busy"; no tasks, no titles |
+| `read` | Can read | Everything; their own reminders and change notifications |
+| `contribute` | Can add subtasks | Read, and add subtasks to events and tasks; the subtasks they added are theirs to change, tick and remove. Not: create, change the time, title or any other field, tick the item, touch another person's subtask, reorder, delete |
+| `edit` | Can edit | Create, change, tick and delete events and tasks (one date or all), every subtask, the calendar's bin |
+| `manage` | Can manage | Edit, and share within their reach, rename and set the default colour |
+
+Without a grant:
+
+- The owner of a person's calendar manages it. Deleting it is the owner's
+  alone, and so is offering it, apart from a group manager's
+  [hand-over](#change-of-owner-and-archive).
+- A manager of a group manages that group's calendars.
+- Administrators (`calendars.manage`: administrators and the owner of the
+  installation) manage organisation and group calendars. A person's calendar
+  shared with someone they see only by name and counts under Server ›
+  Calendars, where they hand it over or archive it; its content only through
+  a share of their own. A person's calendar nobody shares is out of their
+  reach.
+- An **archived** calendar caps every level, the owner's too, at `read`
+  (`freebusy` stays `freebusy`).
+
+Free/busy holds everywhere: the event list, an event by id, the offline
+copy, widgets and notifications carry only the times and "Busy", tasks
+without a date are left out, and search leaves such a calendar out. Each
+date of a series is redacted like any event.
+
+### Sharing
+
+Anyone with `manage` gives a person, a group or Everyone a level, changes it
+or removes it (`PUT /api/calendar/calendars/:id/shares`). Reach is as for
+[shared address books](CONTACTS.md#who-may-do-what): an administrator
+shares with anyone, a group or Everyone; anyone else only with the groups
+they are in and the active people in those groups, never Everyone (`403
+SHARE_OUT_OF_REACH`). Raising a share counts as sharing; lowering or
+removing one is open to anyone who manages. The owner holds no share
+(`SHARE_IS_OWNER`).
+
+Access is asked on every request, and every write asks it again inside its
+transaction after locking the calendar's row in share mode, so a share
+removed while a write waits refuses the write. A write to another person's
+calendar also waits for that person's calendar restore
+(`409 RESTORE_IN_PROGRESS`), as their own writes do. A calendar the person
+cannot see answers `404 CALENDAR_NOT_FOUND`, one they see but may not change
+that way `403 CALENDAR_FORBIDDEN`. After a share, a group membership, a
+group calendar created, renamed, deleted or restored, a hand-over, an
+archive or a deactivation, the people concerned get the hint
+`calendar.shares` and their pages refetch; a write sends `calendar.changed`
+to everyone who reaches the calendar. A device's offline copy loses a
+calendar no longer shared at its next refresh, a widget at its next refresh.
+
+**Where shared calendars appear.** `GET /api/calendar/calendars` lists the
+person's own calendars, then those others share with them (directly, through
+a group or Everyone) and the group calendars of the groups they manage, each
+with `permission`, `owner_kind`, `owner`, `group`, `archived`, the person's
+`view` and a pending `offer`. A calendar offered to the person and not shared
+with them is listed too, at `freebusy` with its offer and nothing else, until
+they answer. Administrators find every other calendar under Server ›
+Calendars only. The events of reached calendars the person has on are in
+`GET /api/calendar/events`, ToDo, search, the offline copy and the widgets.
+
+**The person's view.** Each person turns a calendar they reach on or off,
+picks their own colour for it and switches "Notify me of others' changes"
+(`PUT /api/calendar/calendars/:id/view`), on every device. For the owner the
+on/off and colour stay the calendar's own settings; only the notification
+switch is in the view. The order of tasks is each person's own.
+
+**Moving events.** An event moves only between calendars of the same owner:
+a person's own calendars (UniHub and synced alike, also when one of them is
+shared), or calendars no person owns. Anything else is refused (`409
+CALENDAR_MOVE_SHARED`). A new event or task goes into any calendar the person
+may edit. RSVP and `POST /api/calendar/events/:id/move` stay for one's own
+events.
+
+### Group and organisation calendars
+
+- **Creating.** An administrator makes an organisation calendar, or a group
+  calendar for any group (Server › Calendars); a group's manager makes one for
+  their group (the group's page, Calendars). A group may have several. A
+  group calendar starts with a `contribute` share to the group, so every
+  member sees it and adds subtasks; a manager raises or lowers that share and
+  shares further like anyone who manages. An organisation calendar starts
+  unshared: it reaches people once an administrator shares it, for example
+  with Everyone.
+- **Members.** Joining the group gives its level at once; leaving takes it
+  away, and the person's own reminders there stop (nothing is deleted).
+- **No approval.** Changes take effect at once.
+- **Deleting.** A group's manager or an administrator deletes a group
+  calendar, an administrator an organisation calendar
+  (`DELETE /api/calendar/shared-calendars/:id`). It is hidden at once and
+  deleted nothing for good; administrators restore it with its events and
+  shares under Server › Calendars › Deleted. After the shared bins' time (as
+  for [a book's bin](CONTACTS.md#deleting-a-book-and-each-books-bin): 30
+  days, or longer while a bin minimum applies) the hourly purge deletes it
+  with its events, bin and shares.
+
+### A calendar's bin
+
+An event or task deleted from a calendar goes to the bin with the calendar
+named on it (`bin_items.calendar_id`). For a person's calendar it is also in
+the owner's own bin, under the owner's retention. Everyone who may edit the
+calendar lists it (`GET /api/bin?calendar=<id>`; `403` below edit), restores
+items into that calendar under the same checks as a write, deletes them for
+good and empties it (`POST /api/bin/empty` with `{ "calendar": "<id>" }`),
+each under their own Calendar switch, restore lock and `bin.delete` rule. A
+calendar nobody owns keeps its items as a book's bin does (above).
+
+A restored event comes back with its row, subtasks, attendees and the
+owner's ToDo order. What other people kept for themselves is not kept:
+their own reminders on it and their place for it in their own task order
+start afresh.
+
+### Each person's reminders
+
+The event's reminders (its column, a series' `VALARM`s) are the calendar
+owner's. Anyone else with `read` or more sets their own through the event
+route (`calendar_reminders`), for one event or for every date of a series.
+One rule everywhere: a person's own row wins (one date's before its
+series'); without one, the owner gets the event's reminders and nobody else
+gets any. Someone creating an event in another person's calendar gets the
+reminders they send as their own. Events of group and organisation
+calendars have only personal reminders. The scheduler queues reminders per
+person and checks the person's access again when one is queued and when it
+is delivered, so a person whose access ended gets nothing; nothing is
+deleted when access ends.
+
+### Notifications of others' changes
+
+The kind `calendar-change`, off until the person switches "Notify me of
+others' changes" on for a calendar (their own calendars too). It tells them
+that someone else created, changed, ticked, added a subtask to or deleted an
+event or task there, never about their own changes: "<name> changed
+<title>", or "A shared calendar changed" at the notification detail none.
+There is at most one per event (or series) and person in ten minutes; a
+change to all dates of a series is one. It expires after a day, and access
+and the switch are checked again at delivery. See [PWA](PWA.md) for the
+detail levels and the app lock.
+
+### Change of owner and archive
+
+A person's UniHub calendar can change its owner at any time. Calendars
+nobody owns are handed over by administrators only; synced calendars have
+no owner change.
+
+- **Offer.** The owner offers the calendar to one active person within their
+  reach who has the Calendar module
+  (`POST /api/calendar/calendars/:id/hand-over` with `to`). There is one
+  pending offer per calendar (`409 OFFER_PENDING`) and no expiry. The
+  recipient accepts (`POST …/hand-over/accept`; reach, activity and the
+  module are checked again) or declines; the offerer withdraws
+  (`DELETE …/hand-over`). Deactivating either person, or archiving the
+  calendar, ends the offer.
+- **A group's manager.** A manager of a group that holds `read` or more on a
+  person's calendar offers it, or with `now: true` hands it over at once, to
+  an active member of that group, themselves included. Free/busy is not
+  enough. Never an administrator's calendar, never to the organisation,
+  never archive.
+- **Administrators** (`calendars.manage`, with their password) hand over at
+  once any calendar on Server › Calendars to an active person, to the
+  organisation, or into its owner's bin
+  (`POST /api/admin/calendars/:id/hand-over` with `to`: a person's id,
+  `organisation` or `bin`), and archive or unarchive it
+  (`PUT /api/admin/calendars/:id/archive`). An administrator's calendar is
+  the installation owner's alone to act on (`403 ADMINS_OWNER_ONLY`).
+- **What a hand-over does**, in one transaction under the calendar's row
+  lock: the calendar goes to the new owner's local account (or to nobody),
+  and its events, subtasks, attendees, bin items and settings follow (to the
+  organisation the settings are deleted). The shares stay, the new owner's
+  own share goes, and the old owner keeps `edit`, which the new owner may
+  remove. The events' reminders become the new owner's; the old owner gets a
+  copy as their own, and anyone's own reminders keep winning. A group
+  calendar handed to a person or the organisation loses its group link; the
+  group's share stays. It is refused while either person's calendar restore
+  runs or a move of one of its events is pending.
+- **Told and recorded.** The kind `calendar-ownership` tells the recipient of
+  an offer, the old owner after an accept or a hand-over at once ("<calendar>
+  now belongs to <name>"), and the owner after an archive; never the person
+  who acted, "A calendar's owner changed" at the detail none. A hand-over at
+  once and every administrator action leave an activity-log entry
+  ([Auth and admin](AUTH_ADMIN_SETTINGS.md#activity-log)).
+- **Archive.** Read-only for everyone, the owner included: no event,
+  subtask, tick, share, offer, move into or out of it, RSVP, own-reminder
+  change or delete. Removing the calendar account that holds it, and
+  Settings › Delete data for Calendar, are refused (`403 CALENDAR_FORBIDDEN`)
+  until an administrator unarchives it or hands it over. Reading, the
+  person's own view and the owner's own settings of a person's calendar
+  (its name, colour, on/off) go on, and its series keep growing daily. Only
+  administrators unarchive; the administrator's `bin` target still bins an
+  archived calendar, and deleting the person removes it with their data.
+- **When a person leaves**, an administrator decides for each of their
+  shared calendars before Deactivate or Delete
+  ([Auth and admin](AUTH_ADMIN_SETTINGS.md#deactivate-delete-and-devices)).
+
 ## API Endpoints
 
 All endpoints require an authenticated session. Write endpoints require
@@ -213,24 +520,44 @@ Calendars of server accounts cannot be created, renamed or deleted in UniHub.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| GET | `/api/calendar/calendars` | List calendars with account metadata |
+| GET | `/api/calendar/calendars` | List own calendars with account metadata, then the calendars the person reaches, each with its [access fields](#sharing) |
 | POST | `/api/calendar/calendars` | Create calendar under an account |
-| PUT | `/api/calendar/calendars/:id` | Update name/color/visibility/auto-ToDo/primary |
-| DELETE | `/api/calendar/calendars/:id` | Move a UniHub list and its events to the bin, as one group |
+| PUT | `/api/calendar/calendars/:id` | Update name/color/visibility/auto-ToDo/primary of an own calendar |
+| DELETE | `/api/calendar/calendars/:id` | Move an own UniHub list and its events (and series) to the bin, as one group; its shares go. Refused while archived |
 
 The backend refuses to delete the last calendar in an account.
+
+### Sharing, group and organisation calendars, owner
+
+These routes need the Calendar module, except the administrator's, and
+declare no restore section: a write to another person's calendar checks that
+person's restore lock itself.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| GET, PUT | `/api/calendar/calendars/:id/shares` | The shares; give, change or (`permission: null`) remove one (manage) |
+| GET | `/api/calendar/calendars/:id/share-candidates?q=` | People and groups within the caller's reach, at most 20 each (manage) |
+| PUT | `/api/calendar/calendars/:id/view` | The caller's own on/off, colour (`null`: the calendar's) and `notify_changes` (any level; for the owner only `notify_changes`) |
+| POST | `/api/calendar/shared-calendars` | An organisation calendar (`calendars.manage`), or with `group_id` a group calendar (`calendars.manage` or a manager of that group) |
+| PUT, DELETE | `/api/calendar/shared-calendars/:id` | Name and default colour (manage); delete a group or organisation calendar (a manager of its group, or `calendars.manage`) |
+| POST, DELETE | `/api/calendar/calendars/:id/hand-over` | Offer (`to`; a group's manager also `now`); withdraw or decline |
+| POST | `/api/calendar/calendars/:id/hand-over/accept` | The recipient accepts |
+| GET | `/api/admin/calendars` | Server › Calendars: every calendar no person owns (deleted ones too) and every person's calendar shared with someone, by name and counts (`calendars.manage`) |
+| POST | `/api/admin/calendars/:id/restore` | A deleted group or organisation calendar back with its events and shares (`calendars.manage`) |
+| POST | `/api/admin/calendars/:id/hand-over` | At once to a person, `organisation` or `bin`, with the administrator's password (`calendars.manage`) |
+| PUT | `/api/admin/calendars/:id/archive` | `archived: true \| false`, with the administrator's password (`calendars.manage`) |
 
 ### Events
 
 | Method | Path | Purpose |
 | --- | --- | --- |
 | GET | `/api/calendar/events` | List events |
-| GET | `/api/calendar/events/:id` | Load one owned event/to-do, including subtasks and attendees |
-| POST | `/api/calendar/events` | Create event or to-do |
-| PUT | `/api/calendar/events/:id` | Update event fields and attendees; `scope` (`occurrence` or `series`) for recurring server events. Answers `{ event: null, replaced: true, scope: 'series' }` when a series time change rebuilt the occurrences and the edited id is gone. `calendar_id: null` is refused (400) for an event linked to a server copy |
+| GET | `/api/calendar/events/:id` | Load one event/to-do the person owns or reaches, including subtasks and attendees; a date of a UniHub series also answers `repeat` and `time_zone` |
+| POST | `/api/calendar/events` | Create event or to-do; `repeat` (and `time_zone`) makes it the first date of a [series](#repeating-events-in-unihubs-calendars) |
+| PUT | `/api/calendar/events/:id` | Update event fields and attendees; `scope` (`occurrence` or `series`) for recurring server events and UniHub series, `repeat` to add, change or (`null`) stop a UniHub series. Answers `{ event: null, replaced: true, scope: 'series' }` when a synced series' time change rebuilt the occurrences and the edited id is gone. `calendar_id: null` is refused (400) for an event linked to a server copy |
 | PUT | `/api/calendar/events/:id/todo-status` | Update `todo_status`, optionally moving time |
 | PUT | `/api/calendar/events/:id/rsvp` | Update RSVP state for an attendee |
-| DELETE | `/api/calendar/events/:id` | Move the event or task to the bin (`bin_item_id` in the answer); a synced one is deleted at its server first. `?scope=occurrence\|series` for recurring server events |
+| DELETE | `/api/calendar/events/:id` | Move the event or task to the bin (`bin_item_id` in the answer); a synced one is deleted at its server first. `?scope=occurrence\|series` for recurring server events and UniHub series |
 
 Event query parameters:
 
@@ -245,8 +572,12 @@ Event query parameters:
 
 Supported event payload fields include `title`, `description`, `start_time`,
 `end_time`, `all_day`, `location`, `color`, `recurrence`, `reminder_minutes`,
-`reminders`, `is_todo_only`, `calendar_id`, `attendees` and, on create,
-`source_email_id`.
+`reminders`, `is_todo_only`, `calendar_id`, `attendees`, `repeat`,
+`time_zone`, `scope` and, on create, `source_email_id`. The event routes serve
+every calendar the person reaches, at the [level](#levels) each write needs;
+on a calendar the person does not own, `reminders` are their own. Every
+event carries `series_key` (a UniHub series' id, a synced object's UID, or
+null) and every subtask `created_by` and `created_by_name`.
 
 ## Tasks from email
 
@@ -293,7 +624,8 @@ them too. Two general settings shape the calendar: the first day of the week
 with (`default_event_reminder`, none by default).
 
 Opt-in offline snapshots contain calendar accounts, calendars, events/to-dos,
-attendees and subtasks. The offline view applies calendar visibility, date and
+attendees and subtasks, and the calendars the person reaches with their view
+and level (free/busy as "Busy" without tasks). The offline view applies calendar visibility, date and
 to-do filters to the saved records and remains read-only. Dark mode preserves
 existing calendar colors; defaults for newly created calendars use blue.
 
@@ -308,7 +640,9 @@ existing calendar colors; defaults for newly created calendars use blue.
 | POST | `/api/calendar/events/:id/subtasks/reorder` | Replace full subtask order |
 
 The reorder endpoint requires `subtask_ids` to include every subtask for that
-event.
+event. Adding a subtask needs `contribute`; changing, ticking or removing one
+needs `edit`, or `contribute` and the subtask being the caller's own;
+reordering needs `edit`. A contributor's new subtask goes at the end.
 
 ## Sync
 
@@ -478,7 +812,11 @@ with warnings.
 
 ## Security Notes
 
-- All queries are scoped by `user_id`.
+- Queries of a person's own calendars are scoped by `user_id`; every other
+  calendar is reached only through the access service, asked again inside
+  each write's transaction.
+- Administrators see a person's calendar only by name and counts, unless it
+  is shared with them.
 - Calendar/calendar account relationships are verified before writes.
 - State-changing routes are CSRF-protected.
 - CalDAV URLs must use HTTPS.
@@ -512,7 +850,13 @@ taken into a list keeps the server's.
 
 Calendar/ToDo backups include calendar accounts, calendars, events, ToDos,
 subtasks, attendees, external references, provider metadata, and supported
-account credentials.
+account credentials. From data schema 8 (0.32.0) they also carry UniHub
+series with their dates' keys; a restore maps series ids as it maps event
+ids. A person's calendar stays in their own backup, shared or not, but
+arrives unshared and not archived: shares, views, other people's reminders
+and offers stay with the installation. Group and organisation calendars, with
+everything in them, are only in the instance backup
+([Data recovery](DATA_RECOVERY.md#backup-versions-and-restore-behavior)).
 
 Same-name local calendars, including the default `Local` calendar, merge by
 default. Restore can instead create restored copies. Events and child rows are
@@ -537,7 +881,12 @@ See [Backup and Restore Guide](BACKUP_RESTORE.md).
 - Attendees, invitations and RSVP state are not synced; no invite email is sent.
 - A local color change on a synced event is replaced by the calendar color at
   the next sync.
-- Changing the time of a whole series creates new occurrences; their ToDo
-  status and subtasks start empty.
+- Changing the time of a whole synced series creates new occurrences; their
+  ToDo status and subtasks start empty. A UniHub series keeps them.
 - Events outside the window (365 days back, 730 days ahead) are not shown.
+- UniHub series offer no hourly rules, extra dates or "this and following";
+  a deleted date restored from the bin comes back as a single event, not into
+  its series.
+- An existing event does not move between calendars of different owners.
+- Ownership offers do not expire; whoever made one withdraws it.
 - Server calendars cannot be created, renamed or deleted from UniHub.

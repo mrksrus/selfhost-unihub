@@ -231,7 +231,8 @@ The restore changes these rows in the same transaction, after the load
 (`services/instance-restore.ts`). Everything else comes back as the dump had
 it: users with their roles and the owner, their data, groups with their
 members and managers, shared address books with their shares, contacts and
-bins, the directory's fields, the policies for everyone and for each group, the
+bins, the directory's fields, shared, group and organisation calendars with
+their shares, views, personal reminders, offers, archive marks and bins, the policies for everyone and for each group, the
 activity log and the push identity, so phones keep receiving notifications.
 Ids are kept, so nothing that names a group or a person needs remapping.
 
@@ -295,7 +296,7 @@ in.
 
 ## Backup versions and restore behavior
 
-New exports write data schema 7, always encrypted. Readers for schemas 1 to 6 remain; the manifest
+New exports write data schema 8, always encrypted. Readers for schemas 1 to 7 remain; the manifest
 selects automatically. ZIP layout and encrypted framing remain version 1.
 Database upgrade IDs, data schema and application release are separate numbers.
 Preserve historical readers and frozen fixtures when evolving the format. Starting
@@ -331,6 +332,21 @@ leave a personal backup (`address_book_id` is declared deliberately
 excluded). The instance backup's dump and files carry them as they are, book
 photos under `contact-photos/books/<book id>/`. See
 [Contacts](CONTACTS.md#shared-address-books).
+
+0.32.0 writes data schema 8 (upgrade step 30): the Calendar section adds the
+repeating events of UniHub calendars (`calendar_series` with each date's
+`series_id` and `recurrence_id`) and a bin item's `calendar_id`; older
+archives import unchanged ([Backup format](BACKUP_FORMAT.md)). A person's
+own calendar stays their data whether or not it is shared: it is in their
+backup with its series, and comes back unshared and not archived. Shares of
+calendars (`grants`), each person's view of a calendar and their own
+reminders on it (`calendar_views`, `calendar_reminders`), the archive mark
+and the pending offer, and the calendars no person owns (group and
+organisation calendars, `user_id` NULL) with their events, series,
+subtasks, attendees and bin items travel only in the instance backup, with
+their ids; the personal export reads only `user_id` rows, so they never
+enter or leave a personal backup. See
+[Calendar](CALENDAR.md#shared-group-and-organisation-calendars).
 
 0.28.0 writes data schema 7: a backup holds data by class (local,
 configuration, Download-mode mail by choice or policy), never a provider's
