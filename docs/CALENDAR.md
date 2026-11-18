@@ -486,9 +486,10 @@ no owner change.
   subtask, tick, share, offer, move into or out of it, RSVP, own-reminder
   change or delete. Removing the calendar account that holds it, and
   Settings › Delete data for Calendar, are refused (`403 CALENDAR_FORBIDDEN`)
-  until an administrator unarchives it or hands it over. Reading, the
-  person's own view and the owner's own settings of a person's calendar
-  (its name, colour, on/off) go on, and its series keep growing daily. Only
+  until an administrator unarchives it or hands it over. Reading and the
+  person's own view go on; the owner of a person's calendar still changes
+  its name and colour, nothing else (on/off stays the browser's own choice).
+  Its series keep growing daily. Only
   administrators unarchive; the administrator's `bin` target still bins an
   archived calendar, and deleting the person removes it with their data.
 - **When a person leaves**, an administrator decides for each of their
