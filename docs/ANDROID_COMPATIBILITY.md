@@ -90,20 +90,22 @@ needs a current WebView; phones update theirs through the Play Store.
 
 ## Current window
 
-As recorded in `android/support-window.json` for 0.31.0. The CI table is the
+As recorded in `android/support-window.json` for 0.32.0. The CI table is the
 evidence; this table is what it is checked against.
 
 | App | Android 10 | Android 16 | Android 17 |
 | --- | --- | --- | --- |
+| 0.32.0 | starts and connects | starts and connects | starts and connects |
 | 0.31.0 | starts and connects | starts and connects | starts and connects |
 | 0.30.3 | starts and connects | starts and connects | starts and connects |
 | 0.30.2 | starts and connects | starts and connects | starts and connects |
-| 0.30.1 | starts and connects | starts and connects | starts and connects |
 
 All four apps put contacts on the phone and sync them both ways. The 0.31.0 app
 also puts the shared books on the phone (read-only, one way) when the server
 lists `contacts-books`, and opens `mailto:` links in the composer; the 0.30.x
-apps never see a shared book.
+apps never see a shared book. The 0.32.0 app adds the Calendar and ToDo
+home-screen widgets, which read `GET /api/widgets` only from a server that
+lists `calendar-widgets`.
 In all four apps Android's download manager starts only from download
 tickets and the public app update, never with the session cookie (it follows
 redirects by itself, so the server keeps both endpoints free of redirects).
@@ -113,7 +115,7 @@ fetches exactly that address inside its own process with the WebView's
 cookie and saves it to Downloads, and refuses any other address that needs
 the session; the cookie never goes to the download manager or another app.
 The 0.30.x apps are the 0.29.0 app with a new version; the 0.31.0 app adds
-the shared books and email links above. All four speak bridge level 3 and lock with the phone's own unlock
+the shared books and email links above, the 0.32.0 app the widgets. All four speak bridge level 3 and lock with the phone's own unlock
 ([App lock](APP_LOCK.md)); the page offers the UniHub PIN only to apps below
 that level, which have left the window. Every app's contacts sync sends
 `X-Background-Sync: 1`, and the contacts routes stay open to it while a device

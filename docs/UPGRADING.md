@@ -44,6 +44,8 @@ instance backup only
   `repeat`.
 - **Android app.** The Calendar and ToDo widgets need the 0.32.0 app (offered
   under Settings → General → App); older apps keep working without them.
+  The app window is now 0.32.0 back to 0.30.2; the 0.30.1 app leaves it
+  ([Android compatibility](ANDROID_COMPATIBILITY.md#current-window)).
 - **No new configuration.** No environment variable, port, container or
   volume is added.
 

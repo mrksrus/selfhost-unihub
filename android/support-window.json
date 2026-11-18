@@ -22,10 +22,20 @@
   ],
   "releases": [
     {
+      "version": "0.32.0",
+      "apk": {
+        "versionCode": 32000,
+        "sha256": null,
+        "signing": "release"
+      },
+      "shell": "supported",
+      "note": "From this app the home-screen widgets look for `calendar-widgets`: only then do they read GET /api/widgets; against an older server they say the server needs an update. Older apps have no widgets."
+    },
+    {
       "version": "0.31.0",
       "apk": {
         "versionCode": 31000,
-        "sha256": null,
+        "sha256": "82cfe569e50252be36a3488288cf9a6b4b9abdd13dcb043f8dfe26da9414dfe7",
         "signing": "release"
       },
       "shell": "supported",
@@ -45,15 +55,6 @@
       "apk": {
         "versionCode": 30002,
         "sha256": "180da1b3e2359949c82d7b6f08a4e21c48e4ba38593e51968bf0eb77f96f98c2",
-        "signing": "release"
-      },
-      "shell": "supported"
-    },
-    {
-      "version": "0.30.1",
-      "apk": {
-        "versionCode": 30001,
-        "sha256": "193c5ad6e7b0db89e91b32f112ab40b6ac44ab58144550fb977a973ba182fba6",
         "signing": "release"
       },
       "shell": "supported"

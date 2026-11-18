@@ -785,7 +785,10 @@ A manager is a member with a manager's mark in one group, not a role. They
 rename their group, add and remove its members and read its members and rules;
 to add people they see only the names and emails of active people. They do not
 create or delete groups, name or remove managers, change rules or open the
-Server pages. Only administrators name managers.
+Server pages. Only administrators name managers. For calendars (2026-11-16) a
+manager also creates and manages their group's calendars and hands over a
+calendar shared with their group to one of its members, if needed at once;
+see P-45.
 
 #### P-39 Required two-factor authentication gives each person 7 days
 
@@ -862,7 +865,7 @@ Evidence: [AGENTS.md "Change size"](AGENTS.md#change-size),
 #### P-43 Shared address books work like groups
 
 Accepted, 2026-11-15 (maintainer, for 0.31.0 and 0.32.0). Built in 0.31.0
-for address books; shared calendars and their bins follow in 0.32.0.
+for address books and in 0.32.0 for calendars and their bins.
 
 The company directory is the built-in read-only address book "Company":
 every active person, with the account's name and email and the phone, job
@@ -892,6 +895,45 @@ deleting for good is forbidden, chat messages cannot be deleted; otherwise a
 deletion is final and leaves "message deleted". Presence and read receipts
 are on by default, each person can switch them off, and an administrator can
 lock them. Chat is on after the upgrade like the other modules.
+
+#### P-45 Shared, group and organisation calendars; owners change; local events repeat
+
+Accepted, 2026-11-16 (maintainer, for 0.32.0). Built in 0.32.0.
+
+A person shares their own UniHub calendars and task lists with people or
+groups at five levels: free/busy (times only, as "Busy"), read, contribute
+(add subtasks to an event or task and change only their own), edit and
+manage. Calendars synced from a provider are shared at the provider, never
+through UniHub. Members share with their own groups and the people in them,
+administrators with anyone. Each person turns a calendar they reach on or
+off, picks its colour and sets their own reminders; notifications for other
+people's changes are off until they switch them on; the task order is each
+person's.
+
+Administrators create organisation calendars. An administrator or a group's
+manager creates a group calendar on request: every member sees it and
+contributes by default, the group's managers manage it; there is no approval
+queue. Something deleted from a shared, group or organisation calendar goes
+to that calendar's own bin.
+
+A calendar's owner can change at any time: the owner offers it to another
+person, who accepts or declines; a group manager hands over a calendar shared
+with their group to one of its members, if needed at once; an administrator
+hands over a shared calendar at once or archives it, after which nobody
+changes it except its owner's name and colour (2026-11-17). Nobody takes a
+calendar that is not shared with them or their group, and only the
+installation owner acts on administrators' calendars. Before a person is
+deactivated or deleted, an administrator decides for each of their shared
+calendars: leave it (only when deactivating, the default), hand it to a
+colleague, make it an organisation calendar (the default when deleting) or
+delete it to the bin. Administrators see other people's calendars only by
+name and counts.
+
+Events in UniHub's own calendars can repeat (daily, weekly, monthly, yearly,
+with an interval and an end), keep their own time zone, and are changed or
+deleted for one date or all; each date keeps its own ToDo state, checklist
+and reminders. In ToDo's "Later" a repeating item shows once, at its next
+date, for local and synced series alike. Personal backups keep the series.
 
 ## Open decisions and conflicts
 
