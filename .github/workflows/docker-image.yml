@@ -1160,7 +1160,7 @@ jobs:
           docker rm "$container" >/dev/null
           docker image rm unihub:ci >/dev/null
           tarball="mariadb-$MARIADB_VERSION-linux-systemd-x86_64.tar.gz"
-          curl --fail --silent --show-error --location -o "$RUNNER_TEMP/$tarball" "https://downloads.mariadb.org/rest-api/mariadb/$MARIADB_VERSION/$tarball"
+          curl --fail --silent --show-error --location --retry 5 --retry-all-errors --continue-at - -o "$RUNNER_TEMP/$tarball" "https://downloads.mariadb.org/rest-api/mariadb/$MARIADB_VERSION/$tarball"
           echo "$MARIADB_SHA256  $RUNNER_TEMP/$tarball" | sha256sum --check
           mkdir -p "$RUNNER_TEMP/mariadb"
           tar -xzf "$RUNNER_TEMP/$tarball" -C "$RUNNER_TEMP/mariadb" --strip-components=1
