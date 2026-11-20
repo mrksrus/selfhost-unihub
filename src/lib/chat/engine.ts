@@ -83,7 +83,9 @@ const reason = (error: unknown) => error instanceof Error && error.message ? err
 
 function parseContent(bytes: Uint8Array): Content {
   const value = JSON.parse(decode(bytes)) as Partial<Content>;
-  if (typeof value.text !== 'string' || value.text.length > MAX_TEXT || typeof value.name !== 'string') throw new SyntaxError('Not a chat message.');
+  // Nothing in a message is longer than a person could have typed: its archive copy must fit too.
+  if (typeof value.text !== 'string' || value.text.length > MAX_TEXT || typeof value.name !== 'string' || value.name.length > 255
+    || (typeof value.reply_to === 'string' && value.reply_to.length > 64)) throw new SyntaxError('Not a chat message.');
   return { text: value.text, reply_to: typeof value.reply_to === 'string' ? value.reply_to : null, name: value.name };
 }
 
