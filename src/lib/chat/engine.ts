@@ -135,6 +135,8 @@ class Engine implements ChatEngine {
   /** What the server last said of people: senders, members and direct peers. */
   private readonly people = new Map<string, Pick<ChatSender, 'name' | 'active'>>();
   private readonly memberLists = new Map<string, ChatMember[]>();
+  /** The chats whose members a sync reads again (null: all of them): every message is a hint on every member's device. */
+  private readonly membersDue = new Set<string | null>();
   private readonly membersLoading = new Set<string>();
   private readonly catchingUp = new Set<string>();
   /** Chats this page made or opened: a list fetched just before is not a reason to drop them. */
@@ -156,7 +158,7 @@ class Engine implements ChatEngine {
         if (data === 'changed') void this.load().catch(() => undefined);
         if (data === 'flush' && this.leading) void this.flush().catch(() => undefined);
       };
-      const later = () => void this.sync().catch(() => undefined);
+      const later = (id: string | null = null) => void this.sync(id).catch(() => undefined);
       this.stops.push(
         onAppEvent('unihub:chat-changed', later),
         onAppEvent('unihub:chat-presence', ({ user_id, online }) => {
@@ -366,7 +368,9 @@ class Engine implements ChatEngine {
 
   // --- Reading ---------------------------------------------------------------------------
 
-  sync(): Promise<void> {
+  /** `changed` is the conversation a hint named; without one, any may have changed. */
+  sync(changed: string | null = null): Promise<void> {
+    this.membersDue.add(changed);
     if (this.syncing) { this.syncAgain = true; return this.syncing; }
     this.syncing = (async () => {
       do {
@@ -385,7 +389,8 @@ class Engine implements ChatEngine {
       if (!this.device) return;
       await this.dropGone();
       for (const conversation of this.server) await this.fetchConversation(conversation);
-      for (const id of this.memberLists.keys()) if (this.server.some(item => item.id === id)) await this.loadMembers(id);
+      const all = this.membersDue.delete(null);
+      for (const id of this.memberLists.keys()) if ((this.membersDue.delete(id) || all) && this.server.some(item => item.id === id)) await this.loadMembers(id);
       this.channel?.postMessage('changed');
       await this.archiveHeld();
       await this.flush();
@@ -508,9 +513,14 @@ class Engine implements ChatEngine {
    */
   private lines(conversation: ChatConversation, groupId: string, members: string[], before: string[] | null, seq: number, at: string): Stored[] {
     if (!before) return [];
+    // A page loaded after someone left knows only the members of now: their last message here still names them.
+    const said = (userId: string) => [...this.messages.values()]
+      .filter(record => record.conversation_id === conversation.id && record.sender_user_id === userId && record.text !== null)
+      .sort((a, b) => b.seq - a.seq)[0]?.sender_name;
+    const named = (userId: string) => userId === this.me.id ? this.me.name : this.person(userId, conversation)?.name ?? said(userId) ?? 'A former member';
     const line = (kind: Stored['kind'], key: string, userId: string): Stored => ({
       id: `${groupId}:${key}`, conversation_id: conversation.id, seq: seq + 0.5, kind, replaces: null, sender_user_id: userId,
-      sender_name: this.nameOf(userId, conversation), text: null, reply_to: null, deleted: false, unreadable: false, created_at: at, archived: true,
+      sender_name: named(userId), text: null, reply_to: null, deleted: false, unreadable: false, created_at: at, archived: true,
     });
     const [was, now] = [new Set(before.map(userOf)), new Set(members.map(userOf))];
     const stays = this.memberLists.get(conversation.id) ?? [];
