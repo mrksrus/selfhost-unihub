@@ -12,6 +12,17 @@
 // person (their switch or a policy), 403 APP_LOCK_REQUIRED for a device
 // short of the lock the person's policies require for Chat, and 404
 // CONVERSATION_NOT_FOUND for a conversation the person is not a member of.
+// A route only a chat's managers may use answers 403 CHAT_FORBIDDEN to its
+// other members.
+//
+// A direct chat is two people. A group chat has a name (plain text on the
+// server) and at most 100 people: either the people its managers chose, or
+// everyone in one organisation group it follows (or everyone, made by an
+// administrator), changing with that group. Its creator manages it; a
+// followed chat is managed by the group's managers and the administrators;
+// a chat with no manager left by its longest-standing active member.
+// Someone added reads from the next MLS group on (joined_seq); someone
+// removed, or who left, is refused at once.
 
 /** Binary data as base64url text without padding. */
 export type Base64Url = string;
@@ -143,12 +154,24 @@ export interface ChatPeer {
   reason: string | null;
   /** Online (a page of theirs is open) when both have presence on; null when it is not shown. */
   online: boolean | null;
+  /** false once they are deactivated or deleted: their messages show the name they carry, marked as a former colleague. */
+  active: boolean;
 }
 
-export interface ChatConversation {
+/** What a person chooses a chat notifies them of; the unread count is not affected. */
+export type ChatNotify = 'all' | 'mentions' | 'none';
+
+/** A member's role in a group chat: a manager renames it and adds or removes people (in a followed chat: renames it and stops following). */
+export type ChatRole = 'manager' | 'member';
+
+/** Days after which the chat's messages are deleted (the shortest chat.retention_days among its active members); null keeps them. */
+export type ChatRetentionDays = 30 | 90 | 180 | 365;
+
+/** What a group chat follows: one organisation group, or everyone. */
+export type ChatFollow = { kind: 'group'; id: string; name: string } | { kind: 'everyone' };
+
+interface ChatConversationBase {
   id: string;
-  kind: 'direct';
-  peer: ChatPeer;
   /** The MLS group the next message goes to; null before the first one. */
   current_group_id: string | null;
   last_seq: number;
@@ -159,10 +182,38 @@ export interface ChatConversation {
   read_seq: number;
   delivered_seq: number;
   joined_seq: number;
+  notify: ChatNotify;
+  /** The retention in force; null while messages are kept. */
+  retention_days: ChatRetentionDays | null;
+  /**
+   * When deleting under retention_days starts (or started): 24 hours after
+   * the chat's retention got shorter. null while messages are kept.
+   */
+  retention_from: string | null;
+}
+
+export interface ChatDirectConversation extends ChatConversationBase {
+  kind: 'direct';
+  peer: ChatPeer;
   /** The peer's marks: read_seq is null while read receipts are off for either person. */
   peer_read_seq: number | null;
   peer_delivered_seq: number;
 }
+
+export interface ChatGroupConversation extends ChatConversationBase {
+  kind: 'group';
+  /** 1 to 80 characters. */
+  name: string;
+  /** null for a chat of chosen people. */
+  follows: ChatFollow | null;
+  role: ChatRole;
+  /** The people the chat reaches now, the caller included. */
+  member_count: number;
+  /** The name of the person who added the caller; null for its creator, in a followed chat, or once that person is gone. */
+  added_by: string | null;
+}
+
+export type ChatConversation = ChatDirectConversation | ChatGroupConversation;
 
 /** GET /api/chat/conversations: the caller's conversations, the latest activity first. */
 export interface ChatConversationsResponse { conversations: ChatConversation[] }
@@ -175,6 +226,107 @@ export interface ChatConversationsResponse { conversations: ChatConversation[] }
  */
 export interface ChatConversationCreateRequest { user_id: string }
 export interface ChatConversationResponse { conversation: ChatConversation; created: boolean }
+
+/**
+ * POST /api/chat/conversations with kind 'group': a new group chat (always
+ * created: true), with chosen people or following one organisation group.
+ *
+ * People (the caller is added and manages it; naming oneself changes
+ * nothing): each must be within the caller's reach (403
+ * CHAT_OUT_OF_REACH): a member reaches the people who share an
+ * organisation group with them, or anyone when chat.reach is
+ * 'organisation' for them; an administrator reaches anyone. 404
+ * USER_NOT_FOUND; 403 CHAT_UNAVAILABLE with a reason for someone deactivated
+ * or with Chat off.
+ *
+ * Following: the caller manages that organisation group or is an
+ * administrator (403 CHAT_FORBIDDEN otherwise; 404 GROUP_NOT_FOUND); only an
+ * administrator follows everyone. Nobody is added or removed by hand.
+ *
+ * Both: 400 CHAT_NAME_INVALID unless the name is 1 to 80 characters; 400
+ * CHAT_TOO_MANY_PEOPLE above 100 people (ChatTooManyPeopleDetails).
+ */
+export type ChatGroupChatCreateRequest =
+  | { kind: 'group'; name: string; user_ids: string[] }
+  | { kind: 'group'; name: string; follow: { kind: 'group'; id: string } | { kind: 'everyone' } };
+
+/** The details of 400 CHAT_TOO_MANY_PEOPLE. */
+export interface ChatTooManyPeopleDetails { limit: 100; reason: string }
+
+/** PATCH /api/chat/conversations/:id: a manager renames a group chat (400 CHAT_NOT_GROUP for a direct one). */
+export interface ChatConversationUpdateRequest { name: string }
+/** The answer of the rename and of POST /api/chat/conversations/:id/unfollow. */
+export interface ChatConversationUpdatedResponse { conversation: ChatConversation }
+
+/**
+ * POST /api/chat/conversations/:id/unfollow: a manager of a followed chat
+ * stops following; it becomes a chat of the people it has now, who keep
+ * their place. Deleting the organisation group does the same. 409
+ * CHAT_NOT_FOLLOWING for any other chat.
+ */
+
+/** A person of a conversation as GET /api/chat/conversations/:id/members lists them. */
+export interface ChatMember {
+  user_id: string;
+  name: string;
+  email: string;
+  /** In a direct chat both are members. */
+  role: ChatRole;
+  /** false while deactivated. */
+  active: boolean;
+  /** Why their devices are not in the chat ("has not opened UniHub since the update", Chat off, deactivated); null while they are. */
+  reason: string | null;
+  /** As ChatPeer.online. */
+  online: boolean | null;
+  /** null while read receipts are off for the caller or for them. */
+  read_seq: number | null;
+  delivered_seq: number;
+  /** Their messages start after this seq. */
+  joined_seq: number;
+}
+
+/**
+ * GET /api/chat/conversations/:id/members: the people the conversation
+ * reaches now, managers first, then by name.
+ *
+ * POST /api/chat/conversations/:id/members (ChatMembersAddRequest): a
+ * manager adds people, each as at creation (reach, Chat on, the limit);
+ * someone already in changes nothing. 409 CHAT_FOLLOWS_GROUP in a followed
+ * chat, 400 CHAT_NOT_GROUP in a direct one.
+ *
+ * DELETE /api/chat/conversations/:id/members/:userId: a manager removes
+ * someone else (400 CHAT_SELF: leave instead). They are refused at once,
+ * their marks and archive copies of the chat go, and the chat's next group
+ * leaves out their devices. 404 USER_NOT_FOUND for someone not in it.
+ *
+ * All three answer ChatMembersResponse.
+ */
+export interface ChatMembersAddRequest { user_ids: string[] }
+export interface ChatMembersResponse { members: ChatMember[] }
+
+/**
+ * POST /api/chat/conversations/:id/leave: the caller leaves a group chat of
+ * chosen people, with their marks and archive copies of it. 409
+ * CHAT_FOLLOWS_GROUP in a followed chat, 400 CHAT_NOT_GROUP in a direct one.
+ */
+export interface ChatLeftResponse { left: true }
+
+/** PUT /api/chat/conversations/:id/notify: what this chat notifies the caller of. */
+export interface ChatNotifyRequest { notify: ChatNotify }
+export interface ChatNotifyResponse { notify: ChatNotify }
+
+/**
+ * GET /api/chat/candidates?q=<text>: for a new group chat or adding to one,
+ * the active people with Chat on within the caller's reach that match (at
+ * most 20, the caller left out), the organisation groups they may follow
+ * (those they manage; every group for an administrator), and whether they
+ * may follow everyone.
+ */
+export interface ChatCandidatesResponse {
+  people: { id: string; email: string; full_name: string | null }[];
+  groups: { id: string; name: string }[];
+  everyone: boolean;
+}
 
 /**
  * POST /api/chat/conversations/:id/groups: a new MLS group made by the
@@ -206,8 +358,18 @@ export interface ChatPreview { chat_device_id: string; sealed: Base64Url }
  * this one edits. archive: the sender's own archive copy, sealed to their
  * history key. 409 CHAT_GROUP_STALE (ChatGroupStaleDetails) when group_id is
  * not current or its devices are not exactly the valid devices of the
- * conversation's people; 403 CHAT_UNAVAILABLE when the peer cannot be
- * written to.
+ * conversation's people; 403 CHAT_UNAVAILABLE when the peer of a direct chat
+ * cannot be written to (in a group chat, a member who cannot be reached
+ * does not block it).
+ *
+ * mentions: in a group chat, up to 20 of its people (not the sender) who
+ * are notified as mentioned; the server keeps no list. 400
+ * CHAT_MENTION_INVALID for anyone else, more than 20, or in a direct chat.
+ *
+ * attachments: up to 10 ids of the sender's uploads to this chat not yet
+ * tied to a message (POST .../attachments); the message is tied to them, and
+ * deleting it deletes them. 400 CHAT_ATTACHMENT_INVALID otherwise; an edit
+ * names none.
  */
 export interface ChatMessageCreateRequest {
   id: string;
@@ -218,6 +380,8 @@ export interface ChatMessageCreateRequest {
   ciphertext: Base64Url;
   archive: Base64Url;
   previews: ChatPreview[];
+  mentions?: string[];
+  attachments?: string[];
 }
 
 /** One entry of a conversation, in seq order. */
@@ -241,12 +405,21 @@ export interface ChatMessageResponse { message: ChatMessage }
 /** The Welcome of a group the caller's device is in and has not confirmed joining. */
 export interface ChatWelcome { group_id: string; welcome: Base64Url; created_at: string }
 
+/** A sender of the entries in a ChatMessagesResponse, as the directory knows them now. */
+export interface ChatSender {
+  user_id: string;
+  name: string;
+  /** false while deactivated: their messages show the name they carry, marked as a former colleague (a deleted sender has no user_id). */
+  active: boolean;
+}
+
 /**
  * GET /api/chat/conversations/:id/messages?after=<seq>&limit=<n>: entries
  * after a seq (never before the caller's joined_seq), with the Welcomes of
- * the groups the device has not joined, oldest first.
+ * the groups the device has not joined, oldest first, and the senders of
+ * these entries.
  */
-export interface ChatMessagesResponse { messages: ChatMessage[]; welcomes: ChatWelcome[]; last_seq: number; more: boolean }
+export interface ChatMessagesResponse { messages: ChatMessage[]; welcomes: ChatWelcome[]; senders: ChatSender[]; last_seq: number; more: boolean }
 
 /** POST /api/chat/groups/:id/joined: the device of the request confirms it joined the group from its Welcome. */
 export interface ChatGroupJoinedResponse { joined: true }
@@ -258,6 +431,61 @@ export interface ChatGroupJoinedResponse { joined: true }
  * 404 CHAT_MESSAGE_NOT_FOUND for anyone else's message.
  */
 export interface ChatMessageDeletedResponse { deleted: true; seq: number }
+
+// --- Files ---------------------------------------------------------------------------------
+
+/**
+ * A file sent in a chat, encrypted on the device (RFC 8188 aes128gcm in
+ * records of 64 kB, a random key per file, the key inside the message). A
+ * picture's preview is a second attachment. The server sees its size only.
+ */
+export interface ChatAttachment {
+  id: string;
+  conversation_id: string;
+  size_bytes: number;
+  /** null until a message names it. */
+  message_id: string | null;
+  created_at: string;
+}
+
+/**
+ * POST /api/chat/conversations/:id/attachments?id=<uuid>: the body is the
+ * file's ciphertext (application/octet-stream), at most 101 MiB; id is made
+ * by the client, so a retry by the same person to the same chat answers the
+ * stored one (409 CHAT_ATTACHMENT_EXISTS otherwise). 413
+ * CHAT_FILE_TOO_LARGE (ChatFileTooLargeDetails) above the uploader's
+ * chat.attachment_max_mb. An upload no message names is deleted after a day.
+ */
+export interface ChatAttachmentResponse { attachment: ChatAttachment }
+
+/** The details of 413 CHAT_FILE_TOO_LARGE. */
+export interface ChatFileTooLargeDetails { limit_mb: number; reason: string }
+
+/*
+ * GET /api/chat/attachments/:id: the ciphertext as stored
+ * (application/octet-stream, Cache-Control: no-store), to a member of its
+ * chat whose joined_seq is before its message, and to its uploader before
+ * the message is posted. 404 CHAT_ATTACHMENT_NOT_FOUND for anyone else.
+ */
+
+// --- Retention (administrators) -------------------------------------------------------------
+
+/**
+ * GET /api/admin/chat/retention-preview?days=<30|90|180|365>&group_id=<id>
+ * (permission server.settings): before saving chat.retention_days for
+ * Everyone (no group_id) or a group, what that value would delete once its
+ * wait is over: the messages and files older than it in the chats it would
+ * shorten. Changes nothing.
+ */
+export interface ChatRetentionPreviewResponse { messages: number; files: number; conversations: number }
+
+/**
+ * POST /api/admin/chat/retention/apply-now: the owner only (403
+ * OWNER_REQUIRED), with their password; every chat waiting to delete under a
+ * shorter retention starts now. Written to the activity log.
+ */
+export interface ChatRetentionApplyNowRequest { current_password: string }
+export interface ChatRetentionApplyNowResponse { conversations: number }
 
 /** PUT /api/chat/conversations/:id/marks: moves the caller's marks forward (never back, never past last_seq). */
 export interface ChatMarksRequest { read_seq?: number; delivered_seq?: number }
