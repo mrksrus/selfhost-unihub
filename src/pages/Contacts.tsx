@@ -8,6 +8,8 @@ import { selectUserSetting, userSettingsQueryOptions } from '@/lib/settings-api'
 import { useDebouncedValue } from '@/hooks/use-debounced-value';
 import { useContactActions } from '@/hooks/use-contact-actions';
 import { useAddressBooks, useBookContacts } from '@/hooks/use-address-books';
+import { useChatEngine } from '@/hooks/use-chat-engine';
+import { directoryQueryOptions } from '@/lib/directory-api';
 import { useSessionMutation } from '@/hooks/use-session-mutation';
 import { useToast } from '@/hooks/use-toast';
 import { addressBooksApi, addressBooksQueryKeys, COMPANY_BOOK, invalidateBookQueries, type AddressBook } from '@/lib/address-books-api';
@@ -75,6 +77,12 @@ const Contacts = () => {
   const allContacts = useMemo(() => contactsQuery.data ?? [], [contactsQuery.data]);
   const contacts = useMemo(() => filterContacts(allContacts, LIST_VIEWS.includes(view) ? view : 'all', debouncedSearch), [allContacts, view, debouncedSearch]);
   const active = !bookId && activeId ? allContacts.find(contact => contact.id === activeId) ?? null : null;
+
+  // A contact with a colleague's address can be written to in Chat: the directory says whose address it is.
+  const chat = useChatEngine();
+  const directory = useQuery({ ...directoryQueryOptions, enabled: !!active && !!chat }).data;
+  const addresses = new Set(active?.emails.map(entry => entry.value.trim().toLowerCase()));
+  const colleagueId = directory?.find(entry => addresses.has(entry.email.toLowerCase()))?.user_id;
 
   const booksQuery = useAddressBooks();
   const books = booksQuery.data ?? [];
@@ -289,7 +297,7 @@ const Contacts = () => {
           </div>
           {active && (
             <aside aria-label="Contact" className="min-h-0 flex-1 overflow-y-auto pb-mobile-nav md:pb-0 lg:w-[26rem] lg:flex-none lg:border-l lg:border-border">
-              <ContactDetail contact={active} onEmail={emailInUniHub} onBack={() => openContact(null)}
+              <ContactDetail contact={active} onEmail={emailInUniHub} onBack={() => openContact(null)} colleagueId={colleagueId}
                 copyTo={{ books: editableBooks, onCopy: id => copyToBook.mutate({ target: editableBooks.find(entry => entry.id === id)!, ids: [active.id] }) }}
                 onEdit={() => setEditor({ kind: 'edit', contact: active })} onDelete={() => confirmDelete(active)} onToggleFavorite={() => toggleFavorite(active)} />
             </aside>

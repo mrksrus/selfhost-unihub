@@ -16,6 +16,7 @@ const startPagePaths: Record<string, string> = {
   contacts: '/contacts',
   recordings: '/recordings',
   music: '/music',
+  chat: '/chat',
   dashboard: '/dashboard',
 };
 

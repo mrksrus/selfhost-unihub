@@ -181,6 +181,22 @@ The e2e files are in `tools/e2e/tests/organisation/`.
 | O-24 | Wide, Phone | Server → Calendars: New calendar for the organisation and for a group; a row's menu: "Name and color", Share, Hand over…, Archive, Delete; Restore a deleted one; Hand over… and Archive on a person's calendar. | The Settings panel and More list Calendars for administrators. Organisation and group calendars are rows with whose they are, shares, events and "archived"; a person's shared calendars follow under "Shared by people" by name and numbers, with "Hand over…" and Archive or Unarchive only; deleted ones under Deleted with Restore. Hand over and Archive ask for the administrator's password and say what happens and that the owner is told; the new owner is chosen from "Make it an organisation calendar" and the active people. With Calendar switched off for the administrator the page says so. | Browser (pictures `server-calendars-wide-*`), e2e (`group-calendars.e2e.ts`) |
 | O-25 | Wide, Phone | Server → People → Deactivate, then Delete, a person who shares calendars. | Both dialogs list "Calendars they share", each with its shares and events and one choice: when deactivating "Leave it as it is" (the default), "Make it an organisation calendar", "Hand it to …" a person, "Delete it to their bin"; when deleting "Make it an organisation calendar" (the default), a person, "Delete it with the person", and the dialog says a calendar deleted with the person is gone for good. The choices are carried out before the person is deactivated or deleted. | Browser (pictures `person-leaving-calendars-wide-*`), e2e (`tools/e2e/tests/organisation/deactivate.e2e.ts`) |
 
+### Chat (P-44)
+
+Pictured and checked with a fixed engine in place of the real one
+(`src/test/chat-mock-engine.ts`): the screens read only the engine's
+interface (`src/lib/chat/types.ts`).
+
+| ID | Where | Steps | Checks | Mark |
+| --- | --- | --- | --- | --- |
+| H-01 | Wide, Phone | Open Chat with several chats; open one; on Phone go back. | The chats are rows, the newest first: initials with a dot while the person has UniHub open, the name, the time or day, the last message ("You: …" for your own, "Message deleted", "No messages yet") and the unread count, which the rail and the bottom bar show too. Wide: the list beside the open chat, "Choose a chat" with none open. Phone: the list, then the chat over the whole screen with Back. An address that names a chat the person does not have says "This chat is not available". | Browser (pictures `chat-wide-*`, `chat-list-phone-*`), Source (`chat-page.test.tsx`) |
+| H-02 | Wide, Phone | Read a chat with messages of three days. | A label per day ("Today", "Yesterday", then the date); the other person's messages left, your own right in the accent's tint; a reply shows whom and what it answers; "edited" beside the time; "Message deleted" and "This message could not be read." in an outline; "<name> added a device" as a line; a web address is a link, nothing else is. Under your messages the last one read says "Read", the last one delivered "Delivered", the last one sent "Sent"; one on its way "Sending…"; one that did not go out "Not sent" with the reason and "Try again", and the same for a change that was not saved. | Browser (pictures `chat-wide-*`, `chat-earlier-wide-*`, `chat-thread-phone-*`) |
+| H-03 | Wide, Phone | Write two lines; send; open a message's menu: Reply, Edit, Delete; press Escape in a reply. | The field grows with the text. Enter sends with a keyboard and Shift+Enter is a new line; on a touch screen Enter is a new line and the button sends. After sending the focus stays in the field. Reply and Edit show what is answered or edited above the field and move the focus into it; Escape or the X leaves them, and an edit gives the unsent text back. Delete asks first and says it is for both people and final. Text not sent yet waits while another chat is open. | Source (`chat-page.test.tsx`) |
+| H-04 | Wide, Phone | As a person whose administrator forbids deleting for good: open the menu of an own message. Delete a message the server refuses. | Delete stays in the menu, greyed out, with the server's reason under it; a refusal that arrives after the click shows the server's sentence and the message stays. | Source (`chat-page.test.tsx` for the refusal), Open at runtime for the greyed entry |
+| H-05 | Wide, Phone | Open the chat with a person who is deactivated, has Chat off or has not opened UniHub since the update; open Chat in a browser without WebAssembly; open it while it starts or after it failed. | The chat stays readable and the server's reason stands where the composer was; Reply and Edit are greyed out. Without WebAssembly the page says "Chat cannot run in this browser" with the reason; a failed start offers "Try again"; before the passphrase is given the page says Chat is being set up. | Browser (throwaway pictures), Open at runtime |
+| H-06 | Phone | 412 × 560, as with the keyboard open: type two lines in a chat. Measure the controls of the list and of an open chat. | The chat's header, the field, Send and the newest message are on screen, the message above the field. Every control has a tap area of at least 40 px and none overlap; each message's menu button shows without hovering. | Browser (`behaviour.spec.ts`), Open on a device |
+| H-07 | Wide, Phone | Contacts › Company: open a colleague, then yourself. Open one of your own contacts that has a colleague's address. Settings › General: Start page. | "Message" on the colleague's entry and on the contact opens the one chat with them; your own entry has none, and with Chat off nobody's has. Chat is among the start pages. | Browser (throwaway pictures), Source (`chat-page.test.tsx` for an answer after an account switch) |
+
 ### Contacts and settings (P-10, P-18)
 
 | ID | Where | Steps | Checks | Mark |
@@ -233,8 +249,10 @@ and the required two-factor prompt (Phone; P-29), and since 0.31.0 a shared
 address book with a contact open and its share dialog (Wide), a book's list
 and a company directory entry (Phone) and Server → Shared books (Wide), and
 since 0.32.0 the calendars others share and a calendar's share dialog (Wide)
-and an event as a contributor reads it (Phone), each in Dark Default and
-Light Default. Eighty-four pictures in total; add a screen only when a
+and an event as a contributor reads it (Phone), and since 0.33.0 Chat with
+an open chat at its newest and at its first messages (Wide) and the list
+and an open chat (Phone), each in Dark Default and Light Default. One
+hundred and two pictures in total; add a screen only when a
 decision depends on it. The Android widgets' eighteen pictures (0.32.0, D69)
 are kept apart, in `tools/e2e/android/baselines/`, and compared by eye (see
 the W rows).

@@ -1,7 +1,7 @@
 import { Fragment, useContext, useState, type MouseEvent, type ReactNode } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
-import { ArrowLeft, AtSign, Cake, ChevronDown, Copy, Globe, Mail, MapPin, MessageSquare, MoreHorizontal, Phone, Star, Users } from 'lucide-react';
+import { ArrowLeft, AtSign, Cake, ChevronDown, Copy, Globe, Mail, MapPin, MessageCircle, MessageSquare, MoreHorizontal, Phone, Star, Users } from 'lucide-react';
 import { contactDetailQueryOptions, contactName, type Address, type Contact, type KeptProperty, type LabelledValue } from '@/lib/contacts-api';
 import { addressLines, contactRole, formatPartialDate, labelText, mapHref, safeHref, telHref } from '@/lib/contact-fields';
 import { AuthContext } from '@/contexts/auth-context';
@@ -15,6 +15,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { LoadingState } from '@/components/ui/page-states';
 import { ROW_LINK } from '@/components/admin/person-words';
 import { ContactAvatar } from '@/components/contacts/ContactAvatar';
+import { useStartChat } from '@/components/chat/use-start-chat';
 
 interface Props {
   contact: Contact;
@@ -32,6 +33,8 @@ interface Props {
   groups?: { id: string; name: string }[];
   /** Under the fields: where the contact comes from, or why it cannot be changed here. */
   note?: string;
+  /** The colleague this contact is: their account's id, from the company directory. Offers Message while Chat is on. */
+  colleagueId?: string;
   /** The shared books the person may edit, to copy their own contact into. */
   copyTo?: { books: { id: string; name: string }[]; onCopy: (bookId: string) => void };
 }
@@ -121,8 +124,9 @@ function KeptProperties({ id, count, bookId }: { id: string; count: number; book
   );
 }
 
-export function ContactDetail({ contact, onEmail, onBack, onEdit, onDelete, onToggleFavorite, book, groups, note, copyTo }: Props) {
+export function ContactDetail({ contact, onEmail, onBack, onEdit, onDelete, onToggleFavorite, book, groups, note, copyTo, colleagueId }: Props) {
   const name = contactName(contact);
+  const message = useStartChat(colleagueId);
   const isOffline = !!useContext(AuthContext)?.isOffline;
   // The shared books that hold the same person; nothing is merged across them. The offline copy does not say.
   const alsoIn = useQuery({ ...contactDetailQueryOptions(contact.id), enabled: !book && !isOffline }).data?.also_in ?? [];
@@ -150,6 +154,7 @@ export function ContactDetail({ contact, onEmail, onBack, onEdit, onDelete, onTo
               <Star aria-hidden="true" className={cn(contact.is_favorite && 'fill-current text-warning')} />
             </Button>
           )}
+          {message && <Button variant="outline" size="sm" onClick={message}><MessageCircle aria-hidden="true" />Message</Button>}
           {onEdit && <Button variant="outline" size="sm" onClick={onEdit}>Edit</Button>}
           {(onDelete || copyBooks.length > 0) && (
             <DropdownMenu>

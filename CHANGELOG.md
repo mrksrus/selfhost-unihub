@@ -13,6 +13,21 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 - **Chat messages are end-to-end encrypted.** The server stores and passes
   on what it cannot read; only the two people in a chat can open it. One
   chat per pair of people: starting it again opens the same one.
+- **The Chat page.** Your chats are listed with the newest first, each with
+  its last message, its unread count and a dot while the other person has
+  UniHub open. A chat shows its messages by day; under your own messages it
+  says "Sending…", "Sent", "Delivered" or "Read", and a message that did not
+  go out offers "Try again". Each message has a menu: Reply quotes the
+  message, Edit and Delete are for your own. A device a person added shows
+  as a line in the chat, and a message this device could not open says so.
+  On a phone an open chat takes the screen above the keyboard.
+- **Start a chat with "Message"** on a colleague's entry in Contacts ›
+  Company, or on one of your contacts that has a colleague's address. A
+  person who cannot be written to (deactivated, Chat off for them, or not
+  opened UniHub since the update) keeps their chat readable, with the reason
+  in place of the composer.
+- **Chat in navigation.** Chat shows its unread count in the rail and the
+  bottom bar and can be chosen as the start page under Settings › General.
 - **Deleting a chat message** removes it, with its earlier versions, for
   both people. It is final, so it is refused while the administrator does
   not allow deleting for good.
@@ -29,6 +44,10 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
   tapping one opens the conversation. While Chat is open the app refuses
   screenshots and screen recording and shows blank in recent apps. Apps
   before 0.33 show "New message" and do not block Chat.
+- **Reference pictures.** Eight new pictures of Chat with fixed synthetic
+  data: the chats beside an open one at its newest and at its first
+  messages (Wide), the list and an open chat (Phone). No existing picture
+  changed.
 
 ## 0.32.0
 

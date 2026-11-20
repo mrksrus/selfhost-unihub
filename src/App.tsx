@@ -25,6 +25,7 @@ const AdminUsers = lazy(() => import("./pages/AdminUsers"));
 const NotFound = lazy(() => import("./pages/NotFound"));
 const Recordings = lazy(() => import("./pages/Recordings"));
 const Music = lazy(() => import("./pages/Music"));
+const ChatPage = lazy(() => import("./pages/ChatPage"));
 const More = lazy(() => import("./pages/More"));
 const AdminSettings = lazy(() => import("./pages/AdminSettings"));
 const AdminPolicies = lazy(() => import("./pages/AdminPolicies"));
@@ -62,6 +63,7 @@ const AuthenticatedApp = () => {
               <Route path="/mail" element={<ModuleGuard id="mail"><MailPage /></ModuleGuard>} />
               <Route path="/recordings" element={<ModuleGuard id="recordings"><Recordings /></ModuleGuard>} />
               <Route path="/music" element={<ModuleGuard id="recordings" page="music"><Music /></ModuleGuard>} />
+              <Route path="/chat" element={<ModuleGuard id="chat"><ChatPage /></ModuleGuard>} />
               <Route path="/more" element={<More />} />
               <Route path="/settings" element={<Settings />} />
               <Route path="/admin/users" element={<AdminUsers />} />

@@ -19,6 +19,7 @@ const START_PAGES: { value: UserSettingValues['default_start_page']; label: stri
   { value: 'contacts', label: 'Contacts', path: '/contacts' },
   { value: 'recordings', label: 'Recordings', path: '/recordings' },
   { value: 'music', label: 'Music', path: '/music' },
+  { value: 'chat', label: 'Chat', path: '/chat' },
   { value: 'dashboard', label: 'Today', path: '/dashboard' },
 ];
 const WEEK_STARTS: { value: UserSettingValues['week_start']; label: string }[] = [
