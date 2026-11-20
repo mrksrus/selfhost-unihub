@@ -42,6 +42,20 @@ describe('sealing (RFC 8291) and the key backup', () => {
     const sealed = await seal(key, encode('hello'));
     expect(decode(await open(key, sealed))).toBe('hello');
 
+    // The RFC's sender key, reused: its second message comes from the kept key agreement and is still the RFC's message.
+    const senderPublic = rfcMessage.slice(21, 86);
+    const rfcSender = {
+      privateKey: await crypto.subtle.importKey('jwk', { kty: 'EC', crv: 'P-256', d: 'yfWPiYE-n46HLnH0KqZOF1fJJU3MYrct3AELtAQ-oRw',
+        x: toBase64Url(senderPublic.slice(1, 33)), y: toBase64Url(senderPublic.slice(33)) }, P256, false, ['deriveBits']),
+      publicKey: await crypto.subtle.importKey('raw', senderPublic, P256, true, []),
+    };
+    const salt = vi.spyOn(crypto, 'getRandomValues').mockImplementation(array => { (array as Uint8Array).set(rfcMessage.slice(0, 16)); return array; });
+    try {
+      for (let time = 0; time < 2; time++) expect(await seal(key, encode('When I grow up, I want to be a watermelon'), rfcSender)).toEqual(rfcMessage);
+    } finally {
+      salt.mockRestore();
+    }
+
     sealed[sealed.length - 1] ^= 1;
     await expect(open(key, sealed)).rejects.toThrow();
     await expect(open(await createSealKey(false), rfcMessage)).rejects.toThrow();

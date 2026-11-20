@@ -8,7 +8,7 @@ import { WrongPassphraseError } from '@/lib/chat/key-backup';
 import { useStartChat } from '@/components/chat/use-start-chat';
 import type { ChatEngine } from '@/lib/chat/types';
 import ChatPage from '@/pages/ChatPage';
-import { createFixtureChatEngine, createMockChatEngine, message, peer } from './chat-mock-engine';
+import { createFixtureChatEngine, createMockChatEngine, direct, message, peer } from './chat-mock-engine';
 
 // The engine is the screens' only source; the session and the router are the real ones.
 const state: { engine: ChatEngine | null } = { engine: null };
@@ -50,7 +50,7 @@ describe('Chat after an account switch', () => {
     expect(screen.getByText('Room 2 is free until ten.', { selector: 'p' })).toBeInTheDocument();
 
     const ofB = createMockChatEngine({
-      conversations: [{ id: 'chat-casey', peer: peer('user-casey', 'Casey Example'), unread: 0, last_activity_at: null, last_message: null }], threads: { 'chat-casey': [] },
+      conversations: [direct({ id: 'chat-casey', peer: peer('user-casey', 'Casey Example'), unread: 0, last_activity_at: null, last_message: null })], threads: { 'chat-casey': [] },
     });
     state.engine = ofB;
     rerender(<App user="B" at="/chat?c=chat-blair" />);
@@ -147,7 +147,7 @@ describe('Chat composer and message menu', () => {
   it('a refused delete says why in the server\'s words and keeps the message', async () => {
     const reason = 'Your administrator does not allow deleting items from the bin for good.';
     state.engine = createMockChatEngine({
-      conversations: [{ id: 'chat-alex', peer: peer('user-alex', 'Alex Example'), unread: 0, last_activity_at: null, last_message: null }],
+      conversations: [direct({ id: 'chat-alex', peer: peer('user-alex', 'Alex Example'), unread: 0, last_activity_at: null, last_message: null })],
       threads: { 'chat-alex': [message('a2', true, 'Ada Example', '2026-06-14T16:12:00.000Z', 'Kept by the rule')] }, deleteRefusal: reason,
     });
     render(<App user="A" at="/chat?c=chat-alex" />);
@@ -195,7 +195,7 @@ describe('Chat small print of a message', () => {
 });
 
 describe('the chat passphrase', () => {
-  const blair = [{ id: 'chat-blair', peer: peer('user-blair', 'Blair Example'), unread: 1, last_activity_at: null, last_message: null }];
+  const blair = [direct({ id: 'chat-blair', peer: peer('user-blair', 'Blair Example'), unread: 1, last_activity_at: null, last_message: null })];
   const passphraseField = () => screen.getByLabelText('Chat passphrase');
 
   it('keeps a wrong passphrase on the prompt, opens the chats with "Not now" and brings the prompt back from their line', async () => {

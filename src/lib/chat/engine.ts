@@ -10,20 +10,23 @@
 import { AppLockRequired, hasCode } from '@/lib/api-error';
 import { onAppEvent } from '@/lib/app-events';
 import { chatApi, unreachable } from '@/lib/chat-api';
-import type { ChatAccount, ChatDirectConversation as ChatConversation, ChatMessage, ChatWelcome } from '../../../api/src/contracts/chat';
+import type { ChatAccount, ChatConversation, ChatMember, ChatMessage, ChatNotify, ChatSender, ChatWelcome } from '../../../api/src/contracts/chat';
 import { concat, fromBase64Url, toBase64Url } from './bytes';
 import { startDevice, type ChatDevice } from './device';
 import { createHistoryKey, unwrapHistoryKey, wrapHistoryKey } from './key-backup';
 import { MlsError, MlsUnavailableError, type MlsDevice } from './mls';
 import { open, seal, type SealKey } from './seal';
+import { searchChats } from './search';
 import { ChatStore } from './store';
-import type { ChatDeliveryState, ChatEngine, ChatEngineSnapshot, ChatReadiness, ChatThreadItem, ChatThreadMessage } from './types';
+import type { ChatDeliveryState, ChatEngine, ChatEngineSnapshot, ChatReadiness, ChatThreadItem, ChatThreadMessage, ChatThreadNotice } from './types';
 
 export const MAX_TEXT = 8000;
 const PREVIEW_CHARS = 160;
 const FORMAT = 1;
 const ARCHIVE_BATCH = 200;
 const STALE_ATTEMPTS = 3;
+const MAX_MENTIONS = 20;
+const DAY = 86_400_000;
 const PREFIX = 'unihub-chat:';
 
 interface Person { id: string; name: string }
@@ -32,14 +35,16 @@ interface Person { id: string; name: string }
 interface Stored {
   id: string;
   conversation_id: string;
-  /** A device line sits between two messages (a seq plus one half). */
+  /** A device or member line sits between two messages (a seq plus one half). */
   seq: number;
-  kind: 'message' | 'device-added';
+  kind: 'message' | ChatThreadNotice['kind'];
   replaces: string | null;
   sender_user_id: string | null;
   sender_name: string;
   text: string | null;
   reply_to: string | null;
+  /** Absent in what was stored before mentions. */
+  mentions?: string[];
   deleted: boolean;
   unreadable: boolean;
   created_at: string;
@@ -54,6 +59,7 @@ interface Outgoing {
   conversation_id: string;
   text: string;
   reply_to: string | null;
+  mentions?: string[];
   replaces: string | null;
   created_at: string;
   error: string | null;
@@ -72,13 +78,15 @@ interface Cursor {
 }
 
 /** Inside the MLS ciphertext; unknown fields are ignored. */
-interface Content { text: string; reply_to: string | null; name: string }
+interface Content { text: string; reply_to: string | null; name: string; mentions?: string[] }
 /** Inside an archive copy: the ids are checked on restore, so a copy stored under another message is dropped. */
 interface Copy extends Content { message_id: string; conversation_id: string; sender_user_id: string | null; replaces: string | null; created_at: string }
 
 const encode = (text: string) => new TextEncoder().encode(text);
 const decode = (bytes: Uint8Array) => new TextDecoder().decode(bytes);
 const userOf = (memberName: string) => memberName.split('/')[0];
+const nameOfChat = (conversation: ChatConversation) => conversation.kind === 'group' ? conversation.name : conversation.peer.name;
+const ids = (value: unknown) => Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string' && item.length <= 64).slice(0, MAX_MENTIONS) : [];
 const reason = (error: unknown) => error instanceof Error && error.message ? error.message : 'Chat could not start.';
 
 function parseContent(bytes: Uint8Array): Content {
@@ -86,7 +94,7 @@ function parseContent(bytes: Uint8Array): Content {
   // Nothing in a message is longer than a person could have typed: its archive copy must fit too.
   if (typeof value.text !== 'string' || value.text.length > MAX_TEXT || typeof value.name !== 'string' || value.name.length > 255
     || (typeof value.reply_to === 'string' && value.reply_to.length > 64)) throw new SyntaxError('Not a chat message.');
-  return { text: value.text, reply_to: typeof value.reply_to === 'string' ? value.reply_to : null, name: value.name };
+  return { text: value.text, reply_to: typeof value.reply_to === 'string' ? value.reply_to : null, name: value.name, mentions: ids(value.mentions) };
 }
 
 /** Puts a record unless the store holds a readable one and this one is not (a restore or another tab came first). */
@@ -124,6 +132,15 @@ class Engine implements ChatEngine {
   private syncAgain = false;
   private flushing: Promise<void> | null = null;
   private flushAgain = false;
+  /** What the server last said of people: senders, members and direct peers. */
+  private readonly people = new Map<string, Pick<ChatSender, 'name' | 'active'>>();
+  private readonly memberLists = new Map<string, ChatMember[]>();
+  private readonly membersLoading = new Set<string>();
+  private readonly catchingUp = new Set<string>();
+  /** Chats this page made or opened: a list fetched just before is not a reason to drop them. */
+  private readonly started = new Set<string>();
+  /** One sender key pair for this page's previews, so each recipient device costs one key agreement. */
+  private previewFrom: Promise<CryptoKeyPair> | null = null;
 
   constructor(private readonly me: Person) {}
 
@@ -143,7 +160,8 @@ class Engine implements ChatEngine {
       this.stops.push(
         onAppEvent('unihub:chat-changed', later),
         onAppEvent('unihub:chat-presence', ({ user_id, online }) => {
-          this.server = this.server.map(item => item.peer.user_id === user_id && item.peer.online !== null ? { ...item, peer: { ...item.peer, online } } : item);
+          this.server = this.server.map(item => item.kind === 'direct' && item.peer.user_id === user_id && item.peer.online !== null ? { ...item, peer: { ...item.peer, online } } : item);
+          for (const [id, list] of this.memberLists) this.setMembers(id, list.map(member => member.user_id === user_id && member.online !== null ? { ...member, online } : member));
           this.changed(null);
         }),
       );
@@ -245,9 +263,14 @@ class Engine implements ChatEngine {
     this.snap ??= {
       readiness: this.readiness(),
       conversations: this.server.map(item => {
-        const last = this.thread(item.id)?.filter((entry): entry is ChatThreadMessage => entry.kind === 'message').at(-1);
-        return { id: item.id, peer: item.peer, unread: item.unread, last_activity_at: item.last_activity_at,
-          last_message: last ? { text: last.text, from_me: last.from_me, deleted: last.deleted } : null };
+        const messages = this.thread(item.id)?.filter((entry): entry is ChatThreadMessage => entry.kind === 'message') ?? [];
+        const last = messages.at(-1);
+        return { id: item.id, kind: item.kind, name: nameOfChat(item),
+          peer: item.kind === 'direct' ? item.peer : { user_id: null, name: item.name, can_write: true, reason: null, online: null, active: true },
+          group: item.kind === 'group' ? { follows: item.follows, role: item.role, member_count: item.member_count, added_by: item.added_by } : null,
+          unread: item.unread, mentioned: messages.some(entry => entry.mentions_me && entry.seq !== null && entry.seq > item.read_seq),
+          catching_up: this.catchingUp.has(item.id), notify: item.notify, retention_days: item.retention_days, retention_from: item.retention_from,
+          last_activity_at: item.last_activity_at, last_message: last ? { text: last.text, from_me: last.from_me, deleted: last.deleted } : null };
       }),
       holds_history_key: !!this.historyKey,
       restore: this.restoring,
@@ -262,14 +285,35 @@ class Engine implements ChatEngine {
     return items;
   }
 
+  /** What the server last said of a person: a direct chat's peer, a member or a sender. */
+  private person(userId: string | null, conversation?: ChatConversation) {
+    if (!userId) return undefined;
+    return conversation?.kind === 'direct' && conversation.peer.user_id === userId ? conversation.peer : this.people.get(userId);
+  }
+
   private nameOf(userId: string | null, conversation?: ChatConversation) {
-    if (userId === this.me.id) return this.me.name;
-    return conversation?.peer.user_id === userId && userId ? conversation.peer.name : 'Deleted person';
+    return userId === this.me.id ? this.me.name : this.person(userId, conversation)?.name ?? 'Deleted person';
+  }
+
+  /** The other people of a group chat who can have received a message: active, reachable, there before it. */
+  private recipients(conversationId: string, seq: number) {
+    return this.memberLists.get(conversationId)?.filter(member => member.user_id !== this.me.id && member.active && !member.reason && member.joined_seq < seq) ?? [];
   }
 
   private delivery(conversation: ChatConversation | undefined, seq: number): ChatDeliveryState {
+    if (conversation?.kind === 'group') {
+      const others = this.recipients(conversation.id, seq);
+      if (others.length && others.every(member => member.read_seq !== null && seq <= member.read_seq)) return 'read';
+      return others.length && others.every(member => seq <= Math.max(member.delivered_seq, member.read_seq ?? 0)) ? 'delivered' : 'sent';
+    }
     if (conversation?.peer_read_seq != null && seq <= conversation.peer_read_seq) return 'read';
     return conversation && seq <= conversation.peer_delivered_seq ? 'delivered' : 'sent';
+  }
+
+  private readBy(conversation: ChatConversation | undefined, seq: number): ChatThreadMessage['read_by'] {
+    if (conversation?.kind !== 'group') return null;
+    const counted = this.recipients(conversation.id, seq).filter(member => member.read_seq !== null);
+    return counted.length ? { people: counted.filter(member => seq <= member.read_seq!).map(({ user_id, name }) => ({ user_id, name })), of: counted.length } : null;
   }
 
   private build(conversationId: string): ChatThreadItem[] {
@@ -280,21 +324,26 @@ class Engine implements ChatEngine {
     const quoted: [ChatThreadMessage, string][] = [];
     const message = (record: Stored | Outgoing, sending: Outgoing | null): ChatThreadMessage => {
       const sender = 'sender_user_id' in record ? record.sender_user_id : this.me.id;
+      const known = this.person(sender, conversation);
+      const fromMe = sender === this.me.id;
+      const mentions = record.mentions ?? [];
+      const seq = sending ? null : (record as Stored).seq;
       const item: ChatThreadMessage = {
-        kind: 'message', id: record.id, seq: sending ? null : (record as Stored).seq, sender_user_id: sender,
-        sender_name: 'sender_name' in record ? record.sender_name : this.me.name, from_me: sender === this.me.id,
+        kind: 'message', id: record.id, seq, sender_user_id: sender,
+        sender_name: fromMe ? this.me.name : known?.active ? known.name : (record as Stored).sender_name,
+        former_colleague: !fromMe && (!sender || known?.active === false), from_me: fromMe, mentions, mentions_me: !fromMe && mentions.includes(this.me.id),
         text: record.text, reply_to: null, edited: false, deleted: 'deleted' in record && record.deleted,
         unreadable: 'unreadable' in record && record.unreadable, created_at: record.created_at,
-        delivery: sender !== this.me.id ? null : sending ? (sending.error ? 'failed' : 'sending') : this.delivery(conversation, (record as Stored).seq),
-        edit_state: null, error: sending?.error ?? null,
+        delivery: !fromMe ? null : sending ? (sending.error ? 'failed' : 'sending') : this.delivery(conversation, seq!),
+        read_by: fromMe && seq !== null ? this.readBy(conversation, seq) : null, edit_state: null, error: sending?.error ?? null,
       };
       if (record.reply_to) quoted.push([item, record.reply_to]);
       byId.set(item.id, item);
       return item;
     };
     for (const record of records) {
-      if (record.kind === 'device-added') {
-        items.push({ kind: 'device-added', id: record.id, user_id: record.sender_user_id, name: record.sender_name, created_at: record.created_at });
+      if (record.kind !== 'message') {
+        items.push({ kind: record.kind, id: record.id, user_id: record.sender_user_id, name: record.sender_name, created_at: record.created_at });
       } else if (record.replaces) {
         // An edit counts only from the message's own sender.
         const original = byId.get(record.replaces);
@@ -334,7 +383,9 @@ class Engine implements ChatEngine {
       await this.setAccount(await chatApi.account());
       await this.setConversations(await chatApi.conversations());
       if (!this.device) return;
+      await this.dropGone();
       for (const conversation of this.server) await this.fetchConversation(conversation);
+      for (const id of this.memberLists.keys()) if (this.server.some(item => item.id === id)) await this.loadMembers(id);
       this.channel?.postMessage('changed');
       await this.archiveHeld();
       await this.flush();
@@ -352,6 +403,46 @@ class Engine implements ChatEngine {
     for (const item of conversations) if (before.get(item.id) !== JSON.stringify(item)) this.changed(item.id);
     // A snapshot keeps its identity while nothing changed.
     if (before.size !== conversations.length) this.changed(null);
+  }
+
+  /** Drops what this device holds of chats no longer in the person's list: they left or were removed. */
+  private async dropGone() {
+    const listed = new Set(this.server.map(item => item.id));
+    const gone = new Set([...this.cursors.keys(), ...[...this.messages.values()].map(record => record.conversation_id)].filter(id => !listed.has(id) && !this.started.has(id)));
+    if (!gone.size) return;
+    const groups = [...gone].flatMap(id => this.cursor(id).groups);
+    const records = [...this.messages.values()].filter(record => gone.has(record.conversation_id));
+    const outgoing = this.outbox.filter(entry => gone.has(entry.conversation_id));
+    await this.device!.step(mls => groups.forEach(group => { try { mls.delete_group(encode(group)); } catch { /* not held */ } }), transaction => {
+      records.forEach(record => transaction.objectStore('messages').delete(record.id));
+      outgoing.forEach(entry => transaction.objectStore('outbox').delete(entry.order!));
+      gone.forEach(id => transaction.objectStore('cursors').delete(id));
+    });
+    records.forEach(record => this.messages.delete(record.id));
+    this.outbox = this.outbox.filter(entry => !gone.has(entry.conversation_id));
+    gone.forEach(id => { this.cursors.delete(id); this.memberLists.delete(id); });
+    this.changed();
+  }
+
+  /** Deletes this device's copies older than the chat's retention, once its wait is over. */
+  private async expire({ id, retention_days: days, retention_from: from }: ChatConversation) {
+    if (!days || !from || Date.parse(from) > Date.now()) return;
+    const old = [...this.messages.values()].filter(record => record.conversation_id === id && Date.parse(record.created_at) < Date.now() - days * DAY);
+    if (!old.length) return;
+    await this.store!.write([], transaction => old.forEach(record => transaction.objectStore('messages').delete(record.id)));
+    old.forEach(record => this.messages.delete(record.id));
+    this.changed(id);
+  }
+
+  private async loadMembers(conversationId: string) {
+    this.setMembers(conversationId, await chatApi.members(conversationId));
+  }
+
+  private setMembers(conversationId: string, members: ChatMember[]) {
+    for (const member of members) this.people.set(member.user_id, member);
+    if (JSON.stringify(members) === JSON.stringify(this.memberLists.get(conversationId))) return;
+    this.memberLists.set(conversationId, members);
+    this.changed(conversationId);
   }
 
   private cursor(conversationId: string): Cursor {
@@ -381,14 +472,23 @@ class Engine implements ChatEngine {
     if (conversation.last_seq < cursor.seq) await this.keep(null, () => [], cursor = { ...cursor, seq: 0 });
     const current = conversation.current_group_id;
     if (conversation.last_seq !== cursor.seq || (current && !cursor.groups.includes(current))) {
-      for (let more = true; more;) {
-        const page = await chatApi.messages(conversation.id, cursor.seq);
-        for (const welcome of page.welcomes) await this.join(conversation, welcome);
-        for (const message of page.messages) await this.receive(conversation, message);
-        cursor = this.cursor(conversation.id);
-        more = page.more;
+      try {
+        for (let more = true; more;) {
+          const page = await chatApi.messages(conversation.id, cursor.seq);
+          page.senders.forEach(sender => this.people.set(sender.user_id, sender));
+          // Who is still a member tells a person who left from one whose devices ended.
+          if (page.welcomes.length && conversation.kind === 'group') await this.loadMembers(conversation.id).catch(() => undefined);
+          if ((page.more || page.welcomes.length > 1) && !this.catchingUp.has(conversation.id)) { this.catchingUp.add(conversation.id); this.changed(null); }
+          for (const welcome of page.welcomes) await this.join(conversation, welcome);
+          for (const message of page.messages) await this.receive(conversation, message);
+          cursor = this.cursor(conversation.id);
+          more = page.more;
+        }
+      } finally {
+        if (this.catchingUp.delete(conversation.id)) this.changed(null);
       }
     }
+    await this.expire(conversation);
     // Every message of an older group was read: its state goes.
     const held = cursor.groups.indexOf(current ?? '');
     if (held > 0 && cursor.seq >= conversation.last_seq) {
@@ -401,13 +501,26 @@ class Engine implements ChatEngine {
     }
   }
 
-  /** The "added a device" lines of a group this device is now in, against the group before it. */
-  private addedDevices(conversation: ChatConversation, groupId: string, members: string[], before: string[] | null, seq: number, at: string): Stored[] {
-    return (before ? members.filter(name => !before.includes(name)) : []).map(name => ({
-      id: `${groupId}:${name}`, conversation_id: conversation.id, seq: seq + 0.5, kind: 'device-added', replaces: null,
-      sender_user_id: userOf(name), sender_name: this.nameOf(userOf(name), conversation), text: null, reply_to: null,
-      deleted: false, unreadable: false, created_at: at, archived: true,
-    }));
+  /**
+   * The lines of a group this device is now in, against the group before it:
+   * devices added, and in a group chat people who joined or left (not a
+   * member any more; a member whose devices all ended gets no line).
+   */
+  private lines(conversation: ChatConversation, groupId: string, members: string[], before: string[] | null, seq: number, at: string): Stored[] {
+    if (!before) return [];
+    const line = (kind: Stored['kind'], key: string, userId: string): Stored => ({
+      id: `${groupId}:${key}`, conversation_id: conversation.id, seq: seq + 0.5, kind, replaces: null, sender_user_id: userId,
+      sender_name: this.nameOf(userId, conversation), text: null, reply_to: null, deleted: false, unreadable: false, created_at: at, archived: true,
+    });
+    const [was, now] = [new Set(before.map(userOf)), new Set(members.map(userOf))];
+    const stays = this.memberLists.get(conversation.id) ?? [];
+    return [
+      ...members.filter(name => !before.includes(name) && was.has(userOf(name))).map(name => line('device-added', name, userOf(name))),
+      ...conversation.kind === 'group' ? [
+        ...[...now].filter(user => !was.has(user)).map(user => line('joined', `${user}:joined`, user)),
+        ...[...was].filter(user => !now.has(user) && !stays.some(member => member.user_id === user)).map(user => line('left', `${user}:left`, user)),
+      ] : [],
+    ];
   }
 
   private async join(conversation: ChatConversation, welcome: ChatWelcome) {
@@ -415,7 +528,7 @@ class Engine implements ChatEngine {
     if (!cursor.groups.includes(welcome.group_id)) {
       try {
         await this.keep(mls => { mls.join(fromBase64Url(welcome.welcome)); return mls.members(encode(welcome.group_id)); },
-          members => this.addedDevices(conversation, welcome.group_id, members, cursor.members, cursor.seq, welcome.created_at),
+          members => this.lines(conversation, welcome.group_id, members, cursor.members, cursor.seq, welcome.created_at),
           members => ({ ...cursor, groups: [...cursor.groups, welcome.group_id], members }));
       } catch (error) {
         // A Welcome this device cannot open costs its group; the next message from here makes one it is in.
@@ -450,7 +563,7 @@ class Engine implements ChatEngine {
     try {
       await this.keep(mls => mls.decrypt(encode(message.group_id), fromBase64Url(message.ciphertext!)), plain => {
         const content = parseContent(plain);
-        return [{ ...record, text: content.text, reply_to: content.reply_to, sender_name: content.name }];
+        return [{ ...record, text: content.text, reply_to: content.reply_to, sender_name: content.name, mentions: content.mentions }];
       }, next);
     } catch (error) {
       // Not in its group, tampered with, or the module stopped on it: it costs only itself.
@@ -461,8 +574,10 @@ class Engine implements ChatEngine {
 
   // --- Sending ---------------------------------------------------------------------------
 
-  send(conversationId: string, text: string, replyTo: string | null = null) {
-    void this.enqueue({ id: crypto.randomUUID(), conversation_id: conversationId, text: this.checked(text), reply_to: replyTo, replaces: null }).catch(error => this.fail(error));
+  send(conversationId: string, text: string, replyTo: string | null = null, mentions: string[] = []) {
+    if (mentions.length > MAX_MENTIONS) throw new Error(`A message mentions at most ${MAX_MENTIONS} people.`);
+    void this.enqueue({ id: crypto.randomUUID(), conversation_id: conversationId, text: this.checked(text), reply_to: replyTo, replaces: null,
+      ...mentions.length ? { mentions } : {} }).catch(error => this.fail(error));
   }
 
   edit(messageId: string, text: string) {
@@ -538,14 +653,16 @@ class Engine implements ChatEngine {
           ? entry.sealed : await this.encrypt(entry, await this.groupFor(conversation, stale));
         entry.sealed = sealed;
         const content: Copy = { message_id: entry.id, conversation_id: entry.conversation_id, sender_user_id: this.me.id, replaces: entry.replaces,
-          created_at: entry.created_at, text: entry.text, reply_to: entry.reply_to, name: this.me.name };
+          created_at: entry.created_at, text: entry.text, reply_to: entry.reply_to, name: this.me.name, mentions: entry.mentions };
+        const from = await (this.previewFrom ??= crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, false, ['deriveBits']));
         const previews = entry.replaces ? [] : await Promise.all((await chatApi.devices(conversation.id))
           .filter(device => device.user_id !== this.me.id && device.preview)
           .map(async device => ({ chat_device_id: device.chat_device_id,
             sealed: toBase64Url(await seal({ publicKey: fromBase64Url(device.preview!.p256dh), auth: fromBase64Url(device.preview!.auth) },
-              encode([...entry.text].slice(0, PREVIEW_CHARS).join('')))) })));
+              encode([...entry.text].slice(0, PREVIEW_CHARS).join('')), from)) })));
+        // The place for files: each is uploaded before this post, which names their ids.
         const posted = await chatApi.post(conversation.id, { id: entry.id, group_id: sealed.group_id, replaces: entry.replaces, format: FORMAT,
-          ciphertext: sealed.ciphertext, archive: await this.sealCopy(content), previews });
+          ciphertext: sealed.ciphertext, archive: await this.sealCopy(content), previews, ...entry.mentions && !entry.replaces ? { mentions: entry.mentions } : {} });
         await this.store!.write([], transaction => {
           transaction.objectStore('outbox').delete(entry.order!);
           transaction.objectStore('messages').put(this.sentRecord(entry, posted));
@@ -563,7 +680,7 @@ class Engine implements ChatEngine {
 
   private sentRecord(entry: Outgoing, posted: ChatMessage): Stored {
     return { id: entry.id, conversation_id: entry.conversation_id, seq: posted.seq, kind: 'message', replaces: entry.replaces,
-      sender_user_id: this.me.id, sender_name: this.me.name, text: entry.text, reply_to: entry.reply_to, deleted: false,
+      sender_user_id: this.me.id, sender_name: this.me.name, text: entry.text, reply_to: entry.reply_to, mentions: entry.mentions, deleted: false,
       unreadable: false, created_at: posted.created_at, archived: true };
   }
 
@@ -577,7 +694,7 @@ class Engine implements ChatEngine {
 
   /** Encrypts at send time, in send order, and stores the ciphertext with the group's new state. */
   private async encrypt(entry: Outgoing, groupId: string) {
-    const content: Content = { text: entry.text, reply_to: entry.reply_to, name: this.me.name };
+    const content: Content = { text: entry.text, reply_to: entry.reply_to, name: this.me.name, mentions: entry.mentions };
     return this.device!.step(mls => ({ group_id: groupId, ciphertext: toBase64Url(mls.encrypt(encode(groupId), encode(JSON.stringify(content)))) }),
       (transaction, sealed) => { transaction.objectStore('outbox').put({ ...entry, sealed }); });
   }
@@ -589,7 +706,10 @@ class Engine implements ChatEngine {
     if (current && current !== stale && !this.cursor(conversation.id).groups.includes(current)) await this.fetchConversation(conversation);
     if (current && current !== stale && this.cursor(conversation.id).groups.includes(current)) return current;
     const claimed = await chatApi.claimKeyPackages(conversation.id);
-    if (!claimed.some(item => item.user_id !== this.me.id)) throw new Error(conversation.peer.reason ?? `${conversation.peer.name} cannot be written to yet.`);
+    if (conversation.kind === 'group' ? !claimed.length : !claimed.some(item => item.user_id !== this.me.id)) {
+      throw new Error(conversation.kind === 'group' ? 'Nobody else in this chat can be written to yet.' : conversation.peer.reason ?? `${conversation.peer.name} cannot be written to yet.`);
+    }
+    if (conversation.kind === 'group') await this.loadMembers(conversation.id);
     const groupId = crypto.randomUUID();
     const before = this.cursor(conversation.id);
     const made = await this.keep(mls => {
@@ -608,15 +728,73 @@ class Engine implements ChatEngine {
       throw error;
     }
     conversation.current_group_id = groupId;
-    await this.keep(null, () => this.addedDevices(conversation, groupId, made.members, before.members, before.seq, new Date().toISOString()),
+    await this.keep(null, () => this.lines(conversation, groupId, made.members, before.members, before.seq, new Date().toISOString()),
       { ...this.cursor(conversation.id), members: made.members });
     return groupId;
   }
 
   async openConversation(userId: string) {
     const conversation = await chatApi.start(userId);
+    this.started.add(conversation.id);
     if (!this.server.some(item => item.id === conversation.id)) await this.setConversations([conversation, ...this.server]);
     return conversation.id;
+  }
+
+  async createGroup(name: string, people: Parameters<ChatEngine['createGroup']>[1]) {
+    const conversation = await chatApi.startGroup({ kind: 'group', name, ...people });
+    this.started.add(conversation.id);
+    await this.setConversations([conversation, ...this.server.filter(item => item.id !== conversation.id)]);
+    return conversation.id;
+  }
+
+  candidates(query: string) {
+    return chatApi.candidates(query);
+  }
+
+  members(conversationId: string) {
+    if (!this.memberLists.has(conversationId) && !this.membersLoading.has(conversationId)) {
+      this.membersLoading.add(conversationId);
+      void this.loadMembers(conversationId).catch(() => undefined).finally(() => this.membersLoading.delete(conversationId));
+    }
+    return this.memberLists.get(conversationId) ?? null;
+  }
+
+  private async replace(conversation: ChatConversation) {
+    await this.setConversations(this.server.map(item => item.id === conversation.id ? conversation : item));
+  }
+
+  async rename(conversationId: string, name: string) {
+    await this.replace((await chatApi.rename(conversationId, name)).conversation);
+  }
+
+  async unfollow(conversationId: string) {
+    await this.replace((await chatApi.unfollow(conversationId)).conversation);
+  }
+
+  async addMembers(conversationId: string, userIds: string[]) {
+    this.setMembers(conversationId, await chatApi.addMembers(conversationId, userIds));
+    void this.sync().catch(() => undefined);
+  }
+
+  async removeMember(conversationId: string, userId: string) {
+    this.setMembers(conversationId, await chatApi.removeMember(conversationId, userId));
+    void this.sync().catch(() => undefined);
+  }
+
+  async leave(conversationId: string) {
+    await chatApi.leave(conversationId);
+    this.started.delete(conversationId);
+    await this.sync();
+  }
+
+  async setNotify(conversationId: string, notify: ChatNotify) {
+    const answer = await chatApi.notify(conversationId, notify);
+    const conversation = this.server.find(item => item.id === conversationId);
+    if (conversation) await this.replace({ ...conversation, notify: answer.notify });
+  }
+
+  search(query: string) {
+    return searchChats(query, this.server.map(item => ({ id: item.id, name: nameOfChat(item), items: this.thread(item.id) ?? [] })));
   }
 
   async delete(messageId: string) {
@@ -676,7 +854,7 @@ class Engine implements ChatEngine {
       const batch = pending.slice(start, start + ARCHIVE_BATCH);
       const copies = await Promise.all(batch.map(async record => ({ message_id: record.id, sealed: await this.sealCopy({
         message_id: record.id, conversation_id: record.conversation_id, sender_user_id: record.sender_user_id, replaces: record.replaces,
-        created_at: record.created_at, text: record.text!, reply_to: record.reply_to, name: record.sender_name }) })));
+        created_at: record.created_at, text: record.text!, reply_to: record.reply_to, name: record.sender_name, mentions: record.mentions }) })));
       await chatApi.storeArchive(copies);
       await this.keep(null, () => batch.map(record => ({ ...(this.messages.get(record.id) ?? record), archived: true })));
     }
@@ -696,7 +874,7 @@ class Engine implements ChatEngine {
             const copy = JSON.parse(decode(await open(this.historyKey!, fromBase64Url(entry.sealed)))) as Copy;
             if (copy.message_id !== entry.message_id || copy.conversation_id !== entry.conversation_id || typeof copy.text !== 'string') continue;
             records.push({ id: entry.message_id, conversation_id: entry.conversation_id, seq: entry.seq, kind: 'message', replaces: copy.replaces ?? null,
-              sender_user_id: copy.sender_user_id ?? null, sender_name: String(copy.name ?? ''), text: copy.text, reply_to: copy.reply_to ?? null,
+              sender_user_id: copy.sender_user_id ?? null, sender_name: String(copy.name ?? ''), text: copy.text, reply_to: copy.reply_to ?? null, mentions: ids(copy.mentions),
               deleted: false, unreadable: false, created_at: String(copy.created_at ?? ''), archived: true });
           } catch {
             // A copy this key cannot open (sealed to an older key, or changed) is skipped.
