@@ -5,7 +5,7 @@
 // the server will.
 import { concat, fromBase64Url, toBase64Url } from './bytes';
 import { ChatDevice } from './device';
-import { MlsError } from './mls';
+import { MlsError, type MlsDevice } from './mls';
 import { ChatStore } from './store';
 
 const devices = new Map<string, ChatDevice>();
@@ -13,8 +13,6 @@ const encode = (text: string) => new TextEncoder().encode(text);
 const decode = (bytes: Uint8Array) => new TextDecoder().decode(bytes);
 const device = (name: string) => devices.get(name) ?? Promise.reject(new Error(`no device ${name}: enrol first`));
 const store = (name: string) => ChatStore.open(`test-hook-${name}`);
-// The module's glue: its init answers the running instance's exports.
-const [glue] = Object.values(import.meta.glob<{ default(): Promise<{ __wbindgen_malloc(size: number, align: number): number }> }>('./mls-module/chat_mls.js'));
 
 const chatTest = {
   /** A new device named `name`; returns one key package. */
@@ -36,15 +34,20 @@ const chatTest = {
   decrypt: async (name: string, groupId: string, message: string) =>
     decode(await (await device(name)).step(mls => mls.decrypt(encode(groupId), fromBase64Url(message)))),
   /**
-   * Crashes the module for real, as a panic does: its allocator aborts (the
-   * `unreachable` trap) on an alignment that is not a power of two. True when
-   * the step reported the restart (MlsError `stopped`).
+   * Crashes the module for real, with a panic: a new MLS device seeds its
+   * randomness from the page, and without it the module panics, which traps.
+   * Answers the error kind the step reported ('stopped' when the module
+   * started again).
    */
-  async trap(name: string) {
-    const exports = await (await glue()).default();
-    return (await device(name)).step(() => { exports.__wbindgen_malloc(8, 3); })
-      .then(() => false, (error: unknown) => error instanceof MlsError && error.kind === 'stopped');
-  },
+  trap: async (name: string) => (await device(name)).step(mls => {
+    const random = crypto.getRandomValues;
+    crypto.getRandomValues = () => { throw new Error('no randomness'); };
+    try {
+      new (mls.constructor as new () => MlsDevice)();
+    } finally {
+      crypto.getRandomValues = random;
+    }
+  }).then(() => 'no trap', (error: unknown) => error instanceof MlsError ? error.kind : String(error)),
 };
 
 Object.assign(window, { chatTest });

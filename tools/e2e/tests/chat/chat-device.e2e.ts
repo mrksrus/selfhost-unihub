@@ -57,7 +57,7 @@ test('a device whose module traps goes on from its store, and the next message s
     expect(await run(blair, 'join', 'blair-trap', welcome)).toBe('trap-group');
     expect(await run(blair, 'decrypt', 'blair-trap', 'trap-group', await run(browser, 'encrypt', 'alex-trap', 'trap-group', 'before'))).toBe('before');
 
-    expect(await run(blair, 'trap', 'blair-trap'), 'the module trapped and started again').toBe(true);
+    expect(await run(blair, 'trap', 'blair-trap'), 'the module trapped and started again').toBe('stopped');
     expect(await run(blair, 'decrypt', 'blair-trap', 'trap-group', await run(browser, 'encrypt', 'alex-trap', 'trap-group', 'after the trap'))).toBe('after the trap');
     expect(await run(browser, 'decrypt', 'alex-trap', 'trap-group', await run(blair, 'encrypt', 'blair-trap', 'trap-group', 'blair writes on'))).toBe('blair writes on');
   } finally {
