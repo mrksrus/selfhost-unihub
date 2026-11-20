@@ -21,7 +21,7 @@ test('two people write to each other: read marks, an edit and a delete reach bot
     // The first Chat open asks each of them for a passphrase.
     await browser.setCookies(await cookiesOf(alex));
     await app.open(chatWithHook);
-    await expect(screen.getByText('Chat is being set up', { exact: true })).toBeVisible();
+    await expect(screen.getByText('Choose a chat passphrase', { exact: true })).toBeVisible();
     expect(await choosePassphrase(browser), 'Alex had no passphrase yet').toBe('choose-passphrase');
     await expect(screen.getByText('No chats yet', { exact: true })).toBeVisible();
     await page.goto(`${stack.url}${chatWithHook}`);
