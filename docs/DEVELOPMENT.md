@@ -185,7 +185,7 @@ the tarball once, checking the SHA-256 sum published on
 [mariadb.org/download](https://mariadb.org/download/):
 
 ```bash
-V=11.8.9; T=mariadb-$V-linux-systemd-x86_64.tar.gz
+V=11.8.10; T=mariadb-$V-linux-systemd-x86_64.tar.gz
 cd ~/Downloads
 curl -LO https://downloads.mariadb.org/rest-api/mariadb/$V/$T
 curl -s https://downloads.mariadb.org/rest-api/mariadb/$V/$T/checksum/   # shows sha256sum

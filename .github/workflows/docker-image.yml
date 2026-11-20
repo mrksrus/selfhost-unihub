@@ -1099,8 +1099,8 @@ jobs:
       UNIHUB_E2E_EMULATOR_PORT: "5560"
       SUITE_LOGS: ${{ github.workspace }}/android-e2e-logs
       # The MariaDB tarball of docs/DEVELOPMENT.md (scripts/local-db.sh).
-      MARIADB_VERSION: 11.8.9
-      MARIADB_SHA256: 32f8871a2aa38b36aa418b7f4abc6fc0c6ef1ba5a45798cacb2afa52c8a6113b
+      MARIADB_VERSION: 11.8.10
+      MARIADB_SHA256: 15ca40274597af84fa8f89f8248b37740c5a712c003df80b4c7b32a4486e2027
       # The app the contacts update case (26-09) starts from.
       PREVIOUS_APP: 0.25.1
     steps:
