@@ -116,11 +116,14 @@ export function wipeChatStore(userId: string): Promise<void> {
   });
 }
 
-/** Deletes the chat state of every person on this device but `keep`'s: all at sign-out, the earlier person's when another signs in. */
-export async function wipeChatStores(keep?: string) {
+/**
+ * Deletes the chat state of every person on this device but `keep`'s: all at
+ * sign-out, the earlier person's when another signs in. A browser that cannot
+ * list its databases (Firefox before 126) deletes those of the people in `known`.
+ */
+export async function wipeChatStores(keep?: string, known: readonly (string | null | undefined)[] = []) {
   if (typeof indexedDB === 'undefined') return;
-  // shortcut: a browser without indexedDB.databases() (Firefox before 126) lists nothing to wipe; track the names if such browsers matter.
-  const names = indexedDB.databases ? (await indexedDB.databases()).map(item => item.name ?? '') : [];
-  await Promise.all(names.filter(name => name.startsWith(PREFIX) && (keep === undefined || name !== databaseName(keep)))
-    .map(name => wipeChatStore(name.slice(PREFIX.length))));
+  const listed = indexedDB.databases ? (await indexedDB.databases()).map(item => item.name ?? '').filter(name => name.startsWith(PREFIX)) : [];
+  const names = new Set([...listed, ...known.filter(id => !!id).map(id => databaseName(id!))]);
+  await Promise.all([...names].filter(name => keep === undefined || name !== databaseName(keep)).map(name => wipeChatStore(name.slice(PREFIX.length))));
 }

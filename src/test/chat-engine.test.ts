@@ -535,5 +535,12 @@ describe('the chat engine', { timeout: 60_000 }, () => {
     expect((await alex.browser.idb.databases()).map(item => item.name)).toEqual([`unihub-chat:${ALEX}`]);
     await context.run(alex.browser, () => wipeChatStores());
     expect(await alex.browser.idb.databases()).toEqual([]);
+    // A browser that cannot list its databases still deletes the store of the person who signs out.
+    await context.run(alex.browser, async () => (await ChatStore.open(ALEX)).close());
+    const listing = alex.browser.idb.databases;
+    Object.defineProperty(alex.browser.idb, 'databases', { value: undefined, configurable: true });
+    await context.run(alex.browser, () => wipeChatStores(undefined, [ALEX]));
+    Object.defineProperty(alex.browser.idb, 'databases', { value: listing, configurable: true });
+    expect(await alex.browser.idb.databases()).toEqual([]);
   });
 });

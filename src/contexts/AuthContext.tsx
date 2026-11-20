@@ -66,7 +66,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         // Another person's app lock records (the PIN, the timeline) go with
         // their session; this person's are keyed apart, so nothing waits for it.
         void clearAppLockData(response.data.user.id);
-        void wipeChatStores(response.data.user.id).catch(() => undefined);
+        void wipeChatStores(response.data.user.id, [saved?.user.id]).catch(() => undefined);
         if (version !== authVersion.current) return;
         setOfflineAccount(response.data.user.id);
         api.setCsrfToken(response.data.csrfToken ?? null);
@@ -153,7 +153,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (version !== authVersion.current) return;
     if (saved && saved.user.id !== nextUser.id) await clearOfflineData();
     void clearAppLockData(nextUser.id);
-    void wipeChatStores(nextUser.id).catch(() => undefined);
+    void wipeChatStores(nextUser.id, [saved?.user.id]).catch(() => undefined);
     if (version !== authVersion.current) return;
     // A sign-in with the password opens the app lock and may set up a new PIN.
     noteSignIn(nextUser.id);
@@ -276,6 +276,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const signOut = async () => {
     ++authVersion.current;
+    const leaving = user?.id;
     refreshController.current?.abort();
     // Unmount all private query observers immediately. Keep CSRF only until the
     // authenticated unsubscribe and signout requests have finished.
@@ -295,7 +296,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         // The PIN and the lock timeline of this browser; unsent recordings stay.
         await clearAppLockData();
         // Chat's messages and history key on this browser.
-        await wipeChatStores().catch(() => undefined);
+        await wipeChatStores(undefined, [leaving]).catch(() => undefined);
         clearLocalSession();
         void resetBackgroundNotificationState();
         broadcastAuthChange();
