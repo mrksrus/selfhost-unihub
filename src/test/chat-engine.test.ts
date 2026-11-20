@@ -358,7 +358,7 @@ async function pair() {
   const blair = open(BLAIR, 'b1');
   for (const [on, person] of [[alex, ALEX], [blair, BLAIR]] as const) {
     await settled(on);
-    expect(on.engine.snapshot().readiness.state).toBe('choose-passphrase');
+    expect(on.engine.snapshot().readiness).toEqual({ state: 'choose-passphrase' });
     await on.as(engine => engine.choosePassphrase(PASSPHRASES[person]));
   }
   const conversation = await alex.as(engine => engine.openConversation(BLAIR));
