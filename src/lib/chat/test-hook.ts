@@ -1,8 +1,8 @@
 // A test hook on the app's own page (/#chat-test): Chat's devices with their
-// IndexedDB stores and the MLS module in a real browser, without a server. The
-// end-to-end and emulator tests drive it (chat-device.e2e.ts and
-// chat-device.test.mjs under tools/e2e) and carry the blobs between devices as
-// the server will.
+// IndexedDB stores and the MLS module in a real browser, without a server, and
+// the passphrase of the page's own Chat. The end-to-end and emulator tests
+// under tools/e2e drive it; for bare devices they carry the blobs between them
+// as the server does.
 import { concat, fromBase64Url, toBase64Url } from './bytes';
 import { ChatDevice } from './device';
 import { MlsError, type MlsDevice } from './mls';
@@ -49,6 +49,28 @@ const chatTest = {
       crypto.getRandomValues = random;
     }
   }).then(() => 'no trap', (error: unknown) => error instanceof MlsError ? error.kind : String(error)),
+  /**
+   * Chooses the signed-in person's chat passphrase in the page's own engine,
+   * or enters it where Chat asks for it: the passphrase screens' stand-in.
+   * Answers the state Chat was in.
+   */
+  async passphrase(passphrase: string) {
+    const { user } = await (await fetch('/api/auth/me')).json() as { user: { id: string; full_name: string | null; email: string } };
+    const { acquireChatEngine } = await import('./engine');
+    const { engine, release } = acquireChatEngine({ id: user.id, name: user.full_name || user.email });
+    try {
+      const state = await new Promise<string>(resolve => {
+        const check = () => { const { state } = engine.snapshot().readiness; if (state !== 'starting') { stop(); resolve(state); } };
+        const stop = engine.subscribe(check);
+        check();
+      });
+      if (state === 'choose-passphrase') await engine.choosePassphrase(passphrase);
+      if (state === 'enter-passphrase') await engine.enterPassphrase(passphrase);
+      return state;
+    } finally {
+      release();
+    }
+  },
 };
 
 Object.assign(window, { chatTest });
