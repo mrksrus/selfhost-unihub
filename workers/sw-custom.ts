@@ -1,6 +1,6 @@
 // The browser supports renotify; the WebWorker declarations omit this option.
 interface NotificationOptions { renotify?: boolean }
-interface Payload { version?: unknown; userId?: unknown; dedupeKey?: unknown; title?: unknown; body?: unknown; url?: unknown; eventId?: unknown; emailId?: unknown; tag?: unknown; kind?: unknown; module?: unknown }
+interface Payload { version?: unknown; userId?: unknown; dedupeKey?: unknown; title?: unknown; body?: unknown; url?: unknown; eventId?: unknown; emailId?: unknown; tag?: unknown; kind?: unknown; module?: unknown; preview?: unknown }
 interface WorkerMessage { type?: string; userId?: unknown; payload?: Payload | null }
 interface NotificationWorkerEvents { activate: ExtendableEvent; push: PushEvent; message: ExtendableMessageEvent & { data: WorkerMessage }; sync: ExtendableEvent & { tag: string }; periodicsync: ExtendableEvent; notificationclick: NotificationEvent }
 interface NotificationWorkerScope extends Pick<ServiceWorkerGlobalScope, 'registration' | 'location' | 'clients'> { unihubWithBoundUser: <T>(userId: string, task: (bound: boolean) => Promise<T>) => Promise<T>; addEventListener<K extends keyof NotificationWorkerEvents>(type: K, listener: (event: NotificationWorkerEvents[K]) => void): void }
@@ -76,7 +76,7 @@ async function markDelivered(key: string) {
 // `lockCovers` here are copies of its `isOpen` and `covers`, keep them equal.
 const LOCK_DB = 'unihub-lock-v1';
 const LOCK_VISIBLE_GRACE_MS = 30_000;
-type LockArea = 'app' | 'mail' | 'contacts' | 'calendar' | 'recordings';
+type LockArea = 'app' | 'mail' | 'contacts' | 'calendar' | 'recordings' | 'chat';
 interface LockTimeline { v?: unknown; scope?: unknown; relockAfterMs?: unknown; lastActiveAt?: unknown; hiddenAt?: unknown; lockedAt?: unknown }
 // Servers before 0.29 send no module; the kind names it.
 const KIND_MODULES: Record<string, LockArea> = { mail: 'mail', snooze: 'mail', 'scheduled-send': 'mail', calendar: 'calendar', todo: 'calendar', reminder: 'calendar', recording: 'recordings' };
@@ -121,6 +121,56 @@ async function lockedFor(userId: string, payload: Payload) {
   const area = typeof payload.module === 'string' ? payload.module as LockArea
     : typeof payload.kind === 'string' && Object.prototype.hasOwnProperty.call(KIND_MODULES, payload.kind) ? KIND_MODULES[payload.kind] : null;
   return lockCovers(timeline.scope as LockArea[], area) && !lockIsOpen(timeline, Date.now());
+}
+// A chat message's text, sealed by its sender to this browser's preview key
+// (Web Push encryption, RFC 8291). The key is in the person's chat store
+// (src/lib/chat/store.ts); `openPreview` is a copy of src/lib/chat/seal.ts
+// `open`, keep them equal.
+interface PreviewKey { privateKey: CryptoKey; publicKey: Uint8Array<ArrayBuffer>; auth: Uint8Array<ArrayBuffer> }
+function readPreviewKey(userId: string) {
+  return new Promise<PreviewKey | undefined>(resolve => {
+    if (typeof indexedDB === 'undefined') { resolve(undefined); return; }
+    const request = indexedDB.open(`unihub-chat:${userId}`);
+    // No chat store here: never leave an empty one in its place.
+    request.onupgradeneeded = () => request.transaction?.abort();
+    request.onerror = () => resolve(undefined);
+    request.onsuccess = () => {
+      const db = request.result;
+      try {
+        const get = db.transaction('keys').objectStore('keys').get('preview');
+        get.onsuccess = () => { db.close(); resolve(get.result as PreviewKey | undefined); };
+        get.onerror = () => { db.close(); resolve(undefined); };
+      } catch { db.close(); resolve(undefined); }
+    };
+  });
+}
+const P256 = { name: 'ECDH', namedCurve: 'P-256' };
+const utf8 = (text: string) => new TextEncoder().encode(text);
+async function hkdf(salt: Uint8Array<ArrayBuffer>, secret: BufferSource, info: Uint8Array<ArrayBuffer>, length: number) {
+  const key = await crypto.subtle.importKey('raw', secret, 'HKDF', false, ['deriveBits']);
+  return new Uint8Array(await crypto.subtle.deriveBits({ name: 'HKDF', hash: 'SHA-256', salt, info }, key, length * 8));
+}
+async function openPreview(key: PreviewKey, sealed: Uint8Array<ArrayBuffer>) {
+  if (sealed.length < 21 + 65 + 17 || sealed[20] !== 65) throw new Error('Not a sealed message.');
+  const salt = sealed.slice(0, 16);
+  const senderPublic = sealed.slice(21, 86);
+  const sender = await crypto.subtle.importKey('raw', senderPublic, P256, false, []);
+  const shared = await crypto.subtle.deriveBits({ name: 'ECDH', public: sender }, key.privateKey, 256);
+  const ikm = await hkdf(key.auth, shared, new Uint8Array([...utf8('WebPush: info\0'), ...key.publicKey, ...senderPublic]), 32);
+  const contentKey = await crypto.subtle.importKey('raw', await hkdf(salt, ikm, utf8('Content-Encoding: aes128gcm\0'), 16), 'AES-GCM', false, ['decrypt']);
+  const padded = new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: await hkdf(salt, ikm, utf8('Content-Encoding: nonce\0'), 12) }, contentKey, sealed.slice(86)));
+  let end = padded.length - 1;
+  while (end >= 0 && padded[end] === 0) end--;
+  if (padded[end] !== 2) throw new Error('A sealed message ends with its delimiter.');
+  return new TextDecoder().decode(padded.slice(0, end));
+}
+// A preview that cannot be opened here (no key, damaged, sealed to another device) leaves the sender text.
+async function chatPreview(userId: string, sealed: unknown) {
+  if (typeof sealed !== 'string' || sealed.length > 4096) return null;
+  try {
+    const key = await readPreviewKey(userId);
+    return key ? await openPreview(key, Uint8Array.from(atob(sealed.replace(/-/g, '+').replace(/_/g, '/')), char => char.charCodeAt(0))) : null;
+  } catch { return null; }
 }
 const LOCKED_TITLE = 'UniHub';
 const LOCKED_BODY = 'You have a new notification. Unlock UniHub to see it.';
@@ -174,12 +224,13 @@ async function deliverNotification(payload: Payload | null | undefined) {
   const key = `${activeUser}:${payload.dedupeKey}`;
   if (await readStore('delivered', key)) return false;
   const locked = await lockedFor(activeUser, payload);
+  const preview = locked ? null : await chatPreview(activeUser, payload.preview);
   await notificationScope.registration.showNotification(locked ? LOCKED_TITLE : String(payload.title || 'UniHub').slice(0, 120), {
-    body: locked ? LOCKED_BODY : String(payload.body || '').slice(0, 400),
+    body: locked ? LOCKED_BODY : (preview || String(payload.body || '')).slice(0, 400),
     icon: '/icons/icon-192x192.png', badge: '/icons/icon-72x72.png',
     // A payload tag groups notices that replace each other, such as reminders
-    // about one recording upload.
-    tag: typeof payload.tag === 'string' && payload.tag.length <= 128 ? payload.tag : payload.dedupeKey, renotify: false,
+    // about one recording upload. Each new chat message in a conversation alerts again.
+    tag: typeof payload.tag === 'string' && payload.tag.length <= 128 ? payload.tag : payload.dedupeKey, renotify: payload.kind === 'chat',
     data: { url: notificationTargetUrl(payload), userId: activeUser, eventId: payload.eventId, emailId: payload.emailId },
   });
   // Suppression and failures never acknowledge delivery. Shared worker storage deduplicates tabs and transports.

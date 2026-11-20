@@ -358,6 +358,15 @@ connection to it, and no Google, Apple or other push service sees anything.
   gets them only after turning them on.
 - **Another server.** Notifications belong to a server: connecting the app
   to another server stops them, and connecting back resumes them.
+- **Chat messages** (0.33.0) arrive over the same connection, in a channel of
+  their own. The server cannot read them: at the level **full** the sender
+  sealed the message's start to this phone's notification key (the key pair
+  above, RFC 8291), and the app opens it and shows it under the sender's name.
+  A preview that cannot be opened, the level **sender**, and an app from
+  before 0.33 show "New message"; the level **none** shows no name. While the
+  app lock covers Chat the app shows only "New message" and does not open the
+  preview. Each conversation has one notification, replaced (and sounding
+  again) by its newest message; tapping it opens the conversation.
 
 ## App lock
 
@@ -389,7 +398,12 @@ page until it has shown its lock screen, and asks the phone.
   page loads behind it. From Android 13 the recents screenshot is also turned
   off while the lock is on.
 - **Screenshots.** The window is secure (`FLAG_SECURE`) while the
-  administrator forbids screenshots, also with the lock off.
+  administrator forbids screenshots, also with the lock off, and always while
+  the page is in Chat (under `/chat`, 0.33.0): Android then refuses
+  screenshots and screen recording and shows the app blank in recent apps.
+  Leaving Chat releases it. Apps before 0.33 do not block Chat and refuse a
+  lock setting that names Chat: they keep the setting they had before, so
+  update the app when Chat is to be locked.
 - **Notifications.** While the lock covers a notification's module, the app
   shows only the kind's generic text, whatever the server sent; it takes the
   module from the payload, or from the kind for servers before 0.29.

@@ -2,6 +2,7 @@ package io.github.mrksrus.unihub
 
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Test
 import java.security.GeneralSecurityException
@@ -29,6 +30,18 @@ class PushCryptoTest {
         val changed = rfcMessage.copyOf().also { it[it.size - 1] = (it[it.size - 1].toInt() xor 1).toByte() }
         assertThrows(GeneralSecurityException::class.java) { PushCrypto.decrypt(rfcKeys, changed) }
         assertThrows(GeneralSecurityException::class.java) { PushCrypto.decrypt(rfcKeys, rfcMessage.copyOf(40)) }
+    }
+
+    // A chat preview sealed to the RFC's keys by the server's own Web Push library.
+    private val preview = "lBwCztNn8mBBKzlWowKVBwAAEABBBD3IWLBDzhz69gic3HayiloK7Hv6PJlCBNiYYEH1fhCyRRER1mC6xqZFlPB8GDK6Eqb2rozq7uC4EjS8YrnMGZr4X81t4_Rr7dyXxcXxVf1YOki-sM-5eHLwLsusU0sKag_qiV4"
+
+    @Test
+    fun opensAChatPreviewOrGivesNothing() {
+        assertEquals("Lunch at noon? \uD83C\uDF5C", PushCrypto.openPreview(rfcKeys, preview))
+        assertNull(PushCrypto.openPreview(PushCrypto.generate(), preview))
+        assertNull(PushCrypto.openPreview(rfcKeys, preview.dropLast(2) + "AA"))
+        assertNull(PushCrypto.openPreview(rfcKeys, "not a sealed message"))
+        assertNull(PushCrypto.openPreview(rfcKeys, ""))
     }
 
     @Test

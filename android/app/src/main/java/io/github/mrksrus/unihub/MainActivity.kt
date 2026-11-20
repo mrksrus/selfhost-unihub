@@ -94,6 +94,8 @@ class MainActivity : Activity() {
     // through connecting and signing in; the lock keeps it behind the cover.
     private var compose: String? = null
     private var composeAfterSignIn = false
+    // Chat is never captured: no screenshots and no recent-apps picture while the page is under /chat.
+    private var inChat = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -182,6 +184,7 @@ class MainActivity : Activity() {
     private fun showConnect(prefill: String? = null) {
         destroyWeb()
         AppLock.attach(this, null)
+        inChat = false
         applyLockWindow()
         applyTheme(PageTheme.deviceIsDark(this), getColor(R.color.background))
         setContentView(R.layout.activity_connect)
@@ -339,6 +342,11 @@ class MainActivity : Activity() {
             // Also after signing in, which changes the page without loading one.
             override fun doUpdateVisitedHistory(view: WebView, url: String?, isReload: Boolean) {
                 ContactsSync.pageShown(this@MainActivity, url)
+                val chat = ServerAddress.sameOrigin(server, url) && Uri.parse(url).path.let { it == "/chat" || it?.startsWith("/chat/") == true }
+                if (chat != inChat) {
+                    inChat = chat
+                    applyLockWindow()
+                }
                 // Signed out (here, elsewhere or expired): the files handed to other apps go.
                 // The sign-in page shows nothing of the account, so no cover is needed.
                 if (isSignInPage(url)) {
@@ -806,7 +814,7 @@ class MainActivity : Activity() {
     }
 
     private fun applyLockWindow() {
-        if (AppLock.blockScreenshots) window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+        if (AppLock.blockScreenshots || inChat) window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
         else window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) setRecentsScreenshotEnabled(!AppLock.on)
     }

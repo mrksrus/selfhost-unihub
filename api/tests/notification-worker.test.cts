@@ -7,7 +7,7 @@ const path = (require('node:path') as typeof import('node:path'));
 function worker() {
   const listeners: FixtureValue = {}; const shown: FixtureValue[] = []; const delivered = new Map();
   let userId = 'user-1'; let fail = false;
-  const context = vm.createContext({ URL, console, Promise, AbortController, setTimeout, clearTimeout,
+  const context = vm.createContext({ URL, console, Promise, AbortController, setTimeout, clearTimeout, crypto, atob, TextEncoder, TextDecoder,
     self: { location: { origin: 'https://unihub.test' },
       addEventListener(type: FixtureValue, callback: FixtureValue) { listeners[type] = callback; },
       registration: { async showNotification(title: FixtureValue, options: FixtureValue) { if (fail) throw new Error('Denied'); shown.push({ title, options }); } },
@@ -137,4 +137,43 @@ test('recording upload notices name a recording only for the bound account, afte
   await fixture.context.self.unihubWithBoundUser('user-1', async (bound: FixtureValue) => { seen.push(bound); });
   await fixture.context.self.unihubWithBoundUser('user-2', async (bound: FixtureValue) => { seen.push(bound); });
   assert.deepEqual(seen, [false, true, false]);
+});
+
+test('a chat message shows the preview sealed to this browser; one that cannot be opened shows the sender text; a locked Chat shows neither', async () => {
+  const webPush = require('web-push');
+  const fixture: FixtureValue = worker();
+  const pair = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, false, ['deriveBits']) as CryptoKeyPair;
+  const key = { privateKey: pair.privateKey, publicKey: new Uint8Array(await crypto.subtle.exportKey('raw', pair.publicKey)), auth: crypto.getRandomValues(new Uint8Array(16)) };
+  const sealTo = (to: { publicKey: Uint8Array; auth: Uint8Array }, text: string) =>
+    webPush.encrypt(Buffer.from(to.publicKey).toString('base64url'), Buffer.from(to.auth).toString('base64url'), text, 'aes128gcm').cipherText.toString('base64url');
+  const keysRead: string[] = [];
+  fixture.context.readPreviewKey = async (userId: string) => { keysRead.push(userId); return key; };
+  let n = 0;
+  const chat = (preview?: string) => ({ version: 1, userId: 'user-1', dedupeKey: `chat:m${++n}`, kind: 'chat', module: 'chat', title: 'Alex Example', body: 'New message',
+    url: '/chat?conversation=c1', tag: 'chat:c1', ...(preview === undefined ? {} : { preview }) });
+  const shown = () => { const last = fixture.shown.at(-1); return [last.title, last.options.body]; };
+
+  await fixture.context.deliverNotification(chat(sealTo(key, 'Lunch at noon? 🍜')));
+  assert.deepEqual(shown(), ['Alex Example', 'Lunch at noon? 🍜']);
+  assert.deepEqual([fixture.shown.at(-1).options.tag, fixture.shown.at(-1).options.renotify, fixture.shown.at(-1).options.data.url], ['chat:c1', true, 'https://unihub.test/chat?conversation=c1']);
+
+  const other = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits']) as CryptoKeyPair;
+  const otherDevice = { publicKey: new Uint8Array(await crypto.subtle.exportKey('raw', other.publicKey)), auth: key.auth };
+  const damaged = Buffer.from(sealTo(key, 'changed'), 'base64url'); damaged[damaged.length - 1] ^= 1;
+  for (const preview of [sealTo(otherDevice, 'for another device'), damaged.toString('base64url'), 'not a sealed message', undefined]) {
+    await fixture.context.deliverNotification(chat(preview));
+    assert.deepEqual(shown(), ['Alex Example', 'New message']);
+  }
+  fixture.context.readPreviewKey = async () => undefined;
+  await fixture.context.deliverNotification(chat(sealTo(key, 'no key in this browser')));
+  assert.deepEqual(shown(), ['Alex Example', 'New message']);
+
+  // The app lock covers Chat and is not open: the lock text, and the preview key is not even read.
+  fixture.context.readPreviewKey = async (userId: string) => { keysRead.push(userId); return key; };
+  keysRead.length = 0;
+  fixture.context.readLockTimeline = async () => ({ v: 1, scope: ['chat'], relockAfterMs: 60_000, lastActiveAt: null });
+  await fixture.context.deliverNotification(chat(sealTo(key, 'Lunch at noon?')));
+  assert.deepEqual(shown(), ['UniHub', 'You have a new notification. Unlock UniHub to see it.']);
+  assert.deepEqual(keysRead, []);
+  assert.doesNotMatch(JSON.stringify(fixture.shown.at(-1)), /Lunch|Alex/);
 });

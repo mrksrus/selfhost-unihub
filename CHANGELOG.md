@@ -24,6 +24,11 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
   "New message". A device whose app lock covers Chat, or a person whose time
   to set up two-factor sign-in has run out, gets "New message" only. A
   message read or deleted before its notification went out is not sent.
+- **Chat in the Android app.** Notifications show the message text, one
+  per conversation, replaced and sounding again with the newest message;
+  tapping one opens the conversation. While Chat is open the app refuses
+  screenshots and screen recording and shows blank in recent apps. Apps
+  before 0.33 show "New message" and do not block Chat.
 
 ## 0.32.0
 

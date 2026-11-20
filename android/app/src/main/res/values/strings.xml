@@ -55,6 +55,7 @@
     <string name="channel_mail">New mail</string>
     <string name="channel_calendar">Reminders and events</string>
     <string name="channel_recordings">Recordings</string>
+    <string name="channel_chat">Chat messages</string>
     <string name="channel_account">Account and tests</string>
     <string name="channel_connection">Connection</string>
     <string name="channel_app_update">App updates</string>
@@ -84,6 +85,7 @@
     <string name="notification_locked_calendar">New Calendar Event</string>
     <string name="notification_locked_todo">New ToDo</string>
     <string name="notification_locked_reminder">Reminder</string>
+    <string name="notification_locked_chat">New message</string>
     <!-- Home-screen widgets (Widgets.kt). -->
     <string name="widget_agenda_name">Calendar</string>
     <string name="widget_tasks_name">ToDo</string>

@@ -41,6 +41,7 @@ object AppNotifications {
     private const val CHANNEL_MAIL = "mail"
     private const val CHANNEL_CALENDAR = "calendar"
     private const val CHANNEL_RECORDINGS = "recordings"
+    private const val CHANNEL_CHAT = "chat"
     private const val CHANNEL_ACCOUNT = "account"
 
     /** The device this phone registered on a server, for one user. */
@@ -276,6 +277,7 @@ object AppNotifications {
             NotificationChannel(CHANNEL_MAIL, context.getString(R.string.channel_mail), NotificationManager.IMPORTANCE_HIGH),
             NotificationChannel(CHANNEL_CALENDAR, context.getString(R.string.channel_calendar), NotificationManager.IMPORTANCE_HIGH),
             NotificationChannel(CHANNEL_RECORDINGS, context.getString(R.string.channel_recordings), NotificationManager.IMPORTANCE_DEFAULT),
+            NotificationChannel(CHANNEL_CHAT, context.getString(R.string.channel_chat), NotificationManager.IMPORTANCE_HIGH),
             NotificationChannel(CHANNEL_ACCOUNT, context.getString(R.string.channel_account), NotificationManager.IMPORTANCE_DEFAULT),
             NotificationChannel(CHANNEL_CONNECTION, context.getString(R.string.channel_connection), NotificationManager.IMPORTANCE_MIN).apply {
                 description = context.getString(R.string.channel_connection_description)
@@ -288,6 +290,7 @@ object AppNotifications {
         "mail" -> CHANNEL_MAIL
         "calendar", "todo", "reminder" -> CHANNEL_CALENDAR
         "recording" -> CHANNEL_RECORDINGS
+        "chat" -> CHANNEL_CHAT
         else -> CHANNEL_ACCOUNT
     }
 
@@ -323,7 +326,8 @@ object AppNotifications {
         // whatever the server sent (it may not know the phone locked yet).
         val locked = AppLock.hides(context, origin, AppLock.moduleOf(payload))
         val title = if (locked) lockedTitle(context, kind) else payload.optString("title").take(120).ifEmpty { "UniHub" }
-        val text = if (locked) "" else payload.optString("body").take(400)
+        // A chat message's text comes only sealed to this phone's keys; the lock is checked before it is opened.
+        val text = if (locked) "" else (PushCrypto.openPreview(device.keys, payload.optString("preview")) ?: payload.optString("body")).take(400)
         // Private: a lock screen set to hide sensitive content shows this
         // instead. Android ignores an app's own lock screen setting for its
         // channels (they keep "no override"), so the phone's setting decides.
@@ -340,10 +344,16 @@ object AppNotifications {
             .setStyle(android.app.Notification.BigTextStyle().bigText(text))
             .setContentIntent(pending)
             .setAutoCancel(true)
-            .setOnlyAlertOnce(true)
+            // Each new chat message alerts, though it replaces the conversation's last one.
+            .setOnlyAlertOnce(channel != CHANNEL_CHAT)
             .setVisibility(android.app.Notification.VISIBILITY_PRIVATE)
             .setPublicVersion(public)
-            .setCategory(if (channel == CHANNEL_MAIL) android.app.Notification.CATEGORY_EMAIL else if (channel == CHANNEL_CALENDAR) android.app.Notification.CATEGORY_EVENT else null)
+            .setCategory(when (channel) {
+                CHANNEL_MAIL -> android.app.Notification.CATEGORY_EMAIL
+                CHANNEL_CALENDAR -> android.app.Notification.CATEGORY_EVENT
+                CHANNEL_CHAT -> android.app.Notification.CATEGORY_MESSAGE
+                else -> null
+            })
             .build()
         try {
             context.getSystemService(NotificationManager::class.java).notify(tag, 0, notification)
@@ -359,6 +369,7 @@ object AppNotifications {
         "calendar" -> context.getString(R.string.notification_locked_calendar)
         "todo" -> context.getString(R.string.notification_locked_todo)
         "reminder" -> context.getString(R.string.notification_locked_reminder)
+        "chat" -> context.getString(R.string.notification_locked_chat)
         else -> context.getString(R.string.notification_hidden)
     }
 

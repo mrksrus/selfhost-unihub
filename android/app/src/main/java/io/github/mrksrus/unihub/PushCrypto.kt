@@ -83,6 +83,20 @@ object PushCrypto {
         return padded.copyOf(end)
     }
 
+    /**
+     * The text a chat message's sender sealed to these keys (`preview` in a
+     * notification), or null when there is none or it cannot be opened: the
+     * notification then keeps the sender text.
+     */
+    fun openPreview(keys: Keys, sealed: String): String? {
+        if (sealed.isEmpty() || sealed.length > 4096) return null
+        return try {
+            String(decrypt(keys, unb64(sealed)), Charsets.UTF_8)
+        } catch (_: Exception) {
+            null
+        }
+    }
+
     private fun hkdf(salt: ByteArray, ikm: ByteArray, info: ByteArray, length: Int): ByteArray {
         val extract = Mac.getInstance("HmacSHA256")
         extract.init(SecretKeySpec(salt, "HmacSHA256"))
