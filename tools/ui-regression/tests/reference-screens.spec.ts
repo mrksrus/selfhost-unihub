@@ -18,9 +18,10 @@
 // as a contributor reads it (Phone), an offered calendar, the hand-over
 // dialog, Server -> Calendars and the calendars of a leaving person (Wide)
 // and a custom repeat rule (Phone), and Chat with an open chat at
-// its newest and at its first messages (Wide) and the list and an open chat
-// (Phone), each in Dark Default and Light Default.
-// One hundred and two pictures; see docs/UI_BASELINES.md.
+// its newest and at its first messages (Wide), the list and an open chat
+// (Phone), and the chat passphrase chosen and entered and Settings -> Chat
+// (Wide and Phone), each in Dark Default and Light Default.
+// One hundred and fourteen pictures; see docs/UI_BASELINES.md.
 import { customRepeat, expect, expectBaseline, sharedCalendars, test, THEMES, VIEWPORTS, withChat, type Page } from '../support/test.ts';
 import { CURRENT_DEVICE_LOCKED, POLICIES_ADMIN_APP_LOCK, POLICIES_EFFECTIVE_APP_LOCK, POLICIES_EFFECTIVE_TWO_FACTOR, USER } from '../support/fixtures.ts';
 
@@ -78,9 +79,43 @@ async function openNewTaskChooser(page: Page) {
   await expect(page.getByRole('option', { name: /Team/ })).toBeVisible();
 }
 
+// The chat passphrase where it is chosen (first Chat open) and entered (a new device), and Settings -> Chat.
+function chatPassphraseAndSettings(viewport: 'wide' | 'phone', theme: string) {
+  test.describe(`chat passphrase and settings (${viewport}, ${theme})`, () => {
+    test.use(VIEWPORTS[viewport]);
+
+    test(`choose the chat passphrase (${viewport}, ${theme})`, async ({ page, open, settle }) => {
+      await withChat(page, { readiness: { state: 'choose-passphrase' } });
+      await open('/chat');
+      // Long enough and of two kinds, so the hint under the field reads "Strong."
+      await page.getByLabel('Chat passphrase').fill('correct horse battery');
+      await expect(page.getByText('Strong.')).toBeVisible();
+      await settle();
+      await expectBaseline(page, `chat-passphrase-choose-${viewport}-${theme}.png`);
+    });
+
+    test(`enter the chat passphrase (${viewport}, ${theme})`, async ({ page, open, settle }) => {
+      await withChat(page, { readiness: { state: 'enter-passphrase' } });
+      await open('/chat');
+      await expect(page.getByRole('button', { name: 'Start a new key…' })).toBeVisible();
+      await settle();
+      await expectBaseline(page, `chat-passphrase-enter-${viewport}-${theme}.png`);
+    });
+
+    test(`settings chat (${viewport}, ${theme})`, async ({ page, open, settle }) => {
+      await withChat(page);
+      await open('/settings?section=chat');
+      await expect(page.getByRole('button', { name: 'Set a new passphrase…' })).toBeVisible();
+      await settle();
+      await expectBaseline(page, `settings-chat-${viewport}-${theme}.png`);
+    });
+  });
+}
+
 for (const theme of THEMES) {
   test.describe(`${theme} default`, () => {
     test.use({ theme, colorScheme: theme });
+    for (const viewport of ['wide', 'phone'] as const) chatPassphraseAndSettings(viewport, theme);
 
     test.describe('wide', () => {
       test.use(VIEWPORTS.wide);
