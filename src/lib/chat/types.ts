@@ -154,7 +154,7 @@ export interface ChatEngine {
   createGroup(name: string, people: { user_ids: string[] } | { follow: { kind: 'group'; id: string } | { kind: 'everyone' } }): Promise<string>;
   /** People and organisation groups within reach for a new group chat or for adding to one. */
   candidates(query: string): Promise<ChatCandidatesResponse>;
-  /** A chat's people with roles, reasons and marks, managers first; null until fetched (this call starts it), then kept current at each sync. */
+  /** A chat's people with roles, reasons and marks, managers first; null until fetched (this call starts it), then read again when the chat changes. */
   members(conversationId: string): ChatMember[] | null;
   /** A manager's changes; each rejects with the server's refusal. */
   rename(conversationId: string, name: string): Promise<void>;

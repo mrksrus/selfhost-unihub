@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { ALEX, BLAIR, context, message, open, send, server, settled, texts, until, chatDeliveryHooks, type Tab } from './chat-delivery';
+import { ALEX, BLAIR, context, message, open, send, server, settled, tab, texts, until, chatDeliveryHooks, type Tab } from './chat-delivery';
 import { describe, expect, it } from 'vitest';
 import { fromBase64Url } from '@/lib/chat/bytes';
 import { open as openSealed, type SealKey } from '@/lib/chat/seal';
@@ -80,9 +80,14 @@ describe('the chat engine in group chats', { timeout: 120_000 }, () => {
     expect(lines(blair, chat)).toEqual(['Drew Example joined']);
 
     // Casey is removed: her browser drops the chat and its messages, and is in no later group.
+    // Blair's second browser was reloaded after it, and still names her.
     await alex.as(engine => engine.removeMember(chat, CASEY));
+    blair2.engine.stop();
+    const reloaded = tab(blair2.browser);
+    await settled(reloaded);
     await send(alex, chat, 'after casey left');
-    await syncAll(casey, blair);
+    await syncAll(casey, blair, reloaded);
+    expect(lines(reloaded, chat)).toEqual(['Drew Example joined', 'Casey Example left']);
     expect(casey.engine.snapshot().conversations).toEqual([]);
     expect(casey.engine.thread(chat)).toEqual([]);
     expect(casey.engine.search('hi')).toEqual([]);
