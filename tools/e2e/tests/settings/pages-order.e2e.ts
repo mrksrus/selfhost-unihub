@@ -7,7 +7,7 @@ import { centreOf, longPressDrag, mouseDrag, onlyOn } from '../support/ui.ts';
 // rail (desktop) and the bottom bar (phone) follow, and the order survives a reload.
 test('[27-08] dragging a page by its handle reorders the navigation', { session: 'alex', timeout: 180_000 }, async ({ app, screen, browser }) => {
   const target = await onlyOn(browser, 'desktop', 'phone');
-  const defaultOrder = ['mail', 'calendar', 'todo', 'contacts', 'recordings', 'music', 'today'];
+  const defaultOrder = ['mail', 'calendar', 'todo', 'contacts', 'recordings', 'music', 'chat', 'today'];
   await app.open('/settings?section=pages');
   ok(await pageApi(browser, 'PUT', '/api/modules', { page_order: defaultOrder }), 'reset page order');
   try {
@@ -20,7 +20,7 @@ test('[27-08] dragging a page by its handle reorders the navigation', { session:
     else await longPressDrag(browser, from, { x: from.x, y: to.y - 6 });
     await expect(pages.getByRole('listitem').first()).toContainText('Contacts');
     await expect.poll(async () => ok(await pageApi<{ pages: { id: string }[] }>(browser, 'GET', '/api/modules'), 'read pages').pages.map(page => page.id), { timeout: 15_000 })
-      .toEqual(['contacts', 'mail', 'calendar', 'todo', 'recordings', 'music', 'today']);
+      .toEqual(['contacts', 'mail', 'calendar', 'todo', 'recordings', 'music', 'chat', 'today']);
 
     await browser.reload();
     await expect(pages.getByRole('listitem').first()).toContainText('Contacts');

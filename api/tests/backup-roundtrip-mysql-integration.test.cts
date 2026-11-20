@@ -407,7 +407,7 @@ test('production export and restore jobs round-trip what a backup holds through 
       .map(row => ({ setting_key: row.setting_key, setting_value: row.setting_value })).sort((a, b) => a.setting_key.localeCompare(b.setting_key));
     assert.deepEqual(plainSettings(restored.user_settings), plainSettings(original.user_settings), 'user_settings: preserve content');
     const modules = await runtime('services/module-settings').getOrderedUserModules(userId);
-    assert.deepEqual(modules.map((module: FixtureValue) => module.id), ['recordings', 'mail', 'calendar', 'contacts'], 'Restored module order');
+    assert.deepEqual(modules.map((module: FixtureValue) => module.id), ['recordings', 'mail', 'calendar', 'contacts', 'chat'], 'Restored module order');
     assert.equal(modules.find((module: FixtureValue) => module.id === 'recordings').visible, false);
     compare('mail_folders', ['slug', 'display_name', 'position', 'is_system', 'special_use']);
     assert.deepEqual(await rowsFor('tetris_scores', userId), [], 'Removed Games scores are not restored');

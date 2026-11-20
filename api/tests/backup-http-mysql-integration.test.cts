@@ -62,8 +62,8 @@ test('authenticated HTTP encrypted backup download, upload and restore work afte
     await destination('GET', '/contacts').then(result => assert.equal(result.contacts.length, 0));
     await source('PUT', '/modules', { modules: { recordings: { enabled: false }, mail: { visible: false, background: false } } });
     await source('PUT', '/modules', { order: ['contacts', 'mail', 'calendar'] }, 400);
-    const ordered = await source('PUT', '/modules', { order: ['contacts', 'recordings', 'mail', 'calendar'] });
-    assert.deepEqual(ordered.modules.map((module: FixtureValue) => module.id), ['contacts', 'recordings', 'mail', 'calendar']);
+    const ordered = await source('PUT', '/modules', { order: ['contacts', 'recordings', 'mail', 'calendar', 'chat'] });
+    assert.deepEqual(ordered.modules.map((module: FixtureValue) => module.id), ['contacts', 'recordings', 'mail', 'calendar', 'chat']);
     await source('GET', '/recordings', undefined, 403);
     const created = await source('POST','/backup/jobs',{sections:['contacts','settings'],encrypt:true},202);
     const id = created.job.id;
@@ -89,7 +89,7 @@ test('authenticated HTTP encrypted backup download, upload and restore work afte
     const contacts = (await destination('GET','/contacts')).contacts;
     assert.equal(contacts.length,1); assert.equal(contacts[0].first_name,'Grüße'); assert.notEqual(contacts[0].id,contact.contact.id);
     const prefs = await destination('GET', '/modules');
-    assert.deepEqual(prefs.modules.map((module: FixtureValue) => module.id), ['contacts', 'recordings', 'mail', 'calendar'], 'Module order restored');
+    assert.deepEqual(prefs.modules.map((module: FixtureValue) => module.id), ['contacts', 'recordings', 'mail', 'calendar', 'chat'], 'Module order restored');
     assert.equal(prefs.modules.find((module: FixtureValue) => module.id === 'recordings').enabled, false, 'Disabled module preference restored');
     await destination('GET', '/recordings', undefined, 403);
     await destination('PUT', '/modules', { modules: { recordings: { enabled: true } } });
