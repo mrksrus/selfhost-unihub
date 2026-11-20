@@ -8,7 +8,7 @@ import { onlyOn } from '../support/ui.ts';
 // image's own headers, whose script-src must allow compiling WebAssembly. Two
 // browser profiles are two devices; the test carries the blobs between them,
 // as the server will. The proof page keeps its device in localStorage.
-const proofPage = `${stack.url}/mls-proof.html?dev`;
+const proofPage = `${stack.url}/mls-proof.html#dev`;
 type Json = string | number | boolean | null | Json[] | { [key: string]: Json };
 // Runs one function of the page's window.mlsProof (src/lib/chat/mls-proof.ts).
 const run = ([name, args]: [string, Json[]]) =>

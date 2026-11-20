@@ -108,8 +108,6 @@ export default defineConfig(() => ({
         // pdf.js's image decoders keep their names across deploys and are only
         // needed for a PDF, which is never available offline.
         globIgnores: ["pdfjs/**"],
-        // Chat's MLS module (about 2.7 MB) is precached too; workbox's default limit is 2 MiB.
-        maximumFileSizeToCacheInBytes: 4 * 1024 * 1024,
         navigateFallbackDenylist: [
           /^\/api\//,
           // The Android app download (served by Nginx, not the page).

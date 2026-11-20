@@ -1,4 +1,4 @@
-// A development page (/mls-proof.html?dev) that proves Chat's MLS module in a
+// A development page (/mls-proof.html#dev) that proves Chat's MLS module in a
 // real browser under the image's headers; the end-to-end tests drive it.
 // Blobs cross between browsers through the test as base64 text. The device
 // keeps its state in localStorage, the simplest store that survives a reload.
@@ -95,7 +95,8 @@ const proof = {
   },
 };
 
-if (new URLSearchParams(location.search).has('dev')) {
+// A hash, not a query: the service worker answers a query it has not precached with the app's page.
+if (location.hash === '#dev') {
   Object.assign(window, { mlsProof: proof });
   const status = document.getElementById('status')!;
   loadMls().then(() => { status.textContent = 'MLS module ready'; }, error => { status.textContent = `MLS module failed: ${error}`; });
