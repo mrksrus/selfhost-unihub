@@ -143,6 +143,20 @@ async function main() {
         gone2, conversation, chatGroup, other.id, otherChat, deletion, conversation, chatGroup, other.id, otherChat, gone2]);
       await db.execute('INSERT INTO chat_archive (user_id, message_id, sealed) VALUES (?, ?, ?), (?, ?, ?), (?, ?, ?)',
         [admin, sent, bytes(500), admin, edit, bytes(500), other.id, sent, bytes(500)]);
+      // A group chat that follows the drill group, with a retention, a choice to hear only mentions and a file.
+      const [teamChat, teamGroup, file] = Array.from({ length: 3 }, () => crypto.randomUUID());
+      await db.execute(`INSERT INTO chat_conversations (id, kind, name, current_group_id, last_seq, created_by, retention_days, retention_from)
+        VALUES (?, 'group', 'Drill team chat', ?, 1, ?, 30, UTC_TIMESTAMP() + INTERVAL 1 DAY)`, [teamChat, teamGroup, admin]);
+      await db.execute(`INSERT INTO grants (id, resource_kind, resource_id, principal_kind, principal_id, permission, granted_by)
+        SELECT UUID(), 'conversation', ?, 'group', id, 'member', ? FROM org_groups WHERE name = 'Drill group'`, [teamChat, admin]);
+      await db.execute("INSERT INTO chat_members (conversation_id, user_id, read_seq, delivered_seq, joined_seq, notify) VALUES (?, ?, 1, 1, 0, 'mentions')", [teamChat, admin]);
+      await db.execute('INSERT INTO chat_groups (id, conversation_id, welcome) VALUES (?, ?, NULL)', [teamGroup, teamChat]);
+      await db.execute('INSERT INTO chat_group_devices (group_id, chat_device_id, joined_at) VALUES (?, ?, UTC_TIMESTAMP())', [teamGroup, adminChat]);
+      const teamMessage = crypto.randomUUID();
+      await db.execute("INSERT INTO chat_messages (id, conversation_id, seq, group_id, sender_user_id, sender_chat_device_id, kind, ciphertext) VALUES (?, ?, 1, ?, ?, ?, 'message', ?)",
+        [teamMessage, teamChat, teamGroup, admin, adminChat, bytes(402)]);
+      await db.execute('INSERT INTO chat_attachments (id, conversation_id, message_id, uploader_user_id, size_bytes, storage_path) VALUES (?, ?, ?, ?, 4096, ?)',
+        [file, teamChat, teamMessage, admin, `chat/${teamChat}/${file}`]);
       console.log(JSON.stringify({ seeded: ['setting_policies', 'instance_backups', 'mail_engine_migration_progress', 'org_groups', 'org_group_members', 'invites', 'login_attempts',
         'address_books', 'grants', 'directory_entries', ...BOOK_ROWS.tables.map(table => `${table} of books`), 'photo files of books',
         ...CALENDAR_ROWS.tables.map(table => `${table} of organisation calendars`), 'calendar_series', 'calendar_views', 'calendar_reminders', 'calendar offers', ...CHAT_TABLES] }));

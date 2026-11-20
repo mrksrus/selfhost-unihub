@@ -3,7 +3,7 @@
 -- Schema changes are numbered migrations in api/src/services/database.ts; the app
 -- creates and upgrades its own schema on startup. This file is a reviewable
 -- reference, and a database test fails when it differs from a freshly migrated database.
--- Through migration 31.
+-- Through migration 32.
 
 CREATE TABLE `address_books` (
   `id` char(36) NOT NULL,
@@ -453,6 +453,23 @@ CREATE TABLE `chat_archive` (
   CONSTRAINT `fk_chat_archive_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE `chat_attachments` (
+  `id` char(36) NOT NULL,
+  `conversation_id` char(36) NOT NULL,
+  `message_id` char(36) DEFAULT NULL,
+  `uploader_user_id` char(36) DEFAULT NULL,
+  `size_bytes` bigint(20) unsigned NOT NULL,
+  `storage_path` varchar(255) NOT NULL,
+  `created_at` datetime NOT NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`id`),
+  KEY `idx_chat_attachments_conversation` (`conversation_id`),
+  KEY `idx_chat_attachments_message` (`message_id`,`created_at`),
+  KEY `idx_chat_attachments_uploader` (`uploader_user_id`),
+  CONSTRAINT `fk_chat_attachments_conversation` FOREIGN KEY (`conversation_id`) REFERENCES `chat_conversations` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_chat_attachments_message` FOREIGN KEY (`message_id`) REFERENCES `chat_messages` (`id`),
+  CONSTRAINT `fk_chat_attachments_uploader` FOREIGN KEY (`uploader_user_id`) REFERENCES `users` (`id`) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE `chat_conversations` (
   `id` char(36) NOT NULL,
   `kind` varchar(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
@@ -462,6 +479,9 @@ CREATE TABLE `chat_conversations` (
   `created_by` char(36) DEFAULT NULL,
   `created_at` datetime NOT NULL DEFAULT current_timestamp(),
   `updated_at` datetime NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  `name` varchar(80) DEFAULT NULL,
+  `retention_days` smallint(5) unsigned DEFAULT NULL,
+  `retention_from` datetime DEFAULT NULL,
   PRIMARY KEY (`id`),
   UNIQUE KEY `uq_chat_conversations_direct` (`direct_key`),
   KEY `fk_chat_conversations_created_by` (`created_by`),
@@ -520,6 +540,7 @@ CREATE TABLE `chat_members` (
   `delivered_seq` bigint(20) unsigned NOT NULL DEFAULT 0,
   `joined_seq` bigint(20) unsigned NOT NULL DEFAULT 0,
   `updated_at` datetime NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  `notify` varchar(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT 'all',
   PRIMARY KEY (`conversation_id`,`user_id`),
   KEY `idx_chat_members_user` (`user_id`),
   CONSTRAINT `fk_chat_members_conversation` FOREIGN KEY (`conversation_id`) REFERENCES `chat_conversations` (`id`) ON DELETE CASCADE,

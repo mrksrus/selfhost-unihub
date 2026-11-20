@@ -6,6 +6,15 @@ Read the [upgrade guide](docs/UPGRADING.md) before updating an existing
 installation, and keep a consistent backup of the database, uploads, configuration and
 secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
+## 0.34.0 (unreleased)
+
+### Added
+
+- **Three chat policies** on Server › Policies, for everyone or per group:
+  who members may add to a group chat (the people of their own groups, or
+  anyone), the largest file in a chat (50 MB unless changed), and after how
+  many days chat messages are deleted (kept unless set).
+
 ## 0.33.0
 
 Chat: 1:1 chats between the people of your UniHub, on the web and in the

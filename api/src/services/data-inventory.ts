@@ -164,7 +164,7 @@ const NON_ARCHIVE_POLICIES: Readonly<Record<string, ExcludedPolicy>> = Object.fr
     introducedIn: Object.fromEntries(columns.split(' ').map(column => [column, 30])) })])),
   // The Chat module's tables (its manifest): none is in a personal backup.
   ...Object.fromEntries(Object.entries(CHAT_MANIFEST.tables).map(([name, table]) => [name, Object.freeze({ ...excluded('deliberately_excluded', CHAT_MANIFEST.excludedReason, table.columns),
-    introducedIn: Object.fromEntries(table.columns.split(' ').map(column => [column, CHAT_MANIFEST.introducedIn])) })])),
+    introducedIn: Object.fromEntries(table.columns.split(' ').map(column => [column, table.added?.[column] ?? table.introducedIn ?? CHAT_MANIFEST.introducedIn])) })])),
 });
 
 // Upgrade step 29 (0.31.0): rows of these personal tables may belong to a

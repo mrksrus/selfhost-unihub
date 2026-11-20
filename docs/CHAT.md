@@ -346,6 +346,54 @@ Delivery details are in [PWA](PWA.md#enable-notifications) and
   `offline.copies` policy does not remove the device's chat store: Chat
   keeps its messages on each device.
 
+## Group chats (server)
+
+A group chat has a name (1 to 80 characters, plain text on the server) and at
+most 100 people (`400 CHAT_TOO_MANY_PEOPLE`). Its people are its grants:
+
+- **Chosen people.** The creator manages it; a manager renames it and adds
+  or removes people. A member adds only people who share an organisation
+  group with them, or anyone while `chat.reach` is `organisation` for them;
+  an administrator anyone (`403 CHAT_OUT_OF_REACH`). Anyone may leave.
+- **Following a group.** Made by that group's manager or an administrator;
+  only an administrator follows everyone. Its people are the group's, so it
+  changes with the group, and nobody adds, removes or leaves by hand (`409
+  CHAT_FOLLOWS_GROUP`). The group's managers and the administrators in it
+  manage it: rename, or stop following, after which it is a chat of the
+  people it has. Deleting the organisation group does the same. An
+  administrator who makes one for a group they are not in does not see it.
+- **No manager left.** A chat of chosen people whose managers are all gone
+  or deactivated is managed by its longest-standing active member.
+- **Joining and removal.** A person added reads from the first MLS group
+  that holds their devices: their `joined_seq` is set then, and nothing
+  older is served (before it, nothing at all). Adding or removing someone,
+  or a change of the followed group, changes the chat's devices, so the next
+  post is refused with `409 CHAT_GROUP_STALE` until a new group names
+  exactly the valid devices of its people. Someone removed, or who left, is
+  refused at once; their marks and their archive copies of that chat go. A
+  member who cannot be written to does not block a group chat.
+- **Mentions.** A post may name up to 20 of the chat's other people
+  (`mentions`); the server keeps no list and uses it only for the
+  notification. Not in a direct chat (`400 CHAT_MENTION_INVALID`).
+- **Notifications.** Every other person of the chat, titled "Alex in
+  Launch" or "Alex mentioned you in Launch" (the sender alone in a direct
+  chat). Each person chooses per chat: everything, mentions only, or
+  nothing (`notify`); the unread count stays.
+- **What the server sees** in addition: a group chat's name, who follows
+  what, and who was mentioned in each message.
+
+| Route | What it does |
+| --- | --- |
+| `POST /api/chat/conversations` with `kind: 'group'` | A group chat of people (`user_ids`) or following a group (`follow`) |
+| `PUT /api/chat/conversations/:id` | A manager renames it |
+| `GET /api/chat/conversations/:id/members` | Its people with role, reason, marks and presence |
+| `POST /api/chat/conversations/:id/members` | A manager adds people |
+| `DELETE /api/chat/conversations/:id/members/:userId` | A manager removes someone |
+| `POST /api/chat/conversations/:id/leave` | The caller leaves |
+| `POST /api/chat/conversations/:id/unfollow` | A manager stops following the group |
+| `PUT /api/chat/conversations/:id/notify` | `all`, `mentions` or `none` for the caller |
+| `GET /api/chat/candidates?q=` | People within reach and the groups the caller may follow |
+
 ## Reference
 
 ### Routes

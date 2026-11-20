@@ -17,6 +17,10 @@ interface ChatTable {
   dataClass: BackupDataClass;
   restore: string;
   columns: string;
+  /** Columns a later step added, with that step. */
+  added?: Readonly<Record<string, number>>;
+  /** The step that made the table, when it is not the module's first. */
+  introducedIn?: number;
 }
 
 const INSTANCE_ONLY = 'Never in a personal backup; the instance backup carries it as stored.';
@@ -37,9 +41,10 @@ const CHAT_MANIFEST = Object.freeze({
     chat_key_packages: { owner: 'user', shareable: false, dataClass: 'installation', restore: `${INSTANCE_ONLY} A removed device's packages are never handed out.`,
       columns: 'id chat_device_id key_package last_resort created_at' },
     chat_conversations: { owner: 'organisation', shareable: true, dataClass: 'org', restore: `${INSTANCE_ONLY} Its people reach it through their grants.`,
-      columns: 'id kind direct_key current_group_id last_seq created_by created_at updated_at' },
+      columns: 'id kind direct_key current_group_id last_seq created_by created_at updated_at name retention_days retention_from',
+      added: { name: 32, retention_days: 32, retention_from: 32 } },
     chat_members: { owner: 'user', shareable: false, dataClass: 'org', restore: `${INSTANCE_ONLY} It goes with its conversation or person.`,
-      columns: 'conversation_id user_id read_seq delivered_seq joined_seq updated_at' },
+      columns: 'conversation_id user_id read_seq delivered_seq joined_seq updated_at notify', added: { notify: 32 } },
     chat_groups: { owner: 'organisation', shareable: false, dataClass: 'installation', restore: `${INSTANCE_ONLY} After an instance restore the next message makes a new group.`,
       columns: 'id conversation_id welcome created_at' },
     chat_group_devices: { owner: 'organisation', shareable: false, dataClass: 'installation', restore: `${INSTANCE_ONLY} It goes with its group or chat device.`,
@@ -48,6 +53,8 @@ const CHAT_MANIFEST = Object.freeze({
       columns: 'id conversation_id seq group_id sender_user_id sender_chat_device_id kind replaces format ciphertext created_at' },
     chat_archive: { owner: 'user', shareable: false, dataClass: 'ciphertext', restore: `${INSTANCE_ONLY} It opens only with its person's history key.`,
       columns: 'user_id message_id sealed created_at' },
+    chat_attachments: { owner: 'organisation', shareable: false, dataClass: 'ciphertext', restore: `${INSTANCE_ONLY} Its file under chat/ opens only with the key inside its message.`,
+      columns: 'id conversation_id message_id uploader_user_id size_bytes storage_path created_at', introducedIn: 32 },
   }),
 });
 

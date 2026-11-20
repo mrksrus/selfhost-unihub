@@ -77,6 +77,7 @@ export const INSTALLATION_RULES: Readonly<Record<string, Rule>> = Object.freeze(
   chat_group_devices: { reason: "A group's devices come back." },
   chat_messages: { reason: 'Messages come back as ciphertext, edits and deletions included.' },
   chat_archive: { reason: "Each person's archive copies come back sealed." },
+  chat_attachments: { reason: "A chat file's row comes back with its message and uploader." },
 });
 
 // A DATETIME in UTC (dateStrings), to the second, within the restore command's run.

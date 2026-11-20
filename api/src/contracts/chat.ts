@@ -154,8 +154,6 @@ export interface ChatPeer {
   reason: string | null;
   /** Online (a page of theirs is open) when both have presence on; null when it is not shown. */
   online: boolean | null;
-  /** false once they are deactivated or deleted: their messages show the name they carry, marked as a former colleague. */
-  active: boolean;
 }
 
 /** What a person chooses a chat notifies them of; the unread count is not affected. */
@@ -253,7 +251,7 @@ export type ChatGroupChatCreateRequest =
 /** The details of 400 CHAT_TOO_MANY_PEOPLE. */
 export interface ChatTooManyPeopleDetails { limit: 100; reason: string }
 
-/** PATCH /api/chat/conversations/:id: a manager renames a group chat (400 CHAT_NOT_GROUP for a direct one). */
+/** PUT /api/chat/conversations/:id: a manager renames a group chat (400 CHAT_NOT_GROUP for a direct one). */
 export interface ChatConversationUpdateRequest { name: string }
 /** The answer of the rename and of POST /api/chat/conversations/:id/unfollow. */
 export interface ChatConversationUpdatedResponse { conversation: ChatConversation }

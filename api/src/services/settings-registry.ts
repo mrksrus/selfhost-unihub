@@ -231,6 +231,20 @@ export const POLICIES: { readonly [K in PolicyKey]: PolicyEntry<PolicyValues[K]>
     kind: { type: 'enum', values: ['user_choice', 'on', 'off'] }, default: 'user_choice', refuses: [],
     reasons: { on: 'Your administrator keeps read receipts on.', off: 'Your administrator turned read receipts off.' },
   },
+  // Shorter is stricter. The deleting itself waits 24 hours after a chat's
+  // time got shorter (services/chat-retention.ts).
+  'chat.retention_days': {
+    kind: { type: 'integer', min: 30, max: 365, values: [30, 90, 180, 365], nullable: true }, default: null, strictness: ['null', '365', '180', '90', '30'], refuses: [],
+    reasons: Object.fromEntries([30, 90, 180, 365].map(days => [String(days), `Chat messages are deleted after ${days} days, as your administrator set.`])),
+  },
+  'chat.attachment_max_mb': {
+    kind: { type: 'integer', min: 10, max: 100, values: [10, 25, 50, 100] }, default: 50, strictness: ['100', '50', '25', '10'], refuses: [],
+    reasons: Object.fromEntries([10, 25, 100].map(mb => [String(mb), `Files you send in a chat can be at most ${mb} MB, as your administrator set.`])),
+  },
+  'chat.reach': {
+    kind: { type: 'enum', values: ['own_groups', 'organisation'] }, default: 'own_groups', strictness: ['organisation', 'own_groups'], refuses: [],
+    reasons: { organisation: 'You can add anyone in the organisation to a group chat, as your administrator set.' },
+  },
   'notifications.detail': {
     kind: { type: 'enum', values: ['full', 'sender', 'none'] }, default: 'full', strictness: ['full', 'sender', 'none'], refuses: [],
     reasons: {
@@ -293,6 +307,9 @@ export const POLICY_EFFECTS: Readonly<Partial<Record<PolicyKey | 'bin.min_retent
   'modules.chat': 'Chat is off for these people; their chats stay and come back when it is allowed again.',
   'chat.presence': 'Applies at once; nobody sees presence unless both people have it on.',
   'chat.read_receipts': 'Applies at once; with receipts off, neither person sees that a message was read.',
+  'chat.retention_days': 'Messages older than this are deleted from the chats it applies to, starting 24 hours after a chat\'s time gets shorter; devices delete their copies when next opened. Instance backups made before keep them.',
+  'chat.attachment_max_mb': 'Applies to files sent from now on; files already sent stay.',
+  'chat.reach': 'Applies to people added from now on; nobody is removed from a chat.',
   'pages.music': 'Only the Music page goes; recordings keep working.',
   'notifications.detail': 'Applies to notifications sent from now on.',
   'contacts.phone_sync': 'Phones remove UniHub contacts at their next sync; they stay in UniHub. Changes made on a phone since its last sync are lost.',

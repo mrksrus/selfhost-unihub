@@ -860,6 +860,9 @@ that request reads them.
 | `auth.session_max_days` | `none`, `30`, `14`, `7`, `1` | a session older than that since its sign-in |
 | `modules.mail`, `modules.calendar`, `modules.contacts`, `modules.recordings`, `modules.chat` | `allowed`, `forbidden` | using the module at all: it is off and locked for the person and its data stays ([Modules](MODULES.md#administrator-policies)) |
 | `chat.presence`, `chat.read_receipts` | `user_choice`, `on`, `off` | nothing: `on` and `off` lock the person's `chat_presence` or `chat_read_receipts` switch ([Chat](CHAT.md#presence-and-read-receipts)) |
+| `chat.retention_days` | none, `365`, `180`, `90`, `30` | nothing: chat messages older than that are deleted; a chat follows the shortest among its active members, starting 24 hours after its time got shorter |
+| `chat.attachment_max_mb` | `100`, `50`, `25`, `10` | sending a larger file in a chat; default `50` |
+| `chat.reach` | `organisation`, `own_groups` | adding someone to a group chat who shares no organisation group with the member (`own_groups`, the default); administrators add anyone ([Chat](CHAT.md#group-chats-server)) |
 | `pages.music` | `allowed`, `forbidden` | the Music page alone; recordings keep working |
 | `notifications.detail` | `full`, `sender`, `none` | more detail than that in notifications: the floor of each mail account's `notify_detail` and of `chat_notification_detail`; `none` also floors reminders (a reminder has no sender, so `sender` leaves them full) |
 | `contacts.phone_sync` | `allowed`, `forbidden` | UniHub contacts in the Android app's phone contacts: the app's contacts sync is told Contacts is off (`403 MODULE_DISABLED` with the policy), so the phone removes them at its next sync; they stay in UniHub, and changes made on the phone since its last sync are lost |

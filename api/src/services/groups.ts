@@ -222,6 +222,8 @@ async function deleteGroup(adminId: string, groupId: string, req: AuthRequest | 
     await assertGroup(adminId, groupId, 'manage', cx);
     const [members] = await cx.execute<RowDataPacket[]>('SELECT user_id FROM org_group_members WHERE group_id = ? FOR UPDATE', [groupId]);
     await deleteGroupPolicies(cx, groupId);
+    // A chat that follows the group keeps the people it has.
+    await (require('./chat') as typeof import('./chat')).unfollowDeletedGroup(cx, groupId);
     await access().removeGrantsOf(cx, { kind: 'group', id: groupId });
     await cx.execute('DELETE FROM org_groups WHERE id = ?', [groupId]);
     await recordAudit({ action: 'admin.group_deleted', actorId: adminId, req, details: { group: groupId, members: members.length } }, cx);

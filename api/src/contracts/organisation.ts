@@ -51,8 +51,8 @@ export interface AccessPermissions {
   group: 'read' | 'manage';
   address_book: 'read' | 'edit' | 'manage';
   calendar: CalendarPermission;
-  /** A chat conversation: its people are its members, nobody else reaches it, administrators included. */
-  conversation: 'member';
+  /** A chat conversation: its people are its members, nobody else reaches it, administrators included; a group chat's managers also manage it. */
+  conversation: 'member' | 'manage';
 }
 
 // --- The signed-in person ------------------------------------------------------

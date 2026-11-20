@@ -285,6 +285,9 @@ const newCalendarItem = (title: string) => defineSourceKind<CalendarSource>({
 });
 
 const chat = () => require('./chat') as typeof import('./chat');
+// A group chat names itself; a direct one is its sender.
+const chatTitle = ({ sender, chat: name, mentioned }: import('./chat').ChatNotificationSource) =>
+  name === null ? sender : mentioned ? `${sender} mentioned you in ${name}` : `${sender} in ${name}`;
 
 const KINDS: Readonly<Record<string, KindSpec>> = Object.freeze({
   mail: defineSourceKind<MailSource>({
@@ -345,11 +348,11 @@ const KINDS: Readonly<Record<string, KindSpec>> = Object.freeze({
   // A chat message (services/chat.ts): the server cannot read it, so the text
   // is only in the preview the sender sealed to each device.
   chat: defineSourceKind<import('./chat').ChatNotificationSource>({
-    module: 'chat', load: (userId, messageId, connection) => chat().notificationSource(userId, messageId, connection),
+    module: 'chat', load: (userId, messageId, connection, payload) => chat().notificationSource(userId, messageId, connection, payload),
     level: async (userId, _message, connection) => (await settingValues('user', userId, userId, connection)).chat_notification_detail,
     render: {
-      full: message => ({ title: message.sender, body: 'New message' }),
-      sender: message => ({ title: message.sender, body: 'New message' }),
+      full: message => ({ title: chatTitle(message), body: 'New message' }),
+      sender: message => ({ title: chatTitle(message), body: 'New message' }),
       none: () => ({ title: 'New message', body: '' }),
     },
     deviceContent: (payload, deviceId, connection) => chat().previewFor(payload, deviceId, connection),

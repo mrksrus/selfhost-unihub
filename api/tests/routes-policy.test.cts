@@ -339,6 +339,7 @@ const NOT_DESTRUCTIVE: Readonly<Record<string, string>> = {
   'DELETE /api/calendar/calendars/:id/hand-over': 'withdraws or declines an offer; no data',
   // Chat: the copies only the forgotten key opened can never be read again once the key is replaced, in the same transaction.
   'POST /api/chat/account/new-key': 'drops archive copies nobody can open any more',
+  'DELETE /api/chat/conversations/:id/members/:userId': 'takes a person out of a group chat; the messages stay for the others',
 };
 const removesData = (key: string) => {
   const [method, path] = key.split(' ');

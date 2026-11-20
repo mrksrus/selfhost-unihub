@@ -18,6 +18,7 @@ import { addOrganisation, chooseOwner, verifyOrganisation, verifyOwner } from '.
 import { addSharedContacts, verifySharedContacts } from './shared-contacts-migration';
 import { addSharedCalendars, verifySharedCalendars } from './shared-calendars-migration';
 import { addChat, verifyChat } from './chat-migration';
+import { addChatGroups, verifyChatGroups } from './chat-groups-migration';
 import { log } from '../log';
 
 type FieldRow = RowDataPacket & { Field: string };
@@ -479,6 +480,18 @@ const MIGRATIONS: readonly Migration[] = [
     verify: async (connection: PoolConnection) => {
       await verifyDatabaseInventory(connection, { throughMigration: 31 });
       await verifyChat(connection);
+    },
+  },
+  {
+    // Group chats and chat files: a conversation's name and retention, each
+    // person's notification choice, and the files' table
+    // (chat-groups-migration.ts). No row changes.
+    id: 32,
+    name: 'chat-groups',
+    up: addChatGroups,
+    verify: async (connection: PoolConnection) => {
+      await verifyDatabaseInventory(connection, { throughMigration: 32 });
+      await verifyChatGroups(connection);
     },
   },
 ];

@@ -1,13 +1,15 @@
 import type { RouteRequest } from '../types';
 import type {
-  ChatArchiveResponse, ChatArchiveStoredResponse, ChatConversationResponse, ChatConversationsResponse, ChatGroupJoinedResponse, ChatGroupResponse,
-  ChatMarksResponse, ChatMessageDeletedResponse, ChatMessageResponse, ChatMessagesResponse,
+  ChatArchiveResponse, ChatArchiveStoredResponse, ChatCandidatesResponse, ChatConversationResponse, ChatConversationsResponse, ChatConversationUpdatedResponse,
+  ChatGroupJoinedResponse, ChatGroupResponse, ChatLeftResponse, ChatMarksResponse, ChatMembersResponse, ChatMessageDeletedResponse, ChatMessageResponse,
+  ChatMessagesResponse, ChatNotifyResponse,
 } from '../contracts/chat';
 
 import { getAuthTokenFromRequest } from '../auth';
 import { defineRoutes } from '../http/route';
 import {
-  confirmJoined, createGroup, deleteMessage, fetchMessages, listArchive, listConversations, moveMarks, postMessage, startConversation, storeArchive,
+  addChatMembers, chatCandidates, chatMembers, confirmJoined, createGroup, deleteMessage, fetchMessages, leaveChat, listArchive, listConversations, moveMarks,
+  postMessage, removeChatMember, renameChat, setNotify, startConversation, storeArchive, unfollowChat,
 } from '../services/chat';
 
 type Request = RouteRequest & { url: string; params: Record<string, string> };
@@ -27,6 +29,30 @@ export = defineRoutes({
   } },
   'POST /api/chat/conversations': { auth: 'user', module: 'chat', restoreSection: null, handler: async (_req: Request, userId: string, body: unknown) => {
     return await startConversation(userId, body) satisfies ChatConversationResponse;
+  } },
+  'GET /api/chat/candidates': { auth: 'user', module: 'chat', handler: async (req: Request, userId: string) => {
+    return { ...await chatCandidates(userId, query(req).get('q') ?? '') } satisfies ChatCandidatesResponse;
+  } },
+  'PUT /api/chat/conversations/:id': { auth: 'user', module: 'chat', restoreSection: null, handler: async (req: Request, userId: string, body: unknown) => {
+    return await renameChat(userId, id(req), body) satisfies ChatConversationUpdatedResponse;
+  } },
+  'GET /api/chat/conversations/:id/members': { auth: 'user', module: 'chat', handler: async (req: Request, userId: string) => {
+    return { members: await chatMembers(userId, id(req)) } satisfies ChatMembersResponse;
+  } },
+  'POST /api/chat/conversations/:id/members': { auth: 'user', module: 'chat', restoreSection: null, body: { limit: 16 * 1024 }, handler: async (req: Request, userId: string, body: unknown) => {
+    return await addChatMembers(userId, id(req), body) satisfies ChatMembersResponse;
+  } },
+  'DELETE /api/chat/conversations/:id/members/:userId': { auth: 'user', module: 'chat', restoreSection: null, handler: async (req: Request, userId: string) => {
+    return await removeChatMember(userId, id(req), req.params.userId.toLowerCase()) satisfies ChatMembersResponse;
+  } },
+  'POST /api/chat/conversations/:id/leave': { auth: 'user', module: 'chat', restoreSection: null, body: { kind: 'none' }, handler: async (req: Request, userId: string) => {
+    return await leaveChat(userId, id(req)) satisfies ChatLeftResponse;
+  } },
+  'POST /api/chat/conversations/:id/unfollow': { auth: 'user', module: 'chat', restoreSection: null, body: { kind: 'none' }, handler: async (req: Request, userId: string) => {
+    return await unfollowChat(userId, id(req)) satisfies ChatConversationUpdatedResponse;
+  } },
+  'PUT /api/chat/conversations/:id/notify': { auth: 'user', module: 'chat', restoreSection: null, handler: async (req: Request, userId: string, body: unknown) => {
+    return await setNotify(userId, id(req), body) satisfies ChatNotifyResponse;
   } },
   'POST /api/chat/conversations/:id/groups': { auth: 'user', module: 'chat', restoreSection: null, body: { limit: 640 * 1024 }, handler: async (req: Request, userId: string, body: unknown) => {
     return await createGroup(userId, token(req), id(req), body) satisfies ChatGroupResponse;

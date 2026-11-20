@@ -82,6 +82,12 @@ export interface PolicyValues {
   'chat.presence': 'user_choice' | 'on' | 'off';
   /** Locks every person's chat_read_receipts on or off. */
   'chat.read_receipts': 'user_choice' | 'on' | 'off';
+  /** Chat messages are deleted after this many days; null keeps them. A chat follows the shortest among its active members. */
+  'chat.retention_days': 30 | 90 | 180 | 365 | null;
+  /** The largest file a person may send in a chat, in MB. */
+  'chat.attachment_max_mb': 10 | 25 | 50 | 100;
+  /** Whom a member may add to a group chat: the people who share an organisation group with them, or anyone. Administrators add anyone. */
+  'chat.reach': 'own_groups' | 'organisation';
   /** The Music page alone (recordings keep working). */
   'pages.music': Allowance;
   /** The least detail notifications may show: the floor of each mail account's and the reminders' detail. */
