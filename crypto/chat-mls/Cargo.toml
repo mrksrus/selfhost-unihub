@@ -16,6 +16,10 @@ openmls_traits = "=0.6.0"
 tls_codec = "0.5"
 wasm-bindgen = "=0.2.130"
 
+# rand_core 0.6 (ed25519-dalek, p256) uses getrandom 0.2, which needs its "js" feature in the browser.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom_02 = { package = "getrandom", version = "=0.2.17", features = ["js"] }
+
 [profile.release]
 opt-level = "s"
 lto = true
