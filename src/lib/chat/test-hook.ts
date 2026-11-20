@@ -5,7 +5,7 @@
 // as the server does.
 import { concat, fromBase64Url, toBase64Url } from './bytes';
 import { ChatDevice } from './device';
-import { MlsError, type MlsDevice } from './mls';
+import { MlsError, withMls, type MlsDevice } from './mls';
 import { ChatStore } from './store';
 
 const devices = new Map<string, ChatDevice>();
@@ -34,6 +34,26 @@ const chatTest = {
     toBase64Url(await (await device(name)).step(mls => mls.encrypt(encode(groupId), encode(text)))),
   decrypt: async (name: string, groupId: string, message: string) =>
     decode(await (await device(name)).step(mls => mls.decrypt(encode(groupId), fromBase64Url(message)))),
+  /**
+   * Times making a group of `count` devices and joining it, each stored as the
+   * engine stores it; the other devices only give their key packages.
+   */
+  async measureGroup(count: number) {
+    const [maker, joiner] = await Promise.all(['measure-maker', 'measure-joiner'].map(async name => ChatDevice.create(await store(name), name)));
+    const packages = [await joiner.step(mls => mls.key_package(false)), ...await withMls(mls => Array.from({ length: count - 2 }, (_, index) => {
+      const other = mls.Device.create(encode(`measure-${index}`));
+      try { return other.key_package(false); } finally { other.free(); }
+    }))];
+    let started = performance.now();
+    const welcome = await maker.step(mls => mls.create_group(encode('measure-group'), concat(...packages)));
+    const create_ms = Math.round(performance.now() - started);
+    started = performance.now();
+    const joined = decode(await joiner.step(mls => mls.join(welcome)));
+    const join_ms = Math.round(performance.now() - started);
+    maker.free();
+    joiner.free();
+    return JSON.stringify({ joined, create_ms, join_ms, welcome_bytes: welcome.length });
+  },
   /**
    * Crashes the module for real, with a panic: a new MLS device seeds its
    * randomness from the page, and without it the module panics, which traps.
