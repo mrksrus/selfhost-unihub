@@ -1,6 +1,18 @@
 # Build the Android app into the image (1) or leave it out (0); see Stage 3.
 ARG UNIHUB_ANDROID=1
 
+# ── Stage 0: Build Chat's MLS module (crypto/chat-mls) ──────────────
+# WebAssembly is the same for every platform, so this runs on the build
+# machine's own processor.
+FROM --platform=$BUILDPLATFORM rust:1.100.0-alpine3.22@sha256:f8ddfd4b265d9a9e7fd7c36821af4a55771aee2ac3894294687a66c709319be9 AS crypto-builder
+WORKDIR /build
+RUN rustup target add wasm32-unknown-unknown
+COPY scripts/install-wasm-bindgen.sh scripts/build-crypto.sh ./scripts/
+RUN sh scripts/install-wasm-bindgen.sh /usr/local/bin
+COPY crypto ./crypto
+RUN sh scripts/build-crypto.sh && sh crypto/collect-notices.sh /build/crypto-dependency-notices.txt \
+    && sha256sum src/lib/chat/mls-module/chat_mls_bg.wasm
+
 # ── Stage 1: Build the React frontend ──────────────────────────────
 FROM node:26.12.1-alpine@sha256:40cd011b55415bc894e45b02fdd5a5dfde056921b7d23a64c74f80497af48797 AS frontend-builder
 
@@ -10,6 +22,7 @@ COPY package*.json ./
 RUN npm ci
 
 COPY . .
+COPY --from=crypto-builder /build/src/lib/chat/mls-module ./src/lib/chat/mls-module
 RUN npm run build:frontend
 RUN node scripts/collect-frontend-notices.mts /build/frontend-dependency-notices.txt
 
@@ -75,6 +88,7 @@ LABEL org.opencontainers.image.licenses="PolyForm-Noncommercial-1.0.0"
 COPY LICENSE LICENSING.md THIRD_PARTY_NOTICES.md /app/licenses/
 COPY licenses/third-party /app/licenses/third-party
 COPY --from=frontend-builder /build/frontend-dependency-notices.txt /app/licenses/
+COPY --from=crypto-builder /build/crypto-dependency-notices.txt /app/licenses/
 
 COPY api/package*.json ./api/
 RUN cd api && npm ci --omit=dev \

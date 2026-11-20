@@ -241,6 +241,27 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
+      # Chat's MLS module first, so a broken Rust build ends the job in
+      # minutes: the Rust of crypto/chat-mls/rust-toolchain.toml and the
+      # pinned wasm-bindgen; the crates and their build are cached by Cargo.lock.
+      - name: Cache the MLS module's crates
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            crypto/chat-mls/target/
+          key: chat-mls-${{ hashFiles('crypto/chat-mls/Cargo.lock', 'crypto/chat-mls/rust-toolchain.toml') }}
+
+      - name: Build and test Chat's MLS module
+        run: |
+          (cd crypto/chat-mls && rustup toolchain install)
+          bash scripts/install-wasm-bindgen.sh "$RUNNER_TEMP/wasm-bindgen"
+          PATH="$RUNNER_TEMP/wasm-bindgen:$PATH" npm run build:crypto
+          (cd crypto/chat-mls && cargo test --locked)
+          wasm=src/lib/chat/mls-module/chat_mls_bg.wasm
+          echo "MLS module: $(sha256sum "$wasm" | cut -d' ' -f1), $(wc -c < "$wasm") bytes, $(gzip -9 -c "$wasm" | wc -c) gzipped" | tee -a "$GITHUB_STEP_SUMMARY"
+
       - name: Read the image's Node.js version
         id: node
         run: |
@@ -369,6 +390,10 @@ jobs:
           secret-files: |
             android_keystore=${{ runner.temp }}/android-signing/keystore
             android_keystore_password=${{ runner.temp }}/android-signing/password
+
+      # The frontend job prints its own build's checksum: the same file means the build is reproducible.
+      - name: Show the MLS module's checksum
+        run: docker run --rm --entrypoint sh unihub:ci -c 'cd /usr/share/nginx/html/assets && sha256sum *.wasm' | tee -a "$GITHUB_STEP_SUMMARY"
 
       # The app is kept with each run (Artifacts) for trying it on a phone.
       - name: Check and keep the Android app
@@ -1129,6 +1154,9 @@ jobs:
           else docker build --quiet --tag unihub:ci .; fi
           container="$(docker create unihub:ci)"
           docker cp "$container:/etc/nginx/mime.types" "$RUNNER_TEMP/mime.types"
+          # The image's web build (with Chat's MLS module), so the stack builds none.
+          rm -rf dist && mkdir dist
+          docker cp "$container:/usr/share/nginx/html/." dist/
           docker rm "$container" >/dev/null
           docker image rm unihub:ci >/dev/null
           tarball="mariadb-$MARIADB_VERSION-linux-systemd-x86_64.tar.gz"

@@ -62,3 +62,7 @@ dist-ssr
 
 # Classic browser workers are emitted from workers/*.ts.
 /.worker-dist/
+
+# Chat's MLS module, built from crypto/chat-mls (npm run build:crypto)
+/crypto/chat-mls/target/
+/src/lib/chat/mls-module/

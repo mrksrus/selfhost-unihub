@@ -137,22 +137,25 @@ if(fs.lstatSync("/app/uploads/legacy-smoke/link").uid!==10001)throw new Error("S
 if(fs.statSync("/etc/passwd").uid!==0)throw new Error("Ownership change followed a symlink out of uploads");
 console.log("API runs as uid/gid 10001 without capabilities; uploads handed over");'
 docker exec "$container_name" ffmpeg -version
-docker exec "$container_name" node -e 'const fs=require("node:fs");for(const name of ["LICENSE","LICENSING.md","THIRD_PARTY_NOTICES.md","frontend-dependency-notices.txt","alpine-packages.txt","ffmpeg-license.txt"]){if(!fs.statSync("/app/licenses/"+name).size)throw Error("Empty license notice: "+name)}'
+docker exec "$container_name" node -e 'const fs=require("node:fs");for(const name of ["LICENSE","LICENSING.md","THIRD_PARTY_NOTICES.md","frontend-dependency-notices.txt","crypto-dependency-notices.txt","alpine-packages.txt","ffmpeg-license.txt"]){if(!fs.statSync("/app/licenses/"+name).size)throw Error("Empty license notice: "+name)}'
 [[ "$(docker inspect --format '{{index .Config.Labels "org.opencontainers.image.licenses"}}' "$container_name")" == 'PolyForm-Noncommercial-1.0.0' ]]
 # Security headers on every static response: nginx drops inherited add_header
 # lines in a location that sets its own, so the cache locations re-include them.
 # The page must carry no inline script, which the CSP (script-src 'self') refuses.
 # ES module assets (the pdf.js worker) must be served as JavaScript: with
-# nosniff a browser refuses to import application/octet-stream.
+# nosniff a browser refuses to import application/octet-stream. Chat's MLS
+# module must be served as application/wasm, which streaming compilation needs.
 SMOKE_MODULE_ASSET="$(docker exec "$container_name" sh -c 'cd /usr/share/nginx/html && ls assets/*.mjs | head -n 1')"
 [[ "$SMOKE_MODULE_ASSET" == assets/*.mjs ]] || { echo 'The image has no .mjs asset (pdf.js worker) to check.' >&2; exit 1; }
-export SMOKE_MODULE_ASSET
+SMOKE_WASM_ASSET="$(docker exec "$container_name" sh -c 'cd /usr/share/nginx/html && ls assets/*.wasm')"
+[[ "$SMOKE_WASM_ASSET" == assets/chat_mls_bg-*.wasm ]] || { echo "The image must carry one MLS module, not: $SMOKE_WASM_ASSET" >&2; exit 1; }
+export SMOKE_MODULE_ASSET SMOKE_WASM_ASSET
 node --input-type=module <<'NODE'
 async function secured(path) {
   const response = await fetch(`http://localhost${path}`);
   if (response.status !== 200) throw new Error(`${path} answered ${response.status}`);
   const csp = response.headers.get('content-security-policy') || '';
-  if (!/(^|;)\s*script-src 'self'\s*(;|$)/.test(csp)) throw new Error(`${path} lacks the Content-Security-Policy: ${csp || '(no header)'}`);
+  if (!/(^|;)\s*script-src 'self' 'wasm-unsafe-eval'\s*(;|$)/.test(csp)) throw new Error(`${path} lacks the Content-Security-Policy: ${csp || '(no header)'}`);
   if (response.headers.get('x-content-type-options') !== 'nosniff') throw new Error(`${path} lacks X-Content-Type-Options: nosniff`);
   if (response.headers.get('x-xss-protection') !== '0') throw new Error(`${path} must send X-XSS-Protection: 0`);
   return response;
@@ -170,6 +173,10 @@ const moduleAsset = `/${process.env.SMOKE_MODULE_ASSET}`;
 const moduleType = (await secured(moduleAsset)).headers.get('content-type') || '';
 if (!/^(text|application)\/javascript\b/.test(moduleType)) throw new Error(`${moduleAsset} is served as ${moduleType || '(no type)'}, not JavaScript`);
 console.log(`${moduleAsset} served as ${moduleType}`);
+const wasmAsset = `/${process.env.SMOKE_WASM_ASSET}`;
+const wasmType = (await secured(wasmAsset)).headers.get('content-type');
+if (wasmType !== 'application/wasm') throw new Error(`${wasmAsset} is served as ${wasmType || '(no type)'}, not application/wasm`);
+console.log(`${wasmAsset} served as ${wasmType}`);
 // HSTS only when the proxy in front reports HTTPS; plain HTTP gets none.
 const hsts = async headers => (await fetch('http://localhost/', { headers })).headers.get('strict-transport-security');
 if (await hsts({})) throw new Error('Plain HTTP must not carry Strict-Transport-Security');

@@ -175,6 +175,10 @@ export default defineConfig(() => ({
       }
     }),
   ],
+  build: {
+    // mls-proof.html: the development page that proves Chat's MLS module (src/lib/chat/mls-proof.ts).
+    rollupOptions: { input: [path.resolve(__dirname, "index.html"), path.resolve(__dirname, "mls-proof.html")] },
+  },
   resolve: {
     alias,
   },

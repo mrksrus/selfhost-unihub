@@ -50,3 +50,7 @@ android/local.properties
 tools/ui-regression
 .agents
 .claude
+
+# The image builds Chat's MLS module itself (Dockerfile, crypto-builder).
+crypto/chat-mls/target
+src/lib/chat/mls-module
