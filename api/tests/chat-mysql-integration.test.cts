@@ -138,6 +138,16 @@ test('chat: conversations, groups, messages in order, edits and deletes, marks a
   assert.equal(await online(), true);
   assert.deepEqual(await alexPage.next('chat.presence'), { user_id: ids.member, online: true });
   assert.equal(await caseyPage.next('chat.presence', 0), null, 'Casey shares no conversation with Blair');
+  // A read with receipts off for either is not announced to the other person; a delivery is.
+  const quiet = async () => { while (await alexPage.next('chat.changed', 1500)); };
+  const unread = await send(alex, conversation, message(g2));
+  await call(blair, 'PUT', '/api/settings/values', { values: { chat_read_receipts: false } });
+  await call(blair, 'PUT', url('marks'), { delivered_seq: unread.seq });
+  assert.ok(await alexPage.next('chat.changed'), 'a delivery is announced');
+  await quiet();
+  assert.deepEqual(await call(blair, 'PUT', `/api/chat/conversations/${conversation.toUpperCase()}/marks`, { read_seq: unread.seq }), { read_seq: unread.seq, delivered_seq: unread.seq });
+  assert.equal(await alexPage.next('chat.changed', 1500), null, 'the moment of reading stays with Blair');
+  await call(blair, 'PUT', '/api/settings/values', { values: { chat_read_receipts: true } });
   await call(blair, 'PUT', '/api/settings/values', { values: { chat_presence: false } });
   assert.deepEqual([await online(), (await listed(blair)).peer.online], [null, null], 'off for either hides it from both');
   await call(blair, 'PUT', '/api/settings/values', { values: { chat_presence: true } });

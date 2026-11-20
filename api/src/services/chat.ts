@@ -330,11 +330,17 @@ async function moveMarks(userId: string, conversationId: string, input: unknown)
   await assertCan(userId, conversationOf(conversationId), 'member');
   const [[conversation]] = await db.execute<RowDataPacket[]>('SELECT last_seq FROM chat_conversations WHERE id = ?', [conversationId]);
   const last = Number(conversation.last_seq);
+  const own = 'SELECT read_seq, delivered_seq FROM chat_members WHERE conversation_id = ? AND user_id = ?';
+  const [[before]] = await db.execute<RowDataPacket[]>(own, [conversationId, userId]);
   await db.execute(`INSERT INTO chat_members (conversation_id, user_id, read_seq, delivered_seq) VALUES (?, ?, ?, ?)
     ON DUPLICATE KEY UPDATE read_seq = GREATEST(read_seq, VALUES(read_seq)), delivered_seq = GREATEST(delivered_seq, VALUES(delivered_seq))`,
   [conversationId, userId, Math.min(read, last), Math.min(delivered, last)]);
-  const [[marks]] = await db.execute<RowDataPacket[]>('SELECT read_seq, delivered_seq FROM chat_members WHERE conversation_id = ? AND user_id = ?', [conversationId, userId]);
-  publishChatChanged(await conversationPeople(conversationId), conversationId);
+  const [[marks]] = await db.execute<RowDataPacket[]>(own, [conversationId, userId]);
+  const people = await conversationPeople(conversationId);
+  // With read receipts off for either person, the moment of reading is not the other's to see.
+  const told = Number(marks.delivered_seq) > Number(before?.delivered_seq ?? 0)
+    || (await Promise.all(people.map(id => chatSettings(id, db)))).every(settings => settings.chat_read_receipts);
+  publishChatChanged(told ? people : [userId], conversationId);
   return { read_seq: Number(marks.read_seq), delivered_seq: Number(marks.delivered_seq) };
 }
 
