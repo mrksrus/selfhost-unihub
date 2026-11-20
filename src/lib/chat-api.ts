@@ -4,7 +4,7 @@
 import { api, type ApiResponse } from '@/lib/api';
 import { ApiError, unwrap } from '@/lib/api-error';
 import type {
-  ChatAccount, ChatAccountResponse, ChatArchiveCopy, ChatArchiveResponse, ChatConversation, ChatConversationResponse, ChatConversationsResponse,
+  ChatAccount, ChatAccountResponse, ChatArchiveCopy, ChatArchiveResponse, ChatConversationResponse, ChatConversationsResponse, ChatDirectConversation,
   ChatDevicesResponse, ChatGroupCreateRequest, ChatKeyBackup, ChatKeyPackageClaimResponse, ChatMarksRequest, ChatMarksResponse, ChatMessage,
   ChatMessageCreateRequest, ChatMessageDeletedResponse, ChatMessageResponse, ChatMessagesResponse,
 } from '../../api/src/contracts/chat';
@@ -21,8 +21,10 @@ export const chatApi = {
   newKey: async (current_password: string, history_public: string, key_backup: ChatKeyBackup) =>
     (await data(api.post<ChatAccountResponse>('/chat/account/new-key', { current_password, history_public, key_backup }))).account!,
 
-  conversations: async (): Promise<ChatConversation[]> => (await data(api.get<ChatConversationsResponse>('/chat/conversations'))).conversations,
-  start: async (user_id: string) => (await data(api.post<ChatConversationResponse>('/chat/conversations', { user_id }))).conversation,
+  // Direct chats only until the pages show group chats.
+  conversations: async (): Promise<ChatDirectConversation[]> => (await data(api.get<ChatConversationsResponse>('/chat/conversations'))).conversations
+    .filter((item): item is ChatDirectConversation => item.kind === 'direct'),
+  start: async (user_id: string) => (await data(api.post<ChatConversationResponse>('/chat/conversations', { user_id }))).conversation as ChatDirectConversation,
   devices: async (id: string) => (await data(api.get<ChatDevicesResponse>(`${conversation(id)}/devices`))).devices,
   claimKeyPackages: async (id: string) => (await data(api.post<ChatKeyPackageClaimResponse>(`${conversation(id)}/key-packages`))).key_packages,
   createGroup: (id: string, body: ChatGroupCreateRequest) => data(api.post(`${conversation(id)}/groups`, body)),

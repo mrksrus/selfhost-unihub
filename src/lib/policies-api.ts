@@ -19,6 +19,7 @@ export const POLICY_KEYS = [
   'app_lock.required', 'app_lock.max_background', 'app_lock.screenshots',
   'auth.two_factor', 'auth.password_min_length', 'auth.session_max_days',
   'modules.mail', 'modules.calendar', 'modules.contacts', 'modules.recordings', 'modules.chat', 'pages.music', 'chat.presence', 'chat.read_receipts',
+  'chat.retention_days', 'chat.attachment_max_mb', 'chat.reach',
   'notifications.detail', 'contacts.phone_sync', 'offline.copies',
 ] as const satisfies readonly PolicyKey[];
 
@@ -53,6 +54,9 @@ export const DEFAULT_POLICY_VALUES: PolicyValues = {
   'modules.chat': 'allowed',
   'chat.presence': 'user_choice',
   'chat.read_receipts': 'user_choice',
+  'chat.retention_days': null,
+  'chat.attachment_max_mb': 50,
+  'chat.reach': 'own_groups',
   'pages.music': 'allowed',
   'notifications.detail': 'full',
   'contacts.phone_sync': 'allowed',

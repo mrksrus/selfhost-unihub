@@ -5,7 +5,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import type { ChatAccount, ChatConversation, ChatMessage } from '../../api/src/contracts/chat';
+import type { ChatAccount, ChatDirectConversation as ChatConversation, ChatMessage } from '../../api/src/contracts/chat';
 import { startChatEngine } from '@/lib/chat/engine';
 import { loadMls } from '@/lib/chat/mls';
 import { ChatStore, wipeChatStores } from '@/lib/chat/store';
@@ -168,7 +168,7 @@ function deliveryService() {
       peer: { user_id: peer, name: names.get(peer)!, can_write: valid([peer]).length > 0, reason: null, online: null },
       last_activity_at: entries.at(-1)?.created_at ?? null, read_seq: mine.read, delivered_seq: mine.delivered, joined_seq: 0,
       unread: entries.filter(item => item.kind === 'message' && !item.replaces && item.ciphertext && item.seq > mine.read && item.sender_user_id !== userId).length,
-      peer_read_seq: theirs.read, peer_delivered_seq: theirs.delivered,
+      peer_read_seq: theirs.read, peer_delivered_seq: theirs.delivered, notify: 'all', retention_days: null, retention_from: null,
     };
   };
 

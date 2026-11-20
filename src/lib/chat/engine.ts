@@ -10,7 +10,7 @@
 import { AppLockRequired, hasCode } from '@/lib/api-error';
 import { onAppEvent } from '@/lib/app-events';
 import { chatApi, unreachable } from '@/lib/chat-api';
-import type { ChatAccount, ChatConversation, ChatMessage, ChatWelcome } from '../../../api/src/contracts/chat';
+import type { ChatAccount, ChatDirectConversation as ChatConversation, ChatMessage, ChatWelcome } from '../../../api/src/contracts/chat';
 import { concat, fromBase64Url, toBase64Url } from './bytes';
 import { startDevice, type ChatDevice } from './device';
 import { createHistoryKey, unwrapHistoryKey, wrapHistoryKey } from './key-backup';
