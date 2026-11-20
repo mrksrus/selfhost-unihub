@@ -12,6 +12,17 @@ not replace or restrict those rights.
 - Icons use [Lucide](https://lucide.dev/), under ISC, with Feather-derived portions under MIT. The installed package's original notice is preserved in `licenses/third-party/lucide-ISC.txt`.
 - React, React DOM, Radix UI and the other frontend dependencies retain the licenses shipped in their npm packages. `package-lock.json` records exact package versions and source tarballs. The image build collects installed production-package license and notice files into `/app/licenses/frontend-dependency-notices.txt` alongside the compiled frontend.
 
+## Chat encryption
+
+Chat's encryption module (`crypto/chat-mls`, built to WebAssembly) contains
+[OpenMLS](https://github.com/openmls/openmls) 0.9.2 (MIT, notice in
+`licenses/third-party/openmls-MIT.txt`) and the Rust crates it depends on,
+unmodified. `crypto/chat-mls/Cargo.lock` identifies their versions and sources.
+The image lists every crate with its licence, its source on crates.io and the
+licence files it ships in `/app/licenses/crypto-dependency-notices.txt`. In
+particular, `hpke-rs`, `hpke-rs-crypto` and `hpke-rs-rust-crypto` are MPL-2.0;
+the licence text is in `licenses/third-party/MPL-2.0.txt`.
+
 ## API
 
 The API image includes unmodified dependency source and its supplied license

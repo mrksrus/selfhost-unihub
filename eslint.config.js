@@ -46,7 +46,7 @@ const FENCES = [
 const FENCE_OWNERS = [...new Set(FENCES.flatMap(({ owners }) => owners))];
 
 export default tseslint.config(
-  { ignores: ["dist", "api/dist", ".worker-dist", "tools/ui-regression/.build", "tools/ui-regression/.browsers", "tools/ui-regression/report", "tools/ui-regression/test-results"] },
+  { ignores: ["dist", "api/dist", ".worker-dist", "src/lib/chat/mls-module", "tools/ui-regression/.build", "tools/ui-regression/.browsers", "tools/ui-regression/report", "tools/ui-regression/test-results"] },
   {
     extends: [js.configs.recommended, ...tseslint.configs.recommended],
     files: ["workers/**/*.ts"],

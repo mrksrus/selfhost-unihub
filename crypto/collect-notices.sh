@@ -8,9 +8,12 @@ registry="${CARGO_HOME:-$HOME/.cargo}/registry/src"
   cargo tree --locked --target wasm32-unknown-unknown --edges normal --prefix none --format '{p}|{l}' | sed 's/ (\*)$//' | sort -u | while IFS='|' read -r package licence; do
     set -- $package
     [ "$1" = chat-mls ] && continue
-    printf '\n---\n%s %s\nLicense: %s\n' "$1" "$2" "$licence"
+    printf '\n---\n%s %s\nLicense: %s\nSource: https://crates.io/crates/%s/%s\n' "$1" "$2" "$licence" "$1" "${2#v}"
+    found=
     for file in "$registry"/*/"$1-${2#v}"/*; do
-      case "$(basename "$file")" in [Ll][Ii][Cc][Ee][Nn][CcSs][Ee]*|[Cc][Oo][Pp][Yy][Ii][Nn][Gg]*|[Nn][Oo][Tt][Ii][Cc][Ee]*) printf '\n%s\n' "$(basename "$file")"; cat "$file" ;; esac
+      case "$(basename "$file")" in [Ll][Ii][Cc][Ee][Nn][CcSs][Ee]*|[Cc][Oo][Pp][Yy][Ii][Nn][Gg]*|[Nn][Oo][Tt][Ii][Cc][Ee]*) found=1; printf '\n%s\n' "$(basename "$file")"; cat "$file" ;; esac
     done
+    # Some packages ship no licence file; their texts are kept in licenses/third-party.
+    [ -n "$found" ] || printf '\nThis package ships no licence file. Its licence text is in third-party/ beside this file (MPL-2.0.txt, openmls-MIT.txt, sharp-Apache-2.0.txt).\n'
   done
 } > "$1"
