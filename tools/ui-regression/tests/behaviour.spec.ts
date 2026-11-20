@@ -7,7 +7,7 @@ import type { Page } from '@playwright/test';
 import { POLICIES_EFFECTIVE_TWO_FACTOR, RICH_TASK, TASKS } from '../support/fixtures.ts';
 import { touchViolations } from '../support/geometry.ts';
 import { expectOnlyKnown, KNOWN_DEFECTS } from '../support/known-defects.ts';
-import { customRepeat, expect, pointerIsCoarse, sharedCalendars, test, THEMES, VIEWPORTS } from '../support/test.ts';
+import { customRepeat, expect, pointerIsCoarse, sharedCalendars, test, THEMES, VIEWPORTS, withChat } from '../support/test.ts';
 
 // Synthetic files for the composer's attachments.
 const SYNTHETIC_PDF = { name: 'quarterly-report.pdf', mimeType: 'application/pdf', buffer: Buffer.from('%PDF-1.4 synthetic') };
@@ -305,6 +305,18 @@ test.describe('P-11 touch targets are big enough and never overlap', () => {
     expectOnlyKnown(await touchViolations(page), []);
   });
 
+  test('Chat: the list and a chat with every kind of message', async ({ page, open, settle }) => {
+    await withChat(page);
+    await open('/chat');
+    await expect(page.getByRole('list', { name: 'Chats' })).toBeVisible();
+    expectOnlyKnown(await touchViolations(page), []);
+    // An open chat lies over the page and its bottom bar: only the chat is measured.
+    await open('/chat?c=chat-blair');
+    await expect(page.getByText('And the holiday list?')).toBeVisible();
+    await settle();
+    expectOnlyKnown(await touchViolations(page, 'section[aria-label="Chat with Blair Example"]'), []);
+  });
+
   test('A shared book, its bin, its share dialog and a company entry', async ({ page, open, settle }) => {
     await open('/contacts?book=book-suppliers');
     await expect(page.getByRole('button', { name: /^Maria Okafor/ })).toBeVisible();
@@ -494,6 +506,30 @@ test.describe('P-11 touch targets are big enough and never overlap', () => {
     const box = (await save.boundingBox())!;
     expect(box.y + box.height).toBeLessThanOrEqual(page.viewportSize()!.height);
     expectOnlyKnown(await touchViolations(page, '[role="dialog"]'), []);
+  });
+});
+
+// A chat on a phone takes the visible area, so with the keyboard open (a page
+// about 560 px tall) the line being written and the newest message stay on
+// screen, under the chat's own header.
+test.describe('a chat keeps its composer and newest message above the keyboard', () => {
+  test.use({ ...VIEWPORTS.phone, viewport: { width: 412, height: 560 } });
+
+  test('typing in a chat at 412×560', async ({ page, open, settle }) => {
+    await withChat(page);
+    await open('/chat?c=chat-blair');
+    const field = page.getByRole('textbox', { name: 'Message to Blair Example' });
+    await field.click();
+    await page.keyboard.type('One line\nand a second');
+    await settle();
+    const height = page.viewportSize()!.height;
+    for (const control of [field, page.getByRole('button', { name: 'Send' }), page.getByRole('link', { name: 'Back to chats' })]) {
+      const box = (await control.boundingBox())!;
+      expect(box.y).toBeGreaterThanOrEqual(0);
+      expect(box.y + box.height).toBeLessThanOrEqual(height);
+    }
+    await expect(page.getByText('And the holiday list?')).toBeInViewport({ ratio: 1 });
+    expect((await page.getByText('And the holiday list?').boundingBox())!.y).toBeLessThan((await field.boundingBox())!.y);
   });
 });
 

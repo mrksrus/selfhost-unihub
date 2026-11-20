@@ -17,9 +17,11 @@
 // the calendars others share and a calendar's share dialog (Wide), an event
 // as a contributor reads it (Phone), an offered calendar, the hand-over
 // dialog, Server -> Calendars and the calendars of a leaving person (Wide)
-// and a custom repeat rule (Phone), each in Dark Default and Light Default.
-// Ninety-four pictures; see docs/UI_BASELINES.md.
-import { customRepeat, expect, expectBaseline, sharedCalendars, test, THEMES, VIEWPORTS, type Page } from '../support/test.ts';
+// and a custom repeat rule (Phone), and Chat with an open chat at
+// its newest and at its first messages (Wide) and the list and an open chat
+// (Phone), each in Dark Default and Light Default.
+// One hundred and two pictures; see docs/UI_BASELINES.md.
+import { customRepeat, expect, expectBaseline, sharedCalendars, test, THEMES, VIEWPORTS, withChat, type Page } from '../support/test.ts';
 import { CURRENT_DEVICE_LOCKED, POLICIES_ADMIN_APP_LOCK, POLICIES_EFFECTIVE_APP_LOCK, POLICIES_EFFECTIVE_TWO_FACTOR, USER } from '../support/fixtures.ts';
 
 // The app lock's state is this browser's (a PIN record in IndexedDB
@@ -130,6 +132,24 @@ for (const theme of THEMES) {
         await expect(page.getByRole('list', { name: 'Deleted items' })).toBeVisible();
         await settle();
         await expectBaseline(page, `bin-wide-${theme}.png`);
+      });
+
+      // Chat with the fixed engine: the conversations beside the open one, at its newest messages and at its first.
+      test(`chat (wide, ${theme})`, async ({ page, open, settle }) => {
+        await withChat(page);
+        await open('/chat?c=chat-blair');
+        await expect(page.getByText('And the holiday list?')).toBeVisible();
+        await settle();
+        await expectBaseline(page, `chat-wide-${theme}.png`);
+      });
+
+      test(`chat, earlier messages (wide, ${theme})`, async ({ page, open, settle }) => {
+        await withChat(page);
+        await open('/chat?c=chat-blair');
+        await page.getByRole('list', { name: 'Messages with Blair Example' }).evaluate(list => list.parentElement!.scrollTo(0, 0));
+        await expect(page.getByText('Blair Example added a device')).toBeInViewport();
+        await settle();
+        await expectBaseline(page, `chat-earlier-wide-${theme}.png`);
       });
 
       // 0.31: a shared address book the person manages, with a contact open, and its share dialog.
@@ -432,6 +452,21 @@ for (const theme of THEMES) {
         await expect(page.getByRole('dialog')).toBeVisible();
         await settle();
         await expectBaseline(page, `composer-phone-${theme}.png`);
+      });
+
+      test(`chat list (phone, ${theme})`, async ({ page, open }) => {
+        await withChat(page);
+        await open('/chat');
+        await expect(page.getByRole('list', { name: 'Chats' })).toBeVisible();
+        await expectBaseline(page, `chat-list-phone-${theme}.png`);
+      });
+
+      test(`chat thread (phone, ${theme})`, async ({ page, open, settle }) => {
+        await withChat(page);
+        await open('/chat?c=chat-blair');
+        await expect(page.getByText('And the holiday list?')).toBeVisible();
+        await settle();
+        await expectBaseline(page, `chat-thread-phone-${theme}.png`);
       });
 
       test(`contact detail (phone, ${theme})`, async ({ page, open }) => {

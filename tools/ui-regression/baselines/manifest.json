@@ -110,6 +110,38 @@
       "sha256": "5887397363dd63835e27bca6971b0eebe249704fa30166e16fc0f2e0ce5426d3",
       "bytes": 105512
     },
+    "chat-earlier-wide-dark.png": {
+      "sha256": "3a536c231c7626601e00c1bffb5634bae5ac078289a7a8ad0b73bcfd094c646b",
+      "bytes": 122123
+    },
+    "chat-earlier-wide-light.png": {
+      "sha256": "a945d9c34e627dbee547373b25be71b29cc19aa456005039261255e37a3e0351",
+      "bytes": 122737
+    },
+    "chat-list-phone-dark.png": {
+      "sha256": "b44371b80ff5caf769cb3780becf5b47f1cfaa9d749c196cfaa8ee5730851f11",
+      "bytes": 45196
+    },
+    "chat-list-phone-light.png": {
+      "sha256": "a72e9a9940f5d2a8bf90d1dfec430537a225bc627e1a6b6679ddd0f6e63f41ac",
+      "bytes": 46955
+    },
+    "chat-thread-phone-dark.png": {
+      "sha256": "e4da5f417117829537011c32090deed48fd946326035cf3e5c1fad63ea0e6078",
+      "bytes": 57780
+    },
+    "chat-thread-phone-light.png": {
+      "sha256": "7a70d4a9abfe9d25fb3b9bf45cd13f9de1ddd08d3c31c06123be4bcfb765e5d2",
+      "bytes": 59313
+    },
+    "chat-wide-dark.png": {
+      "sha256": "42b88b0390b897db7cea2035ab065e0d848a4e1381ba4b682e69973a44f094ee",
+      "bytes": 113003
+    },
+    "chat-wide-light.png": {
+      "sha256": "debef8863792218f485e3f59b55dc8a71d3ce86fbdf283cff58c34e704ac49cb",
+      "bytes": 113971
+    },
     "company-entry-phone-dark.png": {
       "sha256": "e26268da61f4eb330ca87e8006e99db1f5acd00919148f5809fdc68e2e544785",
       "bytes": 45367
@@ -1284,6 +1316,52 @@
         "server-calendars-wide-dark.png",
         "server-calendars-wide-light.png"
       ],
+      "removed": []
+    },
+    {
+      "date": "2026-11-20T16:28:08.377Z",
+      "reason": "0.33.0 Chat screens: new pictures of the Chat page with a fixed engine (the chats beside an open one at its newest and at its first messages, Wide; the list and an open chat, Phone). New pictures only; no existing picture changed. Recorded by the part's frontend agent for the integrator's decision.",
+      "source": {
+        "commit": "e126c50ec485b46a1151d05c914ba0fba60c0ba6",
+        "branch": "feat/0.33.0-p6-screens",
+        "dirty": true,
+        "digest": "b44ec9de9fa05ad43978a44982d418e89e07728716d2678e9804545980d102ef"
+      },
+      "render": {
+        "playwright": "1.64.0",
+        "browser": "chromium-headless-shell 156.0.8078.4",
+        "browserArgs": [
+          "--font-render-hinting=none",
+          "--disable-lcd-text",
+          "--force-color-profile=srgb",
+          "--disable-gpu",
+          "--disable-skia-runtime-opts",
+          "--num-raster-threads=1",
+          "--disable-partial-raster"
+        ],
+        "platform": "linux-x64",
+        "fonts": {
+          "@fontsource/inter": "5.3.0",
+          "@fontsource/jetbrains-mono": "5.3.0"
+        },
+        "fontconfig": "isolated",
+        "deviceScaleFactor": 1
+      },
+      "host": {
+        "node": "v26.12.1",
+        "ci": false
+      },
+      "added": [
+        "chat-earlier-wide-dark.png",
+        "chat-earlier-wide-light.png",
+        "chat-list-phone-dark.png",
+        "chat-list-phone-light.png",
+        "chat-thread-phone-dark.png",
+        "chat-thread-phone-light.png",
+        "chat-wide-dark.png",
+        "chat-wide-light.png"
+      ],
+      "changed": [],
       "removed": []
     }
   ]

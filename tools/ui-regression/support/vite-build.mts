@@ -13,4 +13,6 @@ await build({
   envDir,
   logLevel: 'warn',
   build: { outDir, emptyOutDir: true },
+  // Chat's engine needs a server and encryption; its screens are pictured with fixed data instead.
+  resolve: { alias: [{ find: '@/hooks/use-chat-engine', replacement: path.join(root, 'src/test/chat-fixture-hook.ts') }] },
 });

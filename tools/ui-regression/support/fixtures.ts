@@ -30,6 +30,11 @@ const PAGES = [
   { id: 'music', label: 'Music', module: 'recordings', visible: true },
   { id: 'today', label: 'Today', module: null, visible: true },
 ];
+// A person who uses Chat: its page second in their order, so the phone's bottom bar shows it.
+export const MODULES_WITH_CHAT = {
+  modules: [...MODULES, { id: 'chat', label: 'Chat', visible: true, enabled: true, background: false, backgroundSupported: false }],
+  pages: [PAGES[0], { id: 'chat', label: 'Chat', module: 'chat', visible: true }, ...PAGES.slice(1)],
+};
 
 const PREFERENCES = { email_link_behavior: 'internal', default_start_page: 'mail', default_mail_account_id: 'acct-work', accent_color: 'blue' };
 // GET /settings/values (0.24): the same choices as resolved settings; the

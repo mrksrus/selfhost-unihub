@@ -4,7 +4,7 @@
 // reduced motion.
 import { test as base, expect, type Page } from '@playwright/test';
 export type { Page };
-import { createApiRouter, FIXED_NOW, OFFERED_CALENDARS, SHARED_CALENDARS, SHARED_EVENTS, type ApiRouter } from './fixtures.ts';
+import { createApiRouter, FIXED_NOW, MODULES_WITH_CHAT, OFFERED_CALENDARS, SHARED_CALENDARS, SHARED_EVENTS, type ApiRouter } from './fixtures.ts';
 import { markBaselineUsed } from './used-baselines.mts';
 
 export type ThemeMode = 'dark' | 'light' | 'system';
@@ -121,6 +121,16 @@ export async function sharedCalendars(page: Page, { offered = false } = {}) {
   const answer = (body: unknown) => ({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
   await page.route(url => url.pathname === '/api/calendar/calendars', route => route.fulfill(answer({ calendars: offered ? OFFERED_CALENDARS : SHARED_CALENDARS })));
   await page.route(url => url.pathname === '/api/calendar/events', route => route.fulfill(answer({ events: SHARED_EVENTS })));
+}
+
+/**
+ * Turns Chat on for the synthetic person, with the fixed engine of
+ * src/test/chat-mock-engine.ts in place of the real one (this runner's build
+ * swaps the hook that hands it out). `engine` are that mock's options.
+ */
+export async function withChat(page: Page, engine: Record<string, unknown> = {}) {
+  await page.addInitScript(options => { (window as { uiRegressionChat?: unknown }).uiRegressionChat = options; }, engine);
+  await page.route(url => url.pathname === '/api/modules', route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(MODULES_WITH_CHAT) }));
 }
 
 /** Opens a new event on the Calendar page and gives it a custom repeat rule, with the dialog scrolled to its top (0.32). */
