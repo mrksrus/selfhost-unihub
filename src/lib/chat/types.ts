@@ -61,6 +61,8 @@ export interface ChatThreadMessage {
   created_at: string;
   /** Own messages only; null for the other person's. */
   delivery: ChatDeliveryState | null;
+  /** An own edit still in the outbox (`sending`) or refused (`failed`, with `error`; `retry()` sends it again); the text shown is already the new one. */
+  edit_state: 'sending' | 'failed' | null;
   error: string | null;
 }
 
@@ -88,8 +90,8 @@ export interface ChatEngine {
   /** Called whenever a snapshot or a thread changed; returns the unsubscribe function. */
   subscribe(listener: () => void): () => void;
   snapshot(): ChatEngineSnapshot;
-  /** A conversation's items, oldest first. */
-  thread(conversationId: string): ChatThreadItem[];
+  /** A conversation's items, oldest first; null until the device's store was read. */
+  thread(conversationId: string): ChatThreadItem[] | null;
 
   /** Finds or makes the direct conversation with a person and returns its id. */
   openConversation(userId: string): Promise<string>;
