@@ -5,11 +5,11 @@ import type { ModuleId, ModulePreference } from '@/lib/modules';
 
 /** The module labels of the catalog (api/src/services/module-catalog.ts), until the modules have loaded. */
 export const AREA_LABELS: Readonly<Record<Exclude<AppLockArea, 'app'>, string>> = {
-  mail: 'Mail', contacts: 'Contacts', calendar: 'Calendar and ToDo', recordings: 'Recordings and Music',
+  mail: 'Mail', contacts: 'Contacts', calendar: 'Calendar and ToDo', recordings: 'Recordings and Music', chat: 'Chat',
 };
 
 /** The modules a lock can cover, in the catalog's order. */
-export const LOCKABLE_MODULES: readonly ModuleId[] = ['mail', 'contacts', 'calendar', 'recordings'];
+export const LOCKABLE_MODULES: readonly ModuleId[] = ['mail', 'contacts', 'calendar', 'recordings', 'chat'];
 
 /** "Mail", "Calendar and ToDo", or "UniHub" for the whole app. */
 export function areaLabel(area: AppLockArea, modules: readonly ModulePreference[] = []) {

@@ -44,13 +44,15 @@ export interface Principals {
 // --- Access (F4) -------------------------------------------------------------
 
 /** The kinds of resource the access service answers for. */
-export type AccessKind = 'group' | 'address_book' | 'calendar';
+export type AccessKind = 'group' | 'address_book' | 'calendar' | 'conversation';
 
 /** Permissions on each kind, from the least to the most. */
 export interface AccessPermissions {
   group: 'read' | 'manage';
   address_book: 'read' | 'edit' | 'manage';
   calendar: CalendarPermission;
+  /** A chat conversation: its people are its members, nobody else reaches it, administrators included. */
+  conversation: 'member';
 }
 
 // --- The signed-in person ------------------------------------------------------

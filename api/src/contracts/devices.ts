@@ -21,7 +21,7 @@ export type LockMethod = 'biometric' | 'device_credential' | 'pin';
  * catalog's: mail, contacts, calendar for Calendar and ToDo, recordings for
  * Recordings and Music). An empty list is off; `app` stands alone.
  */
-export type AppLockArea = 'app' | 'mail' | 'contacts' | 'calendar' | 'recordings';
+export type AppLockArea = 'app' | 'mail' | 'contacts' | 'calendar' | 'recordings' | 'chat';
 
 /** Seconds in the background before UniHub locks again; '0' is every time it opens. */
 export type RelockAfter = '0' | '60' | '300' | '900';
@@ -62,6 +62,8 @@ export interface DeviceSummary {
   lock: Pick<AppLockApplied, 'scope' | 'method'> | null;
   /** The device has a push channel. */
   notifications: boolean;
+  /** The device is enrolled for chat: it holds chat keys. */
+  chat: boolean;
 }
 
 /** GET /api/devices: the person's devices with a live session, the current one first. */

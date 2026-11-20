@@ -31,6 +31,7 @@ import adminPeopleRoutes = require('./admin-people');
 import groupsRoutes = require('./groups');
 import invitesRoutes = require('./invites');
 import widgetsRoutes = require('./widgets');
+import chatDevicesRoutes = require('./chat-devices');
 import { assertRouteTable, mergeRouteTables } from '../http/route';
 import { legacyRoutes } from './legacy-spec';
 import { MODULE_CATALOG } from '../services/module-catalog';
@@ -73,6 +74,7 @@ const routes = mergeRouteTables(
   groupsRoutes,
   invitesRoutes,
   widgetsRoutes,
+  chatDevicesRoutes,
 );
 // A route declares only policy keys that can refuse an action.
 const refusablePolicies = Object.entries(POLICIES).filter(([, entry]) => entry.refuses.length).map(([key]) => key);

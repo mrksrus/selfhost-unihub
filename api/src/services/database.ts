@@ -17,6 +17,7 @@ import { addDevices, verifyDevices } from './devices-migration';
 import { addOrganisation, chooseOwner, verifyOrganisation, verifyOwner } from './organisation-migration';
 import { addSharedContacts, verifySharedContacts } from './shared-contacts-migration';
 import { addSharedCalendars, verifySharedCalendars } from './shared-calendars-migration';
+import { addChat, verifyChat } from './chat-migration';
 import { log } from '../log';
 
 type FieldRow = RowDataPacket & { Field: string };
@@ -466,6 +467,18 @@ const MIGRATIONS: readonly Migration[] = [
     verify: async (connection: PoolConnection) => {
       await verifyDatabaseInventory(connection, { throughMigration: 30 });
       await verifySharedCalendars(connection);
+    },
+  },
+  {
+    // End-to-end encrypted chat: accounts, chat devices and key packages,
+    // conversations, groups, messages and the personal archive
+    // (chat-migration.ts). No row changes.
+    id: 31,
+    name: 'chat',
+    up: addChat,
+    verify: async (connection: PoolConnection) => {
+      await verifyDatabaseInventory(connection, { throughMigration: 31 });
+      await verifyChat(connection);
     },
   },
 ];

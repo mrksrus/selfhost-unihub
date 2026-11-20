@@ -65,6 +65,18 @@ export const INSTALLATION_RULES: Readonly<Record<string, Rule>> = Object.freeze(
   calendar_views: { reason: "Each person's view of a calendar comes back." },
   calendar_reminders: { reason: "Each person's own reminders on a calendar they do not own come back." },
   'calendar offers': { reason: "A pending offer of a person's calendar comes back." },
+  // Chat: every table comes back as stored, ciphertext as ciphertext. The
+  // restore deletes the devices, which removes every chat device.
+  chat_accounts: { reason: "Each person's history key comes back, still wrapped by the passphrase." },
+  chat_devices: { reason: 'Chat devices come back removed: their devices are gone, so they enrol again.',
+    mayChange: (column, _source, restored) => column === 'device_id' && restored.plain.device_id === null },
+  chat_key_packages: { reason: 'Key packages come back; those of removed devices are never handed out.' },
+  chat_conversations: { reason: 'Conversations come back with their current group and last seq.' },
+  chat_members: { reason: "Each person's read and delivered marks come back." },
+  chat_groups: { reason: 'Groups come back with their Welcome; the next message makes a new one.' },
+  chat_group_devices: { reason: "A group's devices come back." },
+  chat_messages: { reason: 'Messages come back as ciphertext, edits and deletions included.' },
+  chat_archive: { reason: "Each person's archive copies come back sealed." },
 });
 
 // A DATETIME in UTC (dateStrings), to the second, within the restore command's run.

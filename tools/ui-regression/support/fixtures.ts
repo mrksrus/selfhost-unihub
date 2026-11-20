@@ -338,11 +338,11 @@ const INSTANCE_BACKUP = {
 const WEB_UA = 'Mozilla/5.0 (X11; Linux x86_64; rv:140.0) Gecko/20100101 Firefox/140.0';
 export const DEVICES = [
   { id: 'dev-laptop', current: true, kind: 'web', app_version: null, user_agent: WEB_UA, created_at: at('05-02T09:00:00.000Z'), last_seen_at: at('06-15T09:29:00.000Z'),
-    lock: { scope: ['mail', 'contacts'], method: 'pin' }, notifications: true },
+    lock: { scope: ['mail', 'contacts'], method: 'pin' }, notifications: true, chat: false },
   { id: 'dev-phone', current: false, kind: 'android', app_version: '0.29.0', user_agent: 'Mozilla/5.0 (Linux; Android 16; Pixel 8a; wv) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Mobile Safari/537.36 UniHubAndroid/0.29.0 (29000)',
-    created_at: at('05-20T18:00:00.000Z'), last_seen_at: at('06-15T07:10:00.000Z'), lock: { scope: ['app'], method: 'biometric' }, notifications: true },
+    created_at: at('05-20T18:00:00.000Z'), last_seen_at: at('06-15T07:10:00.000Z'), lock: { scope: ['app'], method: 'biometric' }, notifications: true, chat: false },
   { id: 'dev-tablet', current: false, kind: 'pwa', app_version: null, user_agent: 'Mozilla/5.0 (Linux; Android 15; Pixel Tablet) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36',
-    created_at: at('06-01T12:00:00.000Z'), last_seen_at: at('06-12T20:40:00.000Z'), lock: null, notifications: false },
+    created_at: at('06-01T12:00:00.000Z'), last_seen_at: at('06-12T20:40:00.000Z'), lock: null, notifications: false, chat: false },
 ];
 const DEVICE_SETTINGS_OFF = {
   app_lock_scope: { value: [], source: 'default', locked: false },

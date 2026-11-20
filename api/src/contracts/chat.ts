@@ -1,0 +1,277 @@
+// Request and response shapes of the chat routes (F11, F14). The frontend
+// imports these as types only.
+//
+// Chat is always end-to-end encrypted: every key, key package, Welcome,
+// message, archive copy and preview is made and opened on the devices, and
+// the server stores and hands out opaque bytes. Binary values travel as
+// base64url text without padding. A chat device is one F5 device of the
+// person that enrolled for chat (services/chat-devices.ts); the server's
+// list of a person's valid chat devices is trusted.
+//
+// Refusals every route shares: 403 MODULE_DISABLED while Chat is off for the
+// person (their switch or a policy), 403 APP_LOCK_REQUIRED for a device
+// short of the lock the person's policies require for Chat, and 404
+// CONVERSATION_NOT_FOUND for a conversation the person is not a member of.
+
+/** Binary data as base64url text without padding. */
+export type Base64Url = string;
+
+// --- The person's chat account: the history key and its backup ----------------
+
+/**
+ * The history private key wrapped with AES-GCM under a key from
+ * PBKDF2-SHA-256 of the chat passphrase. The passphrase never reaches the
+ * server; `wrapped` holds the IV and the ciphertext as the device wrote them.
+ */
+export interface ChatKeyBackup {
+  format: 1;
+  /** 16 to 64 random bytes. */
+  salt: Base64Url;
+  /** At least 600,000. */
+  rounds: number;
+  wrapped: Base64Url;
+}
+
+export interface ChatAccount {
+  /** The public half of the person's history key (an uncompressed P-256 point): archive copies are sealed to it. */
+  history_public: Base64Url;
+  key_backup: ChatKeyBackup;
+  updated_at: string;
+}
+
+/** GET /api/chat/account: the signed-in person's own account; null before they chose a passphrase. */
+export interface ChatAccountResponse { account: ChatAccount | null }
+
+/** POST /api/chat/account: the first passphrase. 409 CHAT_ACCOUNT_EXISTS when the person has one. */
+export interface ChatAccountCreateRequest { history_public: Base64Url; key_backup: ChatKeyBackup }
+
+/**
+ * PUT /api/chat/account/key-backup: a new passphrase for the same key, from
+ * a device that holds it; the old passphrase is not needed, the account
+ * password is (400 PASSWORD_REQUIRED, 403 PASSWORD_INCORRECT, 429).
+ * 409 CHAT_KEY_CHANGED when history_public is no longer the account's (a
+ * new key was started meanwhile); 404 CHAT_ACCOUNT_NOT_FOUND without one.
+ */
+export interface ChatKeyBackupUpdateRequest { current_password: string; history_public: Base64Url; key_backup: ChatKeyBackup }
+
+/**
+ * POST /api/chat/account/new-key: a new history key and passphrase when no
+ * device holds the old key and its passphrase is forgotten. The account
+ * password is asked as above. Every archive copy sealed to the old key is
+ * dropped: nobody can open it any more. Answers ChatAccountResponse.
+ */
+export interface ChatNewKeyRequest { current_password: string; history_public: Base64Url; key_backup: ChatKeyBackup }
+
+// --- Chat devices and key packages --------------------------------------------------
+
+/**
+ * The Web Push key a browser's preview is sealed to (RFC 8291): its P-256
+ * public key and auth secret. An Android device has none of its own; its
+ * push channel's key is used.
+ */
+export interface ChatPreviewKey { p256dh: Base64Url; auth: Base64Url }
+
+/**
+ * POST /api/chat/devices: enrols the device of the request. A chat device
+ * that device enrolled earlier is removed (it lost its keys), so every group
+ * that names it is out of date. key_packages: 1 to 100 MLS key packages;
+ * last_resort: the package handed out when none is left.
+ */
+export interface ChatDeviceEnrolRequest { preview: ChatPreviewKey | null; key_packages: Base64Url[]; last_resort: Base64Url }
+
+/** The answer of POST /api/chat/devices, GET /api/chat/devices/current and its key-packages route. */
+export interface ChatDeviceResponse {
+  chat_device_id: string;
+  /** Key packages not yet claimed, the last resort not counted. */
+  key_packages: number;
+}
+
+/**
+ * GET /api/chat/devices/current: the chat device of the request's device;
+ * 404 CHAT_DEVICE_NOT_ENROLLED when it has none (never enrolled, signed out
+ * since, or removed).
+ *
+ * POST /api/chat/devices/current/key-packages: more key packages, and a new
+ * last resort when given (it replaces the old one). At most 100 unclaimed
+ * packages are kept: 400 CHAT_KEY_PACKAGES_LIMIT for more, storing none.
+ */
+export interface ChatKeyPackagesRequest { key_packages: Base64Url[]; last_resort?: Base64Url }
+
+/** A valid chat device of a person in a conversation. */
+export interface ChatDevice {
+  chat_device_id: string;
+  user_id: string;
+  /** The key previews for this device are sealed to; null when it has none (an Android device without a push channel). */
+  preview: ChatPreviewKey | null;
+  created_at: string;
+}
+
+/**
+ * GET /api/chat/conversations/:id/devices: the valid chat devices of the
+ * people the conversation reaches, the caller's own included. A device is
+ * valid while its F5 device exists and is enrolled and its person is active.
+ */
+export interface ChatDevicesResponse { devices: ChatDevice[] }
+
+/** One key package claimed for a device of a new group. */
+export interface ChatClaimedKeyPackage {
+  chat_device_id: string;
+  user_id: string;
+  key_package: Base64Url;
+  /** The device had none left but its last resort, which stays for the next claim. */
+  last_resort: boolean;
+}
+
+/**
+ * POST /api/chat/conversations/:id/key-packages: claims one key package of
+ * every valid device of the conversation's people except the caller's own,
+ * for a new group. A claimed package is handed out once; a device without
+ * one left (and without a last resort) is absent.
+ */
+export interface ChatKeyPackageClaimResponse { key_packages: ChatClaimedKeyPackage[] }
+
+// --- Conversations, groups and messages --------------------------------------------------
+
+/** The other person of a direct conversation. */
+export interface ChatPeer {
+  /** null once the person was deleted ("Deleted person"). */
+  user_id: string | null;
+  name: string;
+  /** Whether the caller can write to them now; false while they are deactivated, deleted, have Chat off or have no chat device yet. */
+  can_write: boolean;
+  /** Why not, in plain words; null while they can be written to. */
+  reason: string | null;
+  /** Online (a page of theirs is open) when both have presence on; null when it is not shown. */
+  online: boolean | null;
+}
+
+export interface ChatConversation {
+  id: string;
+  kind: 'direct';
+  peer: ChatPeer;
+  /** The MLS group the next message goes to; null before the first one. */
+  current_group_id: string | null;
+  last_seq: number;
+  last_activity_at: string | null;
+  /** Messages after the caller's read mark that others sent. */
+  unread: number;
+  /** The caller's own marks; messages before joined_seq are never served to them. */
+  read_seq: number;
+  delivered_seq: number;
+  joined_seq: number;
+  /** The peer's marks: read_seq is null while read receipts are off for either person. */
+  peer_read_seq: number | null;
+  peer_delivered_seq: number;
+}
+
+/** GET /api/chat/conversations: the caller's conversations, the latest activity first. */
+export interface ChatConversationsResponse { conversations: ChatConversation[] }
+
+/**
+ * POST /api/chat/conversations: finds or makes the one direct conversation
+ * of the caller and another active person with Chat on. 400
+ * CHAT_SELF for oneself; 404 USER_NOT_FOUND; 403 CHAT_UNAVAILABLE with a
+ * reason when the person cannot be written to.
+ */
+export interface ChatConversationCreateRequest { user_id: string }
+export interface ChatConversationResponse { conversation: ChatConversation; created: boolean }
+
+/**
+ * POST /api/chat/conversations/:id/groups: a new MLS group made by the
+ * caller's device from one claimed key package per device, with its one
+ * Welcome. group_id is made by the device (a UUID; it is the MLS group id).
+ * The server makes it current only while previous_group_id is still the
+ * current one; otherwise 409 CHAT_GROUP_STALE with the current id, and the
+ * device reads again. chat_device_ids: every device in the group, the
+ * caller's own included.
+ */
+export interface ChatGroupCreateRequest {
+  group_id: string;
+  previous_group_id: string | null;
+  welcome: Base64Url;
+  chat_device_ids: string[];
+}
+export interface ChatGroupResponse { group_id: string; current: true }
+
+/** The details of 409 CHAT_GROUP_STALE, also answered to a message for an old group or a group whose devices are out of date. */
+export interface ChatGroupStaleDetails { current_group_id: string | null }
+
+/** A preview sealed by the sender for one recipient device (RFC 8291, the first 160 characters). */
+export interface ChatPreview { chat_device_id: string; sealed: Base64Url }
+
+/**
+ * POST /api/chat/conversations/:id/messages: an MLS application message to
+ * the current group. id is made by the client, so a retry stores it once.
+ * replaces names the caller's own earlier message of this conversation that
+ * this one edits. archive: the sender's own archive copy, sealed to their
+ * history key. 409 CHAT_GROUP_STALE (ChatGroupStaleDetails) when group_id is
+ * not current or its devices are not exactly the valid devices of the
+ * conversation's people; 403 CHAT_UNAVAILABLE when the peer cannot be
+ * written to.
+ */
+export interface ChatMessageCreateRequest {
+  id: string;
+  group_id: string;
+  replaces: string | null;
+  /** The version of the object inside the ciphertext. */
+  format: number;
+  ciphertext: Base64Url;
+  archive: Base64Url;
+  previews: ChatPreview[];
+}
+
+/** One entry of a conversation, in seq order. */
+export interface ChatMessage {
+  id: string;
+  seq: number;
+  group_id: string;
+  /** null once the sender was deleted. */
+  sender_user_id: string | null;
+  sender_chat_device_id: string | null;
+  /** 'delete' entries name in `replaces` the message that was deleted for both sides. */
+  kind: 'message' | 'delete';
+  replaces: string | null;
+  format: number;
+  /** null once the message was deleted. */
+  ciphertext: Base64Url | null;
+  created_at: string;
+}
+export interface ChatMessageResponse { message: ChatMessage }
+
+/** The Welcome of a group the caller's device is in and has not confirmed joining. */
+export interface ChatWelcome { group_id: string; welcome: Base64Url; created_at: string }
+
+/**
+ * GET /api/chat/conversations/:id/messages?after=<seq>&limit=<n>: entries
+ * after a seq (never before the caller's joined_seq), with the Welcomes of
+ * the groups the device has not joined, oldest first.
+ */
+export interface ChatMessagesResponse { messages: ChatMessage[]; welcomes: ChatWelcome[]; last_seq: number; more: boolean }
+
+/** POST /api/chat/groups/:id/joined: the device of the request confirms it joined the group from its Welcome. */
+export interface ChatGroupJoinedResponse { joined: true }
+
+/**
+ * DELETE /api/chat/messages/:id: the sender deletes a message for both
+ * sides, with its edits and archive copies; a 'delete' entry tells every
+ * device. 403 POLICY_FORBIDS while deleting for good is forbidden (bin.delete);
+ * 404 CHAT_MESSAGE_NOT_FOUND for anyone else's message.
+ */
+export interface ChatMessageDeletedResponse { deleted: true; seq: number }
+
+/** PUT /api/chat/conversations/:id/marks: moves the caller's marks forward (never back, never past last_seq). */
+export interface ChatMarksRequest { read_seq?: number; delivered_seq?: number }
+export interface ChatMarksResponse { read_seq: number; delivered_seq: number }
+
+// --- The personal archive -------------------------------------------------------------------
+
+/** A message sealed to the person's history key by one of their devices. */
+export interface ChatArchiveCopy { message_id: string; sealed: Base64Url }
+
+/** POST /api/chat/archive: the caller's own copies, up to 200 at once; a copy already stored stays. */
+export interface ChatArchiveRequest { copies: ChatArchiveCopy[] }
+export interface ChatArchiveStoredResponse { stored: number }
+
+/** GET /api/chat/archive?cursor=<cursor>&limit=<n>: the caller's copies for a restore, in conversation and seq order. */
+export interface ChatArchiveEntry extends ChatArchiveCopy { conversation_id: string; seq: number }
+export interface ChatArchiveResponse { copies: ChatArchiveEntry[]; cursor: string | null }

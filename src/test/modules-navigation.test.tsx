@@ -50,7 +50,7 @@ describe('pages', () => {
   it('follows the module order and module visibility until pages are set up', () => {
     const order = [defaults[3], { ...defaults[1], visible: false }, defaults[0], defaults[2]];
     const pages = defaultPages(order);
-    expect(pageNames(pages)).toEqual(['Recordings', 'Music', 'Calendar', 'ToDo', 'Mail', 'Contacts', 'Today']);
+    expect(pageNames(pages)).toEqual(['Recordings', 'Music', 'Calendar', 'ToDo', 'Mail', 'Contacts', 'Chat', 'Today']);
     expect(pages.filter(page => !page.visible).map(page => page.id)).toEqual(['calendar', 'todo']);
   });
 
@@ -93,7 +93,7 @@ describe('pages', () => {
 
   it('moves a page and saves the full page order', async () => {
     const pages = defaultPages(defaults);
-    const moved = reorder(pages, ['calendar', 'mail', 'todo', 'contacts', 'recordings', 'music', 'today']);
+    const moved = reorder(pages, ['calendar', 'mail', 'todo', 'contacts', 'recordings', 'music', 'chat', 'today']);
     const put = vi.spyOn(api, 'put').mockResolvedValue({ data: { modules: defaults, pages: moved } });
     renderWithClient(<ModuleSettings />, defaults, '/', pages);
     // Every page has a drag handle; the menu keeps Move up and Move down for the keyboard, disabled at the ends.
@@ -101,7 +101,7 @@ describe('pages', () => {
     fireEvent.pointerDown(screen.getByRole('button', { name: 'More actions for Mail' }), { button: 0, ctrlKey: false });
     expect(await screen.findByRole('menuitem', { name: 'Move up' })).toHaveAttribute('aria-disabled', 'true');
     fireEvent.click(screen.getByRole('menuitem', { name: 'Move down' }));
-    await waitFor(() => expect(put).toHaveBeenCalledWith('/modules', { page_order: ['calendar', 'mail', 'todo', 'contacts', 'recordings', 'music', 'today'] }));
+    await waitFor(() => expect(put).toHaveBeenCalledWith('/modules', { page_order: ['calendar', 'mail', 'todo', 'contacts', 'recordings', 'music', 'chat', 'today'] }));
     await waitFor(() => expect(screen.getAllByRole('heading', { level: 3 }).slice(0, 3).map(heading => heading.textContent))
       .toEqual(['Calendar', 'Mail', 'ToDo']));
   });
@@ -121,7 +121,7 @@ describe('pages', () => {
     fireEvent.pointerDown(screen.getByRole('button', { name: 'More actions for Contacts' }), { button: 0, ctrlKey: false });
     fireEvent.click(await screen.findByRole('menuitem', { name: 'Move up' }));
     expect(await screen.findByRole('alert')).toHaveTextContent('Page order must list every page once');
-    expect(screen.getAllByRole('heading', { level: 3 }).slice(0, 7).map(heading => heading.textContent))
-      .toEqual(['Mail', 'Calendar', 'ToDo', 'Contacts', 'Recordings', 'Music', 'Today']);
+    expect(screen.getAllByRole('heading', { level: 3 }).slice(0, 8).map(heading => heading.textContent))
+      .toEqual(['Mail', 'Calendar', 'ToDo', 'Contacts', 'Recordings', 'Music', 'Chat', 'Today']);
   });
 });

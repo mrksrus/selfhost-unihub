@@ -77,6 +77,11 @@ export interface PolicyValues {
   'modules.calendar': Allowance;
   'modules.contacts': Allowance;
   'modules.recordings': Allowance;
+  'modules.chat': Allowance;
+  /** Locks every person's chat_presence on or off; user_choice leaves it to them. */
+  'chat.presence': 'user_choice' | 'on' | 'off';
+  /** Locks every person's chat_read_receipts on or off. */
+  'chat.read_receipts': 'user_choice' | 'on' | 'off';
   /** The Music page alone (recordings keep working). */
   'pages.music': Allowance;
   /** The least detail notifications may show: the floor of each mail account's and the reminders' detail. */

@@ -109,6 +109,8 @@ function backupContents(sections: readonly string[], counts: Partial<Record<Left
   const notes: string[] = [];
   if (left_out.some(entry => entry.what === LEFT_OUT.synced_events.what || entry.what === LEFT_OUT.sync_mail.what)) notes.push('Provider data is not in this backup; it downloads again after the accounts reconnect.');
   if (sections.includes('mail')) notes.push('Snoozes on Sync-mode mail are not kept; those messages come back unsnoozed.');
+  // Chat has no section: the server cannot read it (modules/chat.ts).
+  notes.push('Chats are not in this backup. They are restored with your chat passphrase.');
   return { included: [...included], left_out, notes };
 }
 

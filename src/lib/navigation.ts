@@ -1,4 +1,4 @@
-import { Calendar, CheckSquare, LayoutDashboard, Mail, Mic, Music2, Users, type LucideIcon } from 'lucide-react';
+import { Calendar, CheckSquare, LayoutDashboard, Mail, MessageCircle, Mic, Music2, Users, type LucideIcon } from 'lucide-react';
 import type { PageId, PagePreference } from '@/lib/modules';
 
 export type NavigationPage = { id: PageId; name: string; href: string; icon: LucideIcon };
@@ -10,6 +10,7 @@ const PAGE_LINKS: Record<PageId, { href: string; icon: LucideIcon }> = {
   contacts: { href: '/contacts', icon: Users },
   recordings: { href: '/recordings', icon: Mic },
   music: { href: '/music', icon: Music2 },
+  chat: { href: '/chat', icon: MessageCircle },
   today: { href: '/dashboard', icon: LayoutDashboard },
 };
 

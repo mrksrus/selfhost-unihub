@@ -43,7 +43,7 @@ export class AppLockRequired extends ApiError {
   }
 }
 
-const AREAS: readonly AppLockArea[] = ['app', 'mail', 'contacts', 'calendar', 'recordings'];
+const AREAS: readonly AppLockArea[] = ['app', 'mail', 'contacts', 'calendar', 'recordings', 'chat'];
 const RELOCK: readonly RelockAfter[] = ['0', '60', '300', '900'];
 
 /** The refusal's details, keeping only known values (an unknown area is left out, a missing reason is null). */

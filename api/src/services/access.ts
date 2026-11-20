@@ -22,8 +22,9 @@ import { allGroupIds, groupExists, groupNames, groupsOf, listGroups, membershipO
 // or a group's) by administrators with calendars.manage and by the managers
 // of its group; anyone else reaches a UniHub calendar through grants, never
 // one synced from a provider. An archived calendar is read-only for
-// everyone. The grants table is this file's alone (a lint fence keeps its
-// SQL here).
+// everyone. A chat conversation is reached only by the people it has
+// grants for (level member); no role reaches it. The grants table is this
+// file's alone (a lint fence keeps its SQL here).
 
 type Resource<K extends AccessKind = AccessKind> = { kind: K; id: string };
 
@@ -32,12 +33,14 @@ const ORDER: { readonly [K in AccessKind]: readonly AccessPermissions[K][] } = {
   group: ['read', 'manage'],
   address_book: ['read', 'edit', 'manage'],
   calendar: ['freebusy', 'read', 'contribute', 'edit', 'manage'],
+  conversation: ['member'],
 };
 
 const REFUSALS: { readonly [K in AccessKind]: { notFound: { code: string; message: string }; forbidden: { code: string; message: string } } } = {
   group: { notFound: { code: 'GROUP_NOT_FOUND', message: 'Group not found' }, forbidden: { code: 'GROUP_FORBIDDEN', message: 'You cannot manage this group.' } },
   address_book: { notFound: { code: 'BOOK_NOT_FOUND', message: 'Address book not found' }, forbidden: { code: 'BOOK_FORBIDDEN', message: 'You cannot change this address book.' } },
   calendar: { notFound: { code: 'CALENDAR_NOT_FOUND', message: 'Calendar not found' }, forbidden: { code: 'CALENDAR_FORBIDDEN', message: 'You cannot change this calendar.' } },
+  conversation: { notFound: { code: 'CONVERSATION_NOT_FOUND', message: 'Conversation not found' }, forbidden: { code: 'CONVERSATION_NOT_FOUND', message: 'Conversation not found' } },
 };
 
 const highest = <K extends AccessKind>(kind: K, levels: readonly string[]): AccessPermissions[K] | null => {
@@ -97,6 +100,10 @@ async function accessLevel<K extends AccessKind>(userId: string, resource: Resou
   const role = await activeRole(userId, executor);
   if (!role) return null;
   if (resource.kind === 'calendar') return calendarLevel(userId, role, resource.id, executor) as Promise<AccessPermissions[K] | null>;
+  if (resource.kind === 'conversation') {
+    const [live] = await executor.execute<RowDataPacket[]>('SELECT 1 FROM chat_conversations WHERE id = ?', [resource.id]);
+    return (live.length && (await reachingGrants(userId, 'conversation', resource.id, executor)).length ? 'member' : null) as AccessPermissions[K] | null;
+  }
   const levels: string[] = [];
   if (resource.kind === 'address_book') {
     if (!await bookLive(resource.id, executor)) return null;
@@ -150,6 +157,7 @@ async function visible(userId: string, kind: AccessKind, executor: SqlExecutor =
       ORDER BY name, id`, reached);
     return live.map(row => String(row.id));
   }
+  if (kind === 'conversation') return [...new Set((await reachingGrants(userId, kind, null, executor)).map(([id]) => id))];
   if (kind === 'calendar') {
     const reached = [...new Set((await reachingGrants(userId, kind, null, executor)).map(([id]) => id))];
     const managed = (await groupsOf(userId, executor)).filter(group => group.role === 'manager').map(group => group.id);
@@ -252,6 +260,17 @@ async function removeGrantsOn(cx: SqlExecutor, resource: Resource) {
   await cx.execute('DELETE FROM grants WHERE resource_kind = ? AND resource_id = ?', [resource.kind, resource.id]);
 }
 
+/**
+ * The people a conversation reaches, active or not: the stale check and the
+ * device list ask for their devices.
+ * shortcut: person grants only; a chat that follows a group adds its members here.
+ */
+async function conversationPeople(conversationId: string, executor: SqlExecutor = db): Promise<string[]> {
+  const [rows] = await executor.execute<RowDataPacket[]>(`SELECT principal_id FROM grants
+    WHERE resource_kind = 'conversation' AND resource_id = ? AND principal_kind = 'user' ORDER BY principal_id`, [conversationId]);
+  return rows.map(row => String(row.principal_id));
+}
+
 /** The resources of a kind on which the person holds a direct grant of exactly `permission` (the books they created). */
 async function heldBy(userId: string, kind: AccessKind, permission: string, executor: SqlExecutor = db): Promise<string[]> {
   const [rows] = await executor.execute<RowDataPacket[]>(`SELECT resource_id FROM grants
@@ -295,7 +314,7 @@ async function reachCandidates(userId: string, query: string, adminPermission: P
 }
 
 export {
-  principalsOf, accessLevel, can, assertCan, visible, grantsOn, namedGrants, shareCounts, lockGrant, setGrant, removeGrantsOf, removeGrantsOnCalendarsOf, removeGrantsOn, assertNoneArchived, heldBy,
+  principalsOf, accessLevel, can, assertCan, visible, conversationPeople, grantsOn, namedGrants, shareCounts, lockGrant, setGrant, removeGrantsOf, removeGrantsOnCalendarsOf, removeGrantsOn, assertNoneArchived, heldBy,
   assertReach, reachCandidates,
 };
 export type { Resource, Grant };

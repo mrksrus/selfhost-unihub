@@ -45,6 +45,7 @@ import { withTransaction } from '../services/transactions';
 import { recordAudit, recordAuditAfter } from '../services/audit';
 import { defineRoutes } from '../http/route';
 import { openSession } from '../services/sign-in';
+import { removeChatDeviceOfSession } from '../services/chat-devices';
 
 type Request = RouteRequest & { url: string; params: Record<string, string> };
 interface Input {
@@ -509,6 +510,7 @@ export = defineRoutes({
     try {
       const token = getAuthTokenFromRequest(req);
       if (token) {
+        await removeChatDeviceOfSession(userId, token);
         await endSession(token);
         realtime.closeSession(token, { reason: 'signed_out' });
       }

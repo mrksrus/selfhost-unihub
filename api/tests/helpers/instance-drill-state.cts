@@ -15,14 +15,18 @@ import type { RowDataPacket } from 'mysql2/promise';
 //     reminders on an event and the series; a deleted organisation calendar;
 //     a group calendar with the group's contribute share and a point a member
 //     added; and the administrator's calendar shared with another person and
-//     offered to them.
+//     offered to them; a chat of two people with their accounts, a chat
+//     device each with key packages, the conversation's grants and marks, a
+//     group with its Welcome, messages (one edited, one deleted) and archive
+//     copies.
 //   DRILL_MODE=report: what belongs to the whole installation, not to one
 //     person's recovery sections: every table the installation's data
 //     inventory declares as owned by the installation or an organisation, row
 //     by row (scripts/instance-drill-compare.mts compares them), a shared
 //     book's rows in the person-owned contact tables and its photo files, the
 //     rows of calendars no person owns, every series, view and personal
-//     reminder, the offers and shares of people's calendars, the people,
+//     reminder, the offers and shares of people's calendars, every chat
+//     table, the people,
 //     each mail account's row, and what an instance restore resets
 //     (docs/DATA_RECOVERY.md#after-an-instance-restore): sessions, tickets,
 //     sign-in challenges, leases and provider work it must not replay.
@@ -34,6 +38,7 @@ const mysql = require(require.resolve('mysql2/promise', { paths: [apiRoot] })) a
 const path = require('node:path') as typeof import('node:path');
 const fs = require('node:fs') as typeof import('node:fs');
 const { TABLE_DECLARATIONS, BOOK_ROWS, CALENDAR_ROWS } = require(path.join(apiRoot, 'src/services/data-inventory.js')) as typeof import('../../src/services/data-inventory');
+const CHAT_TABLES = Object.keys(TABLE_DECLARATIONS).filter(table => TABLE_DECLARATIONS[table].module === 'chat').sort();
 // Where the installation keeps a shared book's photos (services/contact-photos.ts photoPath).
 const bookPhotos = path.resolve(process.env.CONTACT_PHOTOS_ROOT || '/app/uploads/contact-photos', 'books');
 
@@ -44,7 +49,7 @@ const hash = (value: unknown) => crypto.createHash('sha256').update(JSON.stringi
 })).digest('hex');
 // The columns an instance restore resets on a mail account (docs/DATA_RECOVERY.md#after-an-instance-restore).
 // Plain values the comparison's rules and the drill read; none is a secret.
-const PLAIN: Record<string, string[]> = { audit_log: ['action'], instance_backups: ['status', 'file_name', 'finished_at'], mail_engine_migration_progress: ['processed'] };
+const PLAIN: Record<string, string[]> = { audit_log: ['action'], instance_backups: ['status', 'file_name', 'finished_at'], mail_engine_migration_progress: ['processed'], chat_devices: ['device_id'] };
 const ACCOUNT_RESETS = ['is_active', 'delete_emails_on_server', 'server_delete_enabled_at', 'server_delete_grace_until', 'sync_policy_confirmed_at', 'updated_at'];
 
 async function main() {
@@ -115,9 +120,32 @@ async function main() {
       const own = crypto.randomUUID();
       await db.execute("INSERT INTO calendar_calendars (id, user_id, account_id, name, offer_to, offer_by) VALUES (?, ?, ?, 'Drill shared calendar', ?, ?)", [own, admin, account.id, other.id, admin]);
       await db.execute("INSERT INTO grants (id, resource_kind, resource_id, principal_kind, principal_id, permission, granted_by) VALUES (UUID(), 'calendar', ?, 'user', ?, 'edit', ?)", [own, other.id, admin]);
+      // Chat: opaque bytes stand in for keys, MLS data and sealed copies.
+      const bytes = (length: number) => crypto.randomBytes(length).toString('base64url');
+      const [conversation, chatGroup, adminChat, otherChat, adminDevice, otherDevice] = Array.from({ length: 6 }, () => crypto.randomUUID());
+      const [sent, edit, gone2, deletion] = Array.from({ length: 4 }, () => crypto.randomUUID());
+      for (const [user, device, chat] of [[admin, adminDevice, adminChat], [other.id, otherDevice, otherChat]]) {
+        await db.execute("INSERT INTO devices (id, user_id, key_hash, kind, created_at, last_seen_at) VALUES (?, ?, SHA2(UUID(), 256), 'web', UTC_TIMESTAMP(), UTC_TIMESTAMP())", [device, user]);
+        await db.execute('INSERT INTO chat_devices (id, user_id, device_id, preview_p256dh, preview_auth) VALUES (?, ?, ?, ?, ?)', [chat, user, device, bytes(65), bytes(16)]);
+        await db.execute('INSERT INTO chat_key_packages (chat_device_id, key_package, last_resort) VALUES (?, ?, FALSE), (?, ?, TRUE)', [chat, bytes(313), chat, bytes(313)]);
+        await db.execute('INSERT INTO chat_accounts (user_id, history_public, key_backup, backup_salt, backup_rounds, backup_format) VALUES (?, ?, ?, ?, 600000, 1)', [user, bytes(65), bytes(60), bytes(16)]);
+      }
+      await db.execute("INSERT INTO chat_conversations (id, kind, direct_key, current_group_id, last_seq, created_by) VALUES (?, 'direct', ?, ?, 4, ?)",
+        [conversation, [admin, other.id].sort().join(':'), chatGroup, admin]);
+      await db.execute(`INSERT INTO grants (id, resource_kind, resource_id, principal_kind, principal_id, permission, granted_by)
+        VALUES (UUID(), 'conversation', ?, 'user', ?, 'member', ?), (UUID(), 'conversation', ?, 'user', ?, 'member', ?)`, [conversation, admin, admin, conversation, other.id, admin]);
+      await db.execute('INSERT INTO chat_members (conversation_id, user_id, read_seq, delivered_seq) VALUES (?, ?, 4, 4), (?, ?, 2, 3)', [conversation, admin, conversation, other.id]);
+      await db.execute('INSERT INTO chat_groups (id, conversation_id, welcome) VALUES (?, ?, ?)', [chatGroup, conversation, bytes(900)]);
+      await db.execute('INSERT INTO chat_group_devices (group_id, chat_device_id, joined_at) VALUES (?, ?, UTC_TIMESTAMP()), (?, ?, NULL)', [chatGroup, adminChat, chatGroup, otherChat]);
+      await db.execute(`INSERT INTO chat_messages (id, conversation_id, seq, group_id, sender_user_id, sender_chat_device_id, kind, replaces, ciphertext) VALUES
+        (?, ?, 1, ?, ?, ?, 'message', NULL, ?), (?, ?, 2, ?, ?, ?, 'message', ?, ?), (?, ?, 3, ?, ?, ?, 'message', NULL, NULL), (?, ?, 4, ?, ?, ?, 'delete', ?, NULL)`,
+      [sent, conversation, chatGroup, admin, adminChat, bytes(402), edit, conversation, chatGroup, admin, adminChat, sent, bytes(402),
+        gone2, conversation, chatGroup, other.id, otherChat, deletion, conversation, chatGroup, other.id, otherChat, gone2]);
+      await db.execute('INSERT INTO chat_archive (user_id, message_id, sealed) VALUES (?, ?, ?), (?, ?, ?), (?, ?, ?)',
+        [admin, sent, bytes(500), admin, edit, bytes(500), other.id, sent, bytes(500)]);
       console.log(JSON.stringify({ seeded: ['setting_policies', 'instance_backups', 'mail_engine_migration_progress', 'org_groups', 'org_group_members', 'invites', 'login_attempts',
         'address_books', 'grants', 'directory_entries', ...BOOK_ROWS.tables.map(table => `${table} of books`), 'photo files of books',
-        ...CALENDAR_ROWS.tables.map(table => `${table} of organisation calendars`), 'calendar_series', 'calendar_views', 'calendar_reminders', 'calendar offers'] }));
+        ...CALENDAR_ROWS.tables.map(table => `${table} of organisation calendars`), 'calendar_series', 'calendar_views', 'calendar_reminders', 'calendar offers', ...CHAT_TABLES] }));
       return;
     }
     if (process.env.DRILL_MODE !== 'report') throw new Error('DRILL_MODE is seed or report');
@@ -144,6 +172,8 @@ async function main() {
     }
     for (const table of ['calendar_series', 'calendar_views', 'calendar_reminders']) installation[table] = await report(table, 'organisation');
     installation['calendar offers'] = await report('calendar_calendars', 'organisation', 'offer_to IS NOT NULL');
+    // A person's chat rows too: no personal backup carries them.
+    for (const table of CHAT_TABLES) installation[table] ??= await report(table, 'user');
     const files = fs.existsSync(bookPhotos) ? (fs.readdirSync(bookPhotos, { recursive: true }) as string[]).filter(name => fs.statSync(path.join(bookPhotos, name)).isFile()).sort() : [];
     installation['photo files of books'] = { owner: 'organisation', rows: files.map(name => ({ key: name, columns: { content: hash(fs.readFileSync(path.join(bookPhotos, name))) }, plain: {} })) };
     const users = (await rows('SELECT * FROM users ORDER BY id')).map(row => ({ id: row.id, email: row.email, role: row.role, is_active: Number(row.is_active), row: hash(row) }));
@@ -159,6 +189,7 @@ async function main() {
       resets: {
         sessions: await count('SELECT COUNT(*) AS n FROM sessions'),
         devices: await count('SELECT COUNT(*) AS n FROM devices'),
+        chatDevices: await count('SELECT COUNT(*) AS n FROM chat_devices WHERE device_id IS NOT NULL'),
         invites: await count('SELECT COUNT(*) AS n FROM invites'),
         fileTickets: await count('SELECT COUNT(*) AS n FROM file_tickets'),
         signInChallenges: await count('SELECT COUNT(*) AS n FROM two_factor_challenges'),

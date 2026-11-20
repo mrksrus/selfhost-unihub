@@ -124,7 +124,7 @@ describe('api client security', () => {
 
   it('a request refused for a missing app lock tells the lock provider and throws AppLockRequired, with known values only', async () => {
     const refusal = { error: 'Your administrator requires the app lock for Mail.', code: 'APP_LOCK_REQUIRED',
-      details: { required: ['mail', 'chat'], max_background: '300', reason: 'Your administrator requires the app lock for Mail.' } };
+      details: { required: ['mail', 'calls'], max_background: '300', reason: 'Your administrator requires the app lock for Mail.' } };
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 403, statusText: 'Forbidden', headers: { get: () => 'application/json' }, json: async () => refusal }) as unknown as typeof fetch);
     const heard: unknown[] = [];
     const stop = onAppEvent('unihub:app-lock-required', details => heard.push(details));

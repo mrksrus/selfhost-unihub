@@ -29,7 +29,7 @@ function sourceColumns(source: FixtureValue) {
 }
 const serviceSource = (name: FixtureValue) => fs.readFileSync(path.join(__dirname, '../src/services', `${name}.ts`), 'utf8');
 function productionColumns() {
-  return sourceColumns(['database-baseline', 'database', 'database-migrations', 'contacts-migration', 'devices-migration', 'organisation-migration', 'shared-contacts-migration', 'shared-calendars-migration'].map(serviceSource).join('\n'));
+  return sourceColumns(['database-baseline', 'database', 'database-migrations', 'contacts-migration', 'devices-migration', 'organisation-migration', 'shared-contacts-migration', 'shared-calendars-migration', 'chat-migration'].map(serviceSource).join('\n'));
 }
 
 // Devices (0.29, F5) are installation state: no personal backup carries a
@@ -113,6 +113,22 @@ test('organisation calendar rows, calendar shares, views and personal reminders 
   for (const [table, columns] of Object.entries(CALENDAR_ROWS.columns)) {
     for (const column of columns) assert.ok(!TABLE_POLICIES[table].columns.includes(column), `${table}.${column} is not archived`);
   }
+});
+
+// Chat (its manifest) has no recovery section: its nine tables travel only
+// in the instance backup, and every new backup says so.
+test('chat tables never travel in a personal backup, and a backup says where chats come from', () => {
+  const { NON_ARCHIVE_POLICIES, TABLE_DECLARATIONS } = require('../dist/src/services/data-inventory') as typeof import('../src/services/data-inventory');
+  const { TABLE_POLICIES } = require('../dist/src/services/backup-catalog') as typeof import('../src/services/backup-catalog');
+  const { backupContents } = require('../dist/src/services/backup-classes') as typeof import('../src/services/backup-classes');
+  const chat = Object.keys(TABLE_DECLARATIONS).filter(table => TABLE_DECLARATIONS[table].module === 'chat').sort();
+  assert.deepEqual(chat, ['chat_accounts', 'chat_archive', 'chat_conversations', 'chat_devices', 'chat_group_devices', 'chat_groups', 'chat_key_packages', 'chat_members', 'chat_messages']);
+  for (const table of chat) {
+    assert.equal(TABLE_POLICIES[table], undefined, `${table} is in no backup section`);
+    assert.ok(NON_ARCHIVE_POLICIES[table].columns.every(column => NON_ARCHIVE_POLICIES[table].introducedIn?.[column] === 31), `${table} comes with upgrade 31`);
+  }
+  assert.deepEqual(chat.filter(table => TABLE_DECLARATIONS[table].dataClass === 'ciphertext'), ['chat_accounts', 'chat_archive', 'chat_messages']);
+  assert.ok(backupContents(['settings'], {}).notes.includes('Chats are not in this backup. They are restored with your chat passphrase.'));
 });
 
 test('every runtime schema table and field has an explicit recovery policy', () => {

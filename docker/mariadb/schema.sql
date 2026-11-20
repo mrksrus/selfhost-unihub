@@ -3,7 +3,7 @@
 -- Schema changes are numbered migrations in api/src/services/database.ts; the app
 -- creates and upgrades its own schema on startup. This file is a reviewable
 -- reference, and a database test fails when it differs from a freshly migrated database.
--- Through migration 30.
+-- Through migration 31.
 
 CREATE TABLE `address_books` (
   `id` char(36) NOT NULL,
@@ -427,6 +427,127 @@ CREATE TABLE `calendar_views` (
   KEY `idx_calendar_views_user` (`user_id`),
   CONSTRAINT `fk_calendar_views_calendar` FOREIGN KEY (`calendar_id`) REFERENCES `calendar_calendars` (`id`) ON DELETE CASCADE,
   CONSTRAINT `fk_calendar_views_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `chat_accounts` (
+  `user_id` char(36) NOT NULL,
+  `history_public` varchar(128) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  `key_backup` text CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  `backup_salt` varchar(128) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  `backup_rounds` int(10) unsigned NOT NULL,
+  `backup_format` smallint(5) unsigned NOT NULL,
+  `created_at` datetime NOT NULL DEFAULT current_timestamp(),
+  `updated_at` datetime NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  PRIMARY KEY (`user_id`),
+  CONSTRAINT `fk_chat_accounts_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `chat_archive` (
+  `user_id` char(36) NOT NULL,
+  `message_id` char(36) NOT NULL,
+  `sealed` mediumtext CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  `created_at` datetime NOT NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`user_id`,`message_id`),
+  KEY `idx_chat_archive_message` (`message_id`),
+  CONSTRAINT `fk_chat_archive_message` FOREIGN KEY (`message_id`) REFERENCES `chat_messages` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_chat_archive_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `chat_conversations` (
+  `id` char(36) NOT NULL,
+  `kind` varchar(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  `direct_key` varchar(73) CHARACTER SET ascii COLLATE ascii_bin DEFAULT NULL,
+  `current_group_id` char(36) DEFAULT NULL,
+  `last_seq` bigint(20) unsigned NOT NULL DEFAULT 0,
+  `created_by` char(36) DEFAULT NULL,
+  `created_at` datetime NOT NULL DEFAULT current_timestamp(),
+  `updated_at` datetime NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_chat_conversations_direct` (`direct_key`),
+  KEY `fk_chat_conversations_created_by` (`created_by`),
+  CONSTRAINT `fk_chat_conversations_created_by` FOREIGN KEY (`created_by`) REFERENCES `users` (`id`) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `chat_devices` (
+  `id` char(36) NOT NULL,
+  `user_id` char(36) NOT NULL,
+  `device_id` char(36) DEFAULT NULL,
+  `preview_p256dh` varchar(128) CHARACTER SET ascii COLLATE ascii_bin DEFAULT NULL,
+  `preview_auth` varchar(64) CHARACTER SET ascii COLLATE ascii_bin DEFAULT NULL,
+  `created_at` datetime NOT NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_chat_devices_device` (`device_id`),
+  KEY `idx_chat_devices_user` (`user_id`),
+  CONSTRAINT `fk_chat_devices_device` FOREIGN KEY (`device_id`) REFERENCES `devices` (`id`) ON DELETE SET NULL,
+  CONSTRAINT `fk_chat_devices_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `chat_group_devices` (
+  `group_id` char(36) NOT NULL,
+  `chat_device_id` char(36) NOT NULL,
+  `joined_at` datetime DEFAULT NULL,
+  PRIMARY KEY (`group_id`,`chat_device_id`),
+  KEY `idx_chat_group_devices_device` (`chat_device_id`),
+  CONSTRAINT `fk_chat_group_devices_device` FOREIGN KEY (`chat_device_id`) REFERENCES `chat_devices` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_chat_group_devices_group` FOREIGN KEY (`group_id`) REFERENCES `chat_groups` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `chat_groups` (
+  `id` char(36) NOT NULL,
+  `conversation_id` char(36) NOT NULL,
+  `welcome` mediumtext CHARACTER SET ascii COLLATE ascii_bin DEFAULT NULL,
+  `created_at` datetime NOT NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`id`),
+  KEY `idx_chat_groups_conversation` (`conversation_id`),
+  CONSTRAINT `fk_chat_groups_conversation` FOREIGN KEY (`conversation_id`) REFERENCES `chat_conversations` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `chat_key_packages` (
+  `id` bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+  `chat_device_id` char(36) NOT NULL,
+  `key_package` text CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  `last_resort` tinyint(1) NOT NULL DEFAULT 0,
+  `created_at` datetime NOT NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`id`),
+  KEY `idx_chat_key_packages_device` (`chat_device_id`,`last_resort`,`id`),
+  CONSTRAINT `fk_chat_key_packages_device` FOREIGN KEY (`chat_device_id`) REFERENCES `chat_devices` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `chat_members` (
+  `conversation_id` char(36) NOT NULL,
+  `user_id` char(36) NOT NULL,
+  `read_seq` bigint(20) unsigned NOT NULL DEFAULT 0,
+  `delivered_seq` bigint(20) unsigned NOT NULL DEFAULT 0,
+  `joined_seq` bigint(20) unsigned NOT NULL DEFAULT 0,
+  `updated_at` datetime NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  PRIMARY KEY (`conversation_id`,`user_id`),
+  KEY `idx_chat_members_user` (`user_id`),
+  CONSTRAINT `fk_chat_members_conversation` FOREIGN KEY (`conversation_id`) REFERENCES `chat_conversations` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_chat_members_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `chat_messages` (
+  `id` char(36) NOT NULL,
+  `conversation_id` char(36) NOT NULL,
+  `seq` bigint(20) unsigned NOT NULL,
+  `group_id` char(36) NOT NULL,
+  `sender_user_id` char(36) DEFAULT NULL,
+  `sender_chat_device_id` char(36) DEFAULT NULL,
+  `kind` varchar(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT 'message',
+  `replaces` char(36) DEFAULT NULL,
+  `format` smallint(5) unsigned NOT NULL DEFAULT 1,
+  `ciphertext` mediumtext CHARACTER SET ascii COLLATE ascii_bin DEFAULT NULL,
+  `created_at` datetime NOT NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_chat_messages_seq` (`conversation_id`,`seq`),
+  KEY `idx_chat_messages_replaces` (`replaces`),
+  KEY `fk_chat_messages_group` (`group_id`),
+  KEY `fk_chat_messages_sender` (`sender_user_id`),
+  KEY `fk_chat_messages_sender_device` (`sender_chat_device_id`),
+  CONSTRAINT `fk_chat_messages_conversation` FOREIGN KEY (`conversation_id`) REFERENCES `chat_conversations` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_chat_messages_group` FOREIGN KEY (`group_id`) REFERENCES `chat_groups` (`id`),
+  CONSTRAINT `fk_chat_messages_sender` FOREIGN KEY (`sender_user_id`) REFERENCES `users` (`id`) ON DELETE SET NULL,
+  CONSTRAINT `fk_chat_messages_sender_device` FOREIGN KEY (`sender_chat_device_id`) REFERENCES `chat_devices` (`id`) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE `contact_duplicate_dismissals` (

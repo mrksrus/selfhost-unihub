@@ -40,7 +40,7 @@ export interface Union { alone: string }
 const FOLDER_REF = /^(role:[a-z0-9_]{1,32}|folder:[0-9a-f-]{36})$/;
 // The app lock (0.29): the whole app, or modules by the module catalog's ids
 // (calendar is Calendar and ToDo, recordings is Recordings and Music).
-const APP_LOCK_AREAS = ['app', 'mail', 'contacts', 'calendar', 'recordings'] as const satisfies readonly AppLockArea[];
+const APP_LOCK_AREAS = ['app', 'mail', 'contacts', 'calendar', 'recordings', 'chat'] as const satisfies readonly AppLockArea[];
 const APP_LOCK_SCOPE = { type: 'list', item: /^[a-z]{1,16}$/, maxItems: APP_LOCK_AREAS.length, unique: true, allowed: APP_LOCK_AREAS } as const satisfies Kind;
 const APP_LOCK_UNION: Union = { alone: 'app' };
 // Seconds in the background before the lock asks again, from the longest
@@ -53,7 +53,7 @@ const SNOOZE_CHOICES =['1h', '3h', 'tomorrow', '1d', '2d', 'next_week', '1w', '2
 export const SETTINGS = {
   user: {
     email_link_behavior: { scope: 'user', kind: { type: 'enum', values: ['mailto', 'internal'] }, default: 'mailto' },
-    default_start_page: { scope: 'user', kind: { type: 'enum', values: ['mail', 'calendar', 'todo', 'contacts', 'recordings', 'music', 'dashboard'] }, default: 'mail' },
+    default_start_page: { scope: 'user', kind: { type: 'enum', values: ['mail', 'calendar', 'todo', 'contacts', 'recordings', 'music', 'chat', 'dashboard'] }, default: 'mail' },
     default_mail_account_id: { scope: 'user', kind: { type: 'reference', target: 'mail_account' }, default: '' },
     accent_color: { scope: 'user', kind: { type: 'enum', values: ['blue', 'indigo', 'violet', 'pink', 'teal', 'green'] }, default: 'blue' },
     week_start: { scope: 'user', kind: { type: 'enum', values: ['monday', 'sunday', 'saturday'] }, default: 'monday' },
@@ -84,6 +84,12 @@ export const SETTINGS = {
     // The shared books (and `company`) the person keeps off their phones
     // (GET /api/address-books/phone); every other visible book goes there.
     contacts_phone_books_off: { scope: 'user', kind: { type: 'list', item: /^(company|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/, maxItems: 500, unique: true }, default: [] },
+    // Chat: whether others see that UniHub is open, and whether they see that
+    // their messages were read (chat.presence and chat.read_receipts can lock
+    // them); how much a chat notification shows, floored by notifications.detail.
+    chat_presence: { scope: 'user', kind: { type: 'boolean' }, default: true },
+    chat_read_receipts: { scope: 'user', kind: { type: 'boolean' }, default: true },
+    chat_notification_detail: { scope: 'user', kind: { type: 'enum', values: ['full', 'sender', 'none'] }, default: 'full', strictness: ['full', 'sender', 'none'] },
   },
   mail_account: {
     notify_enabled: { scope: 'mail_account', kind: { type: 'boolean' }, default: true },
@@ -213,7 +219,18 @@ export const POLICIES: { readonly [K in PolicyKey]: PolicyEntry<PolicyValues[K]>
   'modules.calendar': allowance('Your administrator turned Calendar and ToDo off.'),
   'modules.contacts': allowance('Your administrator turned Contacts off.'),
   'modules.recordings': allowance('Your administrator turned Recordings and Music off.'),
+  'modules.chat': allowance('Your administrator turned Chat off.'),
   'pages.music': allowance('Your administrator turned the Music page off.'),
+  // Lock the person's chat_presence or chat_read_receipts on or off. Neither
+  // value is stricter, so a group's holds only when the person's groups agree.
+  'chat.presence': {
+    kind: { type: 'enum', values: ['user_choice', 'on', 'off'] }, default: 'user_choice', refuses: [],
+    reasons: { on: 'Your administrator keeps presence on: people you chat with see when UniHub is open.', off: 'Your administrator turned presence off.' },
+  },
+  'chat.read_receipts': {
+    kind: { type: 'enum', values: ['user_choice', 'on', 'off'] }, default: 'user_choice', refuses: [],
+    reasons: { on: 'Your administrator keeps read receipts on.', off: 'Your administrator turned read receipts off.' },
+  },
   'notifications.detail': {
     kind: { type: 'enum', values: ['full', 'sender', 'none'] }, default: 'full', strictness: ['full', 'sender', 'none'], refuses: [],
     reasons: {
@@ -226,7 +243,7 @@ export const POLICIES: { readonly [K in PolicyKey]: PolicyEntry<PolicyValues[K]>
 };
 
 const APP_LOCK_AREA_NAMES: Readonly<Record<Exclude<AppLockArea, 'app'>, string>> = {
-  mail: 'Mail', contacts: 'Contacts', calendar: 'Calendar and ToDo', recordings: 'Recordings and Music',
+  mail: 'Mail', contacts: 'Contacts', calendar: 'Calendar and ToDo', recordings: 'Recordings and Music', chat: 'Chat',
 };
 function appLockRequiredReason(value: readonly string[]): string | null {
   if (!value.length) return null;
@@ -273,6 +290,9 @@ export const POLICY_EFFECTS: Readonly<Partial<Record<PolicyKey | 'bin.min_retent
   'modules.calendar': 'Calendar and ToDo are off for these people; their data stays.',
   'modules.contacts': 'Contacts are off for these people; their contacts stay. Phones remove UniHub contacts at their next sync.',
   'modules.recordings': 'Recordings and Music are off for these people; their recordings stay.',
+  'modules.chat': 'Chat is off for these people; their chats stay and come back when it is allowed again.',
+  'chat.presence': 'Applies at once; nobody sees presence unless both people have it on.',
+  'chat.read_receipts': 'Applies at once; with receipts off, neither person sees that a message was read.',
   'pages.music': 'Only the Music page goes; recordings keep working.',
   'notifications.detail': 'Applies to notifications sent from now on.',
   'contacts.phone_sync': 'Phones remove UniHub contacts at their next sync; they stay in UniHub. Changes made on a phone since its last sync are lost.',

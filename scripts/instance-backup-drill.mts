@@ -177,7 +177,7 @@ try {
   assert.equal(progress(sourceState), '9007199254740993', 'The seeded mail upgrade progress reads with every digit');
   assert.deepEqual(installationProblems(sourceState.installation, targetState.installation, { backupFile: file, restore }), [],
     'What belongs to the installation (activity log, settings, policies, push identity, backup runs, upgrade history) comes back, with only the documented changes');
-  assert.deepEqual(targetState.resets, { sessions: 0, devices: 0, invites: 0, fileTickets: 0, signInChallenges: 0, leases: 0, runnableEngineJobs: 0, runnableWritebacks: 0,
+  assert.deepEqual(targetState.resets, { sessions: 0, devices: 0, chatDevices: 0, invites: 0, fileTickets: 0, signInChallenges: 0, leases: 0, runnableEngineJobs: 0, runnableWritebacks: 0,
     calendarMoves: 0, scheduledSends: 0, providerDeletions: 0 }, 'Nothing of the old installation\'s running life or provider work is left');
   assert.deepEqual(targetState.mailAccounts.map(({ kept, id, user_id, email_address }) => ({ kept, id, user_id, email_address })),
     sourceState.mailAccounts.map(({ kept, id, user_id, email_address }) => ({ kept, id, user_id, email_address })), 'Every mail account comes back as it was, but for the resets');

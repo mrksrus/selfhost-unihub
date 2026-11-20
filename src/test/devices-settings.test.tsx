@@ -13,9 +13,9 @@ vi.mock('@/lib/api', () => ({ api: { get: vi.fn(), put: vi.fn(), post: vi.fn(), 
 
 const now = new Date().toISOString();
 const laptop: DeviceSummary = { id: 'dev-laptop', current: true, kind: 'web', app_version: null, user_agent: 'Mozilla/5.0 (X11; Linux x86_64) Gecko/20100101 Firefox/140.0',
-  created_at: '2026-06-01T08:00:00.000Z', last_seen_at: now, lock: null, notifications: false };
+  created_at: '2026-06-01T08:00:00.000Z', last_seen_at: now, lock: null, notifications: false, chat: false };
 const phone: DeviceSummary = { id: 'dev-phone', current: false, kind: 'android', app_version: '0.29.0', user_agent: 'Mozilla/5.0 (Linux; Android 16) Chrome/140.0 Mobile UniHubAndroid/0.29.0 (29000)',
-  created_at: '2026-06-10T08:00:00.000Z', last_seen_at: now, lock: { scope: ['mail', 'contacts'], method: 'biometric' }, notifications: true };
+  created_at: '2026-06-10T08:00:00.000Z', last_seen_at: now, lock: { scope: ['mail', 'contacts'], method: 'biometric' }, notifications: true, chat: false };
 
 beforeEach(() => stubBrowserApis());
 afterEach(() => { cleanup(); vi.clearAllMocks(); });

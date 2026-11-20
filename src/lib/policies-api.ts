@@ -18,7 +18,7 @@ export const POLICY_KEYS = [
   'account.delete', 'data.clear', 'bin.delete',
   'app_lock.required', 'app_lock.max_background', 'app_lock.screenshots',
   'auth.two_factor', 'auth.password_min_length', 'auth.session_max_days',
-  'modules.mail', 'modules.calendar', 'modules.contacts', 'modules.recordings', 'pages.music',
+  'modules.mail', 'modules.calendar', 'modules.contacts', 'modules.recordings', 'modules.chat', 'pages.music', 'chat.presence', 'chat.read_receipts',
   'notifications.detail', 'contacts.phone_sync', 'offline.copies',
 ] as const satisfies readonly PolicyKey[];
 
@@ -50,6 +50,9 @@ export const DEFAULT_POLICY_VALUES: PolicyValues = {
   'modules.calendar': 'allowed',
   'modules.contacts': 'allowed',
   'modules.recordings': 'allowed',
+  'modules.chat': 'allowed',
+  'chat.presence': 'user_choice',
+  'chat.read_receipts': 'user_choice',
   'pages.music': 'allowed',
   'notifications.detail': 'full',
   'contacts.phone_sync': 'allowed',
@@ -94,7 +97,7 @@ export function policyLock<K extends PolicyKey>(policy: EffectivePolicy<K> | und
 }
 
 const MODULE_POLICIES: Record<ModuleId, PolicyKey> = {
-  mail: 'modules.mail', calendar: 'modules.calendar', contacts: 'modules.contacts', recordings: 'modules.recordings',
+  mail: 'modules.mail', calendar: 'modules.calendar', contacts: 'modules.contacts', recordings: 'modules.recordings', chat: 'modules.chat',
 };
 
 /** Why a module is off and locked for the person (modules.*), or undefined while allowed. */

@@ -15,6 +15,7 @@ import { idleSupervisor } from './mail-idle';
 import { processNotificationJobs } from './notifications';
 import { pruneAuditLog } from './audit';
 import { pruneIdleDevices } from './devices';
+import { pruneRemovedChatDevices } from './chat-devices';
 import { pruneLoginAttempts } from '../security/login-limits';
 import { runMailThreadBackfill } from './mail-thread-backfill';
 import { runDueScheduledSends } from './mail-scheduled-send';
@@ -212,7 +213,8 @@ async function runStartup(deps: BackgroundWorkDeps, state: { stopped: boolean },
   every('SCHEDULED SEND', SCHEDULED_SEND_INTERVAL_MS, deps.runDueScheduledSends);
   every('SNOOZE', SNOOZE_RETURN_INTERVAL_MS, deps.returnDueSnoozes);
 
-  // Expired sessions, then devices left without a session for 30 days,
+  // Expired sessions, then devices left without a session for 30 days and
+  // removed chat devices no current group names,
   // sign-in attempt budgets whose window ended, audit entries past their
   // year and old mail request receipts, every hour,
   // so the tables do not grow.
@@ -221,6 +223,8 @@ async function runStartup(deps: BackgroundWorkDeps, state: { stopped: boolean },
     if (result.affectedRows > 0) log.info('CLEANUP', 'Deleted expired sessions', { deleted: result.affectedRows });
     const devices = await pruneIdleDevices(deps.db);
     if (devices > 0) log.info('CLEANUP', 'Deleted devices unused for 30 days without a session', { deleted: devices });
+    const chatDevices = await pruneRemovedChatDevices(deps.db);
+    if (chatDevices > 0) log.info('CLEANUP', 'Deleted removed chat devices no current group names', { deleted: chatDevices });
     const attempts = await pruneLoginAttempts(deps.db);
     if (attempts > 0) log.info('CLEANUP', 'Deleted ended sign-in attempt budgets', { deleted: attempts });
     const audit = await deps.pruneAuditLog();

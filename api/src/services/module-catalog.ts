@@ -1,10 +1,17 @@
-// Built-in modules only. Recovery deliberately uses its own complete data catalog.
+import { CHAT_MANIFEST } from '../modules/chat';
+
+// Built-in modules, then those with a manifest (modules/). Recovery
+// deliberately uses its own complete data catalog; a module without a
+// recovery section (Chat) is in no personal backup.
 const MODULE_CATALOG = Object.freeze([
-  { id: 'mail', label: 'Mail', backgroundSupported: true },
-  { id: 'calendar', label: 'Calendar and ToDo', backgroundSupported: true },
-  { id: 'contacts', label: 'Contacts', backgroundSupported: false },
-  { id: 'recordings', label: 'Recordings and Music', backgroundSupported: false },
-].map(module => Object.freeze({ ...module, recoverySection: module.id, visible: true, enabled: true, background: true })));
+  ...[
+    { id: 'mail', label: 'Mail', backgroundSupported: true },
+    { id: 'calendar', label: 'Calendar and ToDo', backgroundSupported: true },
+    { id: 'contacts', label: 'Contacts', backgroundSupported: false },
+    { id: 'recordings', label: 'Recordings and Music', backgroundSupported: false },
+  ].map(module => ({ ...module, recoverySection: module.id as string | null })),
+  CHAT_MANIFEST.module,
+].map(module => Object.freeze({ ...module, visible: true, enabled: true, background: true })));
 
 // Pages in the navigation. A module can have several pages; they are shown,
 // hidden and ordered one by one, but enabling a module still enables all of
@@ -16,6 +23,7 @@ const PAGE_CATALOG = Object.freeze([
   { id: 'contacts', label: 'Contacts', module: 'contacts' },
   { id: 'recordings', label: 'Recordings', module: 'recordings' },
   { id: 'music', label: 'Music', module: 'recordings' },
+  ...CHAT_MANIFEST.pages,
   { id: 'today', label: 'Today', module: null },
 ].map(page => Object.freeze(page)));
 

@@ -28,7 +28,7 @@ export type ReadingFormat = 'theme' | 'simplified' | 'original' | 'auto';
 export type SnoozeChoice = '1h' | '3h' | 'tomorrow' | '1d' | '2d' | 'next_week' | '1w' | '2w' | '1mo';
 /** Where a snoozed message is until it comes back: out of its folder (hidden) or still listed there, marked. */
 export type SnoozedMessages = 'hide' | 'keep';
-export type StartPage = 'mail' | 'calendar' | 'todo' | 'contacts' | 'recordings' | 'music' | 'dashboard';
+export type StartPage = 'mail' | 'calendar' | 'todo' | 'contacts' | 'recordings' | 'music' | 'chat' | 'dashboard';
 
 export interface UserSettingValues {
   email_link_behavior: 'mailto' | 'internal';
@@ -69,6 +69,12 @@ export interface UserSettingValues {
   bin_retention: BinRetention;
   /** The shared books, by id, and `company` that stay off the person's phones; the others go there (read-only). */
   contacts_phone_books_off: string[];
+  /** Others see when a page of the person's is open; shown only when both have it on. */
+  chat_presence: boolean;
+  /** Others see that their messages were read; whoever turns it off also stops seeing it. */
+  chat_read_receipts: boolean;
+  /** How much a chat notification shows: the sender and the text, the sender only, or "New message". */
+  chat_notification_detail: 'full' | 'sender' | 'none';
 }
 
 /** A folder by its role (inbox, sent, drafts, archive, trash, junk, ...) or by id. */

@@ -1,12 +1,12 @@
-export type ModuleId = 'mail' | 'calendar' | 'contacts' | 'recordings';
+export type ModuleId = 'mail' | 'calendar' | 'contacts' | 'recordings' | 'chat';
 export type ModulePreference = { id: ModuleId; label: string; visible: boolean; enabled: boolean; background: boolean; backgroundSupported?: boolean };
 // Pages are shown, hidden and ordered one by one. Enabling stays per module, so
 // Calendar and ToDo, or Recordings and Music, are still switched on together.
-export type PageId = 'mail' | 'calendar' | 'todo' | 'contacts' | 'recordings' | 'music' | 'today';
+export type PageId = 'mail' | 'calendar' | 'todo' | 'contacts' | 'recordings' | 'music' | 'chat' | 'today';
 export type PagePreference = { id: PageId; label: string; module: ModuleId | null; visible: boolean };
-const routeModules: Record<string, ModuleId> = { mail: 'mail', calendar: 'calendar', todo: 'calendar', contacts: 'contacts', recordings: 'recordings', music: 'recordings',
+const routeModules: Record<string, ModuleId> = { mail: 'mail', calendar: 'calendar', todo: 'calendar', contacts: 'contacts', recordings: 'recordings', music: 'recordings', chat: 'chat',
   'address-books': 'contacts', directory: 'contacts' };
-const routePages: Record<string, PageId> = { mail: 'mail', calendar: 'calendar', todo: 'todo', contacts: 'contacts', recordings: 'recordings', music: 'music', dashboard: 'today' };
+const routePages: Record<string, PageId> = { mail: 'mail', calendar: 'calendar', todo: 'todo', contacts: 'contacts', recordings: 'recordings', music: 'music', chat: 'chat', dashboard: 'today' };
 const moduleIds = new Set<string>(Object.values(routeModules));
 // Same as PAGE_CATALOG in api/src/services/module-catalog.ts (checked by src/test/module-catalog-parity.test.ts).
 export const PAGE_CATALOG: Omit<PagePreference, 'visible'>[] = [
@@ -16,6 +16,7 @@ export const PAGE_CATALOG: Omit<PagePreference, 'visible'>[] = [
   { id: 'contacts', label: 'Contacts', module: 'contacts' },
   { id: 'recordings', label: 'Recordings', module: 'recordings' },
   { id: 'music', label: 'Music', module: 'recordings' },
+  { id: 'chat', label: 'Chat', module: 'chat' },
   { id: 'today', label: 'Today', module: null },
 ];
 const pageIds = new Set<string>(PAGE_CATALOG.map(page => page.id));
@@ -34,4 +35,4 @@ export function defaultPages(modules: ModulePreference[]): PagePreference[] {
 }
 export const knownPages = (pages: PagePreference[]) => pages.filter(page => pageIds.has(page.id));
 // Old device snapshots predate module settings; preserve their existing read-only behavior.
-export const legacyOfflineModules: ModulePreference[] = Object.entries({ mail: 'Mail', calendar: 'Calendar and ToDo', contacts: 'Contacts', recordings: 'Recordings and Music' }).map(([id, label]) => ({ id: id as ModuleId, label, visible: true, enabled: true, background: true, backgroundSupported: id === 'mail' || id === 'calendar' }));
+export const legacyOfflineModules: ModulePreference[] = Object.entries({ mail: 'Mail', calendar: 'Calendar and ToDo', contacts: 'Contacts', recordings: 'Recordings and Music', chat: 'Chat' }).map(([id, label]) => ({ id: id as ModuleId, label, visible: true, enabled: true, background: true, backgroundSupported: id === 'mail' || id === 'calendar' }));

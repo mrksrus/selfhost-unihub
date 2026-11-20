@@ -23,6 +23,9 @@ export const DEFAULT_USER_SETTINGS: UserSettingValues = {
   snoozed_messages: 'hide',
   bin_retention: '30',
   contacts_phone_books_off: [],
+  chat_presence: true,
+  chat_read_receipts: true,
+  chat_notification_detail: 'full',
 };
 export const DEFAULT_MAIL_ACCOUNT_SETTINGS: MailAccountSettingValues = {
   notify_enabled: true,

@@ -23,7 +23,7 @@ import org.json.JSONObject
  */
 object AppLock {
     private const val PREFS = "app_lock"
-    private val AREAS = setOf(AppLockClock.Config.APP, "mail", "contacts", "calendar", "recordings")
+    private val AREAS = setOf(AppLockClock.Config.APP, "mail", "contacts", "calendar", "recordings", "chat")
     private const val MAX_RELOCK_MS = 24 * 60 * 60_000L
 
     private val clock = AppLockClock()

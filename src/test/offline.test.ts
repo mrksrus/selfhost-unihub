@@ -301,7 +301,7 @@ describe('offline module preferences', () => {
   });
   it('preserves default access for old snapshots', () => {
     const result = resolveOfflineEndpoint(snapshot(), '/modules') as { data: { modules: { enabled: boolean }[] } };
-    expect(result.data.modules).toHaveLength(4);
+    expect(result.data.modules).toHaveLength(5);
     expect(result.data.modules.every(module => module.enabled)).toBe(true);
   });
   it('drops removed Games and Notes modules saved by an older snapshot', () => {

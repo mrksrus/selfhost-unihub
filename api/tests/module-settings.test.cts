@@ -6,15 +6,15 @@ const { ORDER_KEY, SETTING_KEY, PAGE_SETTING_KEY, PAGE_ORDER_KEY, getUserPages, 
 const { SECTION_POLICIES } = require('../dist/src/services/backup-catalog') as typeof import('../src/services/backup-catalog');
 const { validateBackupPayload } = require('../dist/src/services/backup-validate') as typeof import('../src/services/backup-validate');
 
-test('all built-in modules default on and reference recoverable data', () => {
+test('all modules default on and reference recoverable data, except Chat, which no personal backup carries', () => {
   const modules = modulesFromValue(null);
-  assert.deepEqual(modules.map((m) => m.id), ['mail', 'calendar', 'contacts', 'recordings']);
+  assert.deepEqual(modules.map((m) => m.id), ['mail', 'calendar', 'contacts', 'recordings', 'chat']);
   for (const module of modules) {
     assert.equal(module.visible && module.enabled && module.background, true);
-    assert.ok(SECTION_POLICIES[module.recoverySection]);
+    assert.ok(module.recoverySection === null ? module.id === 'chat' : SECTION_POLICIES[module.recoverySection]);
   }
   assert.equal(MODULE_CATALOG.some((m) => m.id === 'settings'), false);
-  assert.deepEqual(modules.map((module) => module.recoverySection).sort(), Object.keys(SECTION_POLICIES).filter(id => id !== 'settings').sort());
+  assert.deepEqual(modules.map((module) => module.recoverySection).filter(Boolean).sort(), Object.keys(SECTION_POLICIES).filter(id => id !== 'settings').sort());
 });
 test('module updates reject unknown IDs, controls, owner injection and non-booleans', () => {
   for (const input of [null, {}, { modules: [] }, { modules: { unknown: {} } }, { modules: { mail: { enabled: 0 } } }, { modules: { mail: { owner: 'other' } } }, { modules: {}, userId: 'other' }]) {
@@ -52,7 +52,7 @@ test('saved owner settings retain independent hide, disable and background choic
 test('legacy saved games and notes choices are ignored on read, backup validation and later saves', async () => {
   const stored: FixtureValue = { games: { visible: false }, notes: { enabled: false }, mail: { visible: false } };
   const modules = modulesFromValue(JSON.stringify(stored));
-  assert.deepEqual(modules.map((m) => m.id), ['mail', 'calendar', 'contacts', 'recordings']);
+  assert.deepEqual(modules.map((m) => m.id), ['mail', 'calendar', 'contacts', 'recordings', 'chat']);
   assert.equal(modules.find((m) => m.id === 'mail')!.visible, false);
   assert.deepEqual(validateBackupPayload({ version: 1, user: { id: 'u', email: 'a@example.com' },
     data: { user_settings: [{ user_id: 'u', setting_key: 'module_preferences', setting_value: JSON.stringify(stored) }] } } as FixtureValue)
@@ -111,36 +111,36 @@ function keyedSettings(initial: FixtureValue = {}) {
 
 test('module order is saved per owner and shown in that order, while access checks keep catalog order', async () => {
   const connection = keyedSettings();
-  const order = ['recordings', 'mail', 'contacts', 'calendar'];
+  const order = ['recordings', 'mail', 'contacts', 'calendar', 'chat'];
   const updated = await setUserModules('owner', { order }, connection as FixtureValue);
   assert.deepEqual(updated.map((m) => m.id), order);
   assert.deepEqual(connection.writes, [ORDER_KEY]);
   assert.deepEqual((await getOrderedUserModules('owner', connection as FixtureValue)).map((m) => m.id), order);
-  assert.deepEqual((await getUserModules('owner', connection as FixtureValue)).map((m) => m.id), ['mail', 'calendar', 'contacts', 'recordings']);
-  assert.deepEqual((await getOrderedUserModules('other', connection as FixtureValue)).map((m) => m.id), ['mail', 'calendar', 'contacts', 'recordings']);
-  const both = await setUserModules('owner', { modules: { mail: { visible: false } }, order: ['mail', 'calendar', 'contacts', 'recordings'] }, connection as FixtureValue);
-  assert.deepEqual(both.map((m) => m.id), ['mail', 'calendar', 'contacts', 'recordings']);
+  assert.deepEqual((await getUserModules('owner', connection as FixtureValue)).map((m) => m.id), ['mail', 'calendar', 'contacts', 'recordings', 'chat']);
+  assert.deepEqual((await getOrderedUserModules('other', connection as FixtureValue)).map((m) => m.id), ['mail', 'calendar', 'contacts', 'recordings', 'chat']);
+  const both = await setUserModules('owner', { modules: { mail: { visible: false } }, order: ['mail', 'calendar', 'contacts', 'recordings', 'chat'] }, connection as FixtureValue);
+  assert.deepEqual(both.map((m) => m.id), ['mail', 'calendar', 'contacts', 'recordings', 'chat']);
   assert.equal(both.find((m) => m.id === 'mail')!.visible, false);
 });
 
 test('saved order from older releases or backups never hides or breaks modules', () => {
   // Removed modules are dropped, modules missing from an older order follow in catalog order.
-  assert.deepEqual(orderFromValue(JSON.stringify(['notes', 'recordings', 'games', 'mail'])), ['recordings', 'mail', 'calendar', 'contacts']);
+  assert.deepEqual(orderFromValue(JSON.stringify(['notes', 'recordings', 'games', 'mail'])), ['recordings', 'mail', 'calendar', 'contacts', 'chat']);
   for (const value of [null, '{broken', '{"mail":1}', '"mail"', JSON.stringify(['mail', 'mail', 7])]) {
-    assert.deepEqual(orderFromValue(value), ['mail', 'calendar', 'contacts', 'recordings'], String(value));
+    assert.deepEqual(orderFromValue(value), ['mail', 'calendar', 'contacts', 'recordings', 'chat'], String(value));
   }
 });
 
-const allPages = ['mail', 'calendar', 'todo', 'contacts', 'recordings', 'music', 'today'];
+const allPages = ['mail', 'calendar', 'todo', 'contacts', 'recordings', 'music', 'chat', 'today'];
 
 test('pages are shown, hidden and ordered one by one while modules stay enabled together', async () => {
   const connection = keyedSettings();
   assert.deepEqual((await getUserPages('owner', connection as FixtureValue)).map((page) => [page.id, page.module, page.visible]), [
     ['mail', 'mail', true], ['calendar', 'calendar', true], ['todo', 'calendar', true], ['contacts', 'contacts', true],
-    ['recordings', 'recordings', true], ['music', 'recordings', true], ['today', null, true]]);
+    ['recordings', 'recordings', true], ['music', 'recordings', true], ['chat', 'chat', true], ['today', null, true]]);
   await setUserModules('owner', { pages: { todo: { visible: false } } }, connection as FixtureValue);
   await setUserModules('owner', { pages: { music: { visible: false }, today: { visible: false } } }, connection as FixtureValue);
-  const order = ['today', 'music', 'mail', 'todo', 'calendar', 'contacts', 'recordings'];
+  const order = ['today', 'music', 'mail', 'todo', 'calendar', 'contacts', 'recordings', 'chat'];
   const modules = await setUserModules('owner', { page_order: order }, connection as FixtureValue);
   assert.deepEqual(connection.writes, [PAGE_SETTING_KEY, PAGE_SETTING_KEY, PAGE_ORDER_KEY]);
   const pages = await getUserPages('owner', connection as FixtureValue);
@@ -154,12 +154,12 @@ test('pages are shown, hidden and ordered one by one while modules stay enabled 
 
 test('pages without a choice follow the module order and the older module visibility', () => {
   const modules = modulesFromValue(JSON.stringify({ calendar: { visible: false } }));
-  const pages = pagesFromValues(modules, ['recordings', 'calendar', 'mail', 'contacts'], JSON.stringify({ todo: { visible: true } }), null);
-  assert.deepEqual(pages.map((page) => page.id), ['recordings', 'music', 'calendar', 'todo', 'mail', 'contacts', 'today']);
+  const pages = pagesFromValues(modules, ['recordings', 'calendar', 'mail', 'contacts', 'chat'], JSON.stringify({ todo: { visible: true } }), null);
+  assert.deepEqual(pages.map((page) => page.id), ['recordings', 'music', 'calendar', 'todo', 'mail', 'contacts', 'chat', 'today']);
   assert.deepEqual(pages.filter((page) => !page.visible).map((page) => page.id), ['calendar']);
   // Unreadable or outdated page choices are ignored rather than failing the module list.
   for (const value of [null, '{broken', '[]', JSON.stringify({ notes: { visible: false }, todo: { visible: 'no' } })]) {
     assert.equal(pagesFromValues(modulesFromValue(null), orderFromValue(null), value, '{broken').every((page) => page.visible), true, String(value));
   }
-  assert.deepEqual(pageOrderFromValue(JSON.stringify(['today', 'notes', 'today', 'music'])), ['today', 'music', 'mail', 'calendar', 'todo', 'contacts', 'recordings']);
+  assert.deepEqual(pageOrderFromValue(JSON.stringify(['today', 'notes', 'today', 'music'])), ['today', 'music', 'mail', 'calendar', 'todo', 'contacts', 'recordings', 'chat']);
 });

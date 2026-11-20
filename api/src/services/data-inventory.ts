@@ -4,6 +4,7 @@ import type { BackupDataClass as DataClass } from '../contracts/backup';
 
 import { TABLE_POLICIES, REFERENCES, assertRecoveryCatalog } from './backup-catalog';
 import { EPHEMERAL_COLUMNS } from './mail-engine/recovery-policy';
+import { CHAT_MANIFEST } from '../modules/chat';
 
 interface ExcludedPolicy {
   treatment: string;
@@ -161,6 +162,9 @@ const NON_ARCHIVE_POLICIES: Readonly<Record<string, ExcludedPolicy>> = Object.fr
       'id user_id event_id series_id reminders'],
   ].map(([name, reason, columns]) => [name, Object.freeze({ ...excluded('deliberately_excluded', reason, columns),
     introducedIn: Object.fromEntries(columns.split(' ').map(column => [column, 30])) })])),
+  // The Chat module's tables (its manifest): none is in a personal backup.
+  ...Object.fromEntries(Object.entries(CHAT_MANIFEST.tables).map(([name, table]) => [name, Object.freeze({ ...excluded('deliberately_excluded', CHAT_MANIFEST.excludedReason, table.columns),
+    introducedIn: Object.fromEntries(table.columns.split(' ').map(column => [column, CHAT_MANIFEST.introducedIn])) })])),
 });
 
 // Upgrade step 29 (0.31.0): rows of these personal tables may belong to a
@@ -316,6 +320,9 @@ const TABLE_DECLARATIONS: Readonly<Record<string, TableDeclaration>> = Object.fr
   recording_tag_links: { owner: 'user', shareable: false, dataClass: 'local', module: 'recordings', restore: 'Restored with its recording and tag.' },
   recording_transcription_jobs: { owner: 'user', shareable: false, dataClass: 'local', module: 'recordings', restore: 'Completed transcripts restored with their recording; other attempts are not resumed.' },
   recording_uploads: { owner: 'user', shareable: false, dataClass: 'installation', module: 'recordings', restore: 'Never restored: unfinished uploads expire.' },
+  // Chat (its manifest).
+  ...Object.fromEntries(Object.entries(CHAT_MANIFEST.tables).map(([name, { owner, shareable, dataClass, restore }]) =>
+    [name, { owner, shareable, dataClass, module: CHAT_MANIFEST.module.id, restore }])),
   // Removed in 0.12.0 with the Games module.
   tetris_scores: { owner: 'user', shareable: false, dataClass: 'local', module: null, restore: 'Never restored: the Games module was removed in 0.12.0.' },
 });

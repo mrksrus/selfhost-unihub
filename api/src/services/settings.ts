@@ -129,7 +129,7 @@ type Policies = Map<string, Policy>;
 // that data-safety policies put on settings (bin, app lock, notifications).
 async function loadPolicies(executor: SqlExecutor, userId: string | null): Promise<Policies> {
   const { levels, floors } = await loadRules(executor, { userId });
-  return withNotificationFloor(withAppLockFloor(withBinFloor(new Map(floors), levels), levels), levels);
+  return withChatLocks(withNotificationFloor(withAppLockFloor(withBinFloor(new Map(floors), levels), levels), levels), levels);
 }
 
 function resolve(scope: SettingScope, key: string, entry: Entry, stored: Value | undefined, policies: Policies): ResolvedSetting<Value> {
@@ -598,7 +598,17 @@ function withNotificationFloor(policies: Policies, levels: readonly PolicyLevel[
   const detail = effectivePolicy('notifications.detail', levels);
   if (detail.value === 'full') return policies;
   withFloor(policies, 'mail_account', 'notify_detail', detail.value, detail.reason);
+  withFloor(policies, 'user', 'chat_notification_detail', detail.value, detail.reason);
   if (detail.value === 'none') withFloor(policies, 'user', 'reminder_notification_detail', 'none', detail.reason);
+  return policies;
+}
+
+// chat.presence and chat.read_receipts lock the person's own switch on or off.
+function withChatLocks(policies: Policies, levels: readonly PolicyLevel[]): Policies {
+  for (const [key, setting] of [['chat.presence', 'chat_presence'], ['chat.read_receipts', 'chat_read_receipts']] as const) {
+    const policy = effectivePolicy(key, levels);
+    if (policy.value !== 'user_choice') policies.set(policyKey('user', setting), { value: policy.value === 'on', locked: true, ...(policy.reason ? { reason: policy.reason } : {}) });
+  }
   return policies;
 }
 

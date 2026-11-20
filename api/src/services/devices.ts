@@ -17,7 +17,7 @@ import { appLockRequirementFor, getSettings, resolvePolicy, settingValues } from
 // web app or Android app installation of one person; its sessions
 // (sessions.device_id) and push channels (push_subscriptions.device_id) hang
 // off it, and so does everything that behaves per device: the app lock, the
-// lock state it reports, later its chat keys and its ringing. Per-device
+// lock state it reports, its chat device (chat-devices.ts) and later its ringing. Per-device
 // behaviour is keyed by the device id, never by a session token or a push
 // endpoint. Routes, workers and the request boundary go through this file;
 // the lint fence keeps the table's SQL here (eslint.config.js).
@@ -26,7 +26,7 @@ import { appLockRequirementFor, getSettings, resolvePolicy, settingValues } from
 // backup, never restored, and an instance restore deletes them with the
 // sessions (instance-restore.ts).
 
-const APP_LOCK_AREAS: readonly AppLockArea[] = ['app', 'mail', 'contacts', 'calendar', 'recordings'];
+const APP_LOCK_AREAS: readonly AppLockArea[] = ['app', 'mail', 'contacts', 'calendar', 'recordings', 'chat'];
 const RELOCK_AFTER: readonly RelockAfter[] = ['0', '60', '300', '900'];
 const LOCK_METHODS: readonly LockMethod[] = ['biometric', 'device_credential', 'pin'];
 
@@ -284,7 +284,7 @@ async function adoptIn(cx: SqlExecutor, userId: string, token: string | null, ke
 
 interface SummaryRow extends RowDataPacket {
   id: string; kind: string; app_version: string | null; user_agent: string | null; lock_applied: unknown;
-  created_at: Date | string; last_seen_at: Date | string; notifications: number | string;
+  created_at: Date | string; last_seen_at: Date | string; notifications: number | string; chat: number | string;
 }
 
 // Devices with a live session only: a signed-out device keeps its record (and
@@ -293,7 +293,8 @@ interface SummaryRow extends RowDataPacket {
 async function summaries(userId: string, currentId: string, onlyId: string | null = null): Promise<DeviceSummary[]> {
   const [rows] = await db.execute<SummaryRow[]>(`SELECT d.id, d.kind, d.app_version, d.user_agent, d.lock_applied, d.created_at, d.last_seen_at,
       EXISTS (SELECT 1 FROM push_subscriptions p JOIN sessions ps ON ps.id = p.session_id
-        WHERE p.device_id = d.id AND p.user_id = d.user_id AND ps.expires_at > UTC_TIMESTAMP()) AS notifications
+        WHERE p.device_id = d.id AND p.user_id = d.user_id AND ps.expires_at > UTC_TIMESTAMP()) AS notifications,
+      EXISTS (SELECT 1 FROM chat_devices cd WHERE cd.device_id = d.id) AS chat
     FROM devices d
     WHERE d.user_id = ?${onlyId ? ' AND d.id = ?' : ''}
       AND EXISTS (SELECT 1 FROM sessions s WHERE s.device_id = d.id AND s.user_id = d.user_id AND s.expires_at > UTC_TIMESTAMP())
@@ -310,6 +311,7 @@ async function summaries(userId: string, currentId: string, onlyId: string | nul
       last_seen_at: utcIso(row.last_seen_at),
       lock: lock && lock.scope.length ? { scope: lock.scope, method: lock.method } : null,
       notifications: Number(row.notifications) > 0,
+      chat: Number(row.chat) > 0,
     };
   });
 }
