@@ -50,14 +50,12 @@ test('a chat message shows its text at "full", the sender at "sender", nothing u
   try {
     const enabled = await bridgeMessage(page, 'notifications', 'enable', {}, { timeoutMs: 120_000 });
     assert.equal(enabled.ok, true, JSON.stringify(enabled));
-    // The app's chat device, as the page enrols it: no preview key of its own, the push key is used.
-    await page.evaluate(async ([packages, lastResort]) => {
-      if ((await fetch('/api/chat/devices/current')).ok) return;
-      const { csrfToken } = await (await fetch('/api/auth/me')).json();
-      const reply = await fetch('/api/chat/devices', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken },
-        body: JSON.stringify({ preview: null, key_packages: packages, last_resort: lastResort }) });
-      if (!reply.ok) throw new Error(`enrol: ${reply.status}`);
-    }, [[random(313)], random(313)]);
+    // The app's chat device, which the page's engine enrols at the start (no preview key of its own: the push key is used).
+    const enrolled = Date.now() + 120_000;
+    while (!(await page.evaluate(async () => (await fetch('/api/chat/devices/current')).ok))) {
+      if (Date.now() > enrolled) throw new Error('the app enrolled no chat device');
+      await sleep(1000);
+    }
 
     await ok(blair('POST', '/api/chat/devices', { preview: null, key_packages: [random(313)], last_resort: random(313) }), 'Blair\'s chat device');
     const { id: conversation, current_group_id: previous } = (await ok(blair('POST', '/api/chat/conversations', { user_id: ids['admin@example.com'] }), 'conversation')).conversation;
