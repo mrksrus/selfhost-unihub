@@ -884,17 +884,25 @@ create or share wait until the maintainer has seen the whole interface.
 
 #### P-44 Chat is always end-to-end encrypted
 
-Accepted, 2026-11-15 (maintainer, for 0.33.0). Not built yet.
+Accepted, 2026-11-15 (maintainer, for 0.33.0); changed 2026-11-18. Built in
+0.33.0 for chats between two people ([Chat](docs/CHAT.md)).
 
-There is no server-readable mode. A new device gets the history through a
-passphrase-protected key backup. An optional organisation recovery key is
-off by default; the owner turns it on and keeps it offline, a recovery needs
-it and the owner's password, is logged and is told to the person, and while
-it is on everyone is told the organisation can recover their chats. While
-deleting for good is forbidden, chat messages cannot be deleted; otherwise a
-deletion is final and leaves "message deleted". Presence and read receipts
-are on by default, each person can switch them off, and an administrator can
-lock them. Chat is on after the upgrade like the other modules.
+There is no server-readable mode. The encryption is MLS through OpenMLS, in
+a small wrapper of UniHub's own built to WebAssembly and run in the page, in
+the Android app too; UniHub writes no cryptographic primitive itself
+(2026-11-18: an audited library, not one without an audit and not one written
+here). A new device reads new messages at once and gets the history through
+a passphrase-protected key backup. **Nobody else can read or restore a chat:
+there is no organisation recovery key and no administrator path to decrypt**
+(2026-11-18; this reverses the optional recovery key accepted on 2026-11-15,
+which is parked as an idea for later). Chat uses ordinary requests, the
+existing live stream and the Android app's notification connection: no
+WebSocket and no typing indicator (2026-11-18). While deleting for good is
+forbidden, chat messages cannot be deleted; otherwise a deletion is final and
+leaves "message deleted". Presence ("has UniHub open") and read receipts are
+on by default, each person can switch them off, and an administrator can lock
+them. The Android app refuses screenshots while Chat is open (2026-11-18).
+Chat is on after the upgrade like the other modules.
 
 #### P-45 Shared, group and organisation calendars; owners change; local events repeat
 

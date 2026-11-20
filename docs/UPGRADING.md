@@ -33,6 +33,8 @@ the instance backup carries them as ciphertext
   Chat but show "New message" without text, do not block screenshots in
   Chat and cannot lock Chat; where an administrator requires the app lock on
   Chat, update the app first ([App lock](APP_LOCK.md#limits)).
+  The app window is now 0.33.0 back to 0.30.3; the 0.30.2 app leaves it
+  ([Android compatibility](ANDROID_COMPATIBILITY.md#current-window)).
 - **Browsers.** Chat needs WebAssembly: Chrome and Edge 97, Firefox 102,
   Safari 16 or later, with WebAssembly not switched off. Older or locked-down
   browsers keep everything else; the Chat page says it cannot start there.

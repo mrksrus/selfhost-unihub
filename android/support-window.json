@@ -22,10 +22,20 @@
   ],
   "releases": [
     {
+      "version": "0.33.0",
+      "apk": {
+        "versionCode": 33000,
+        "sha256": null,
+        "signing": "release"
+      },
+      "shell": "supported",
+      "note": "From this app a chat notification shows its message text (the preview sealed to the phone's push keys), Chat's window refuses screenshots, and the app lock knows the area `chat`. Older apps show \"New message\", do not block screenshots in Chat and cannot lock Chat: the server refuses Chat on a device that must lock it."
+    },
+    {
       "version": "0.32.0",
       "apk": {
         "versionCode": 32000,
-        "sha256": null,
+        "sha256": "7d23eecba3003a254cba8283ecb59e4006a2d42058e7a5598c67f9013e232e4b",
         "signing": "release"
       },
       "shell": "supported",
@@ -46,15 +56,6 @@
       "apk": {
         "versionCode": 30003,
         "sha256": "14fb10113527dc0b0582222e0b77efda29a80bfdb93cc3778b7166a36935cbe3",
-        "signing": "release"
-      },
-      "shell": "supported"
-    },
-    {
-      "version": "0.30.2",
-      "apk": {
-        "versionCode": 30002,
-        "sha256": "180da1b3e2359949c82d7b6f08a4e21c48e4ba38593e51968bf0eb77f96f98c2",
         "signing": "release"
       },
       "shell": "supported"
