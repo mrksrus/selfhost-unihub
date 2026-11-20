@@ -69,6 +69,7 @@ const MAX_CANDIDATES = 20;
 
 // The access service decides; it loads this file, so it is loaded on first use.
 const access = () => require('./access') as typeof import('./access');
+const chat = () => require('./chat') as typeof import('./chat');
 const assertGroup = (userId: string, groupId: string, permission: 'read' | 'manage', executor: SqlExecutor = db) => {
   if (!UUID.test(groupId)) throw notFound('GROUP_NOT_FOUND', 'Group not found');
   return access().assertCan(userId, { kind: 'group', id: groupId }, permission, executor);
@@ -223,7 +224,7 @@ async function deleteGroup(adminId: string, groupId: string, req: AuthRequest | 
     const [members] = await cx.execute<RowDataPacket[]>('SELECT user_id FROM org_group_members WHERE group_id = ? FOR UPDATE', [groupId]);
     await deleteGroupPolicies(cx, groupId);
     // A chat that follows the group keeps the people it has.
-    await (require('./chat') as typeof import('./chat')).unfollowDeletedGroup(cx, groupId);
+    await chat().unfollowDeletedGroup(cx, groupId);
     await access().removeGrantsOf(cx, { kind: 'group', id: groupId });
     await cx.execute('DELETE FROM org_groups WHERE id = ?', [groupId]);
     await recordAudit({ action: 'admin.group_deleted', actorId: adminId, req, details: { group: groupId, members: members.length } }, cx);
@@ -256,6 +257,7 @@ async function addMembers(userId: string, groupId: string, input: unknown, req: 
     }
     return { value: null, reached: added };
   });
+  await chat().followedGroupChanged(groupId, ids);
   return groupDetail(userId, groupId);
 }
 
@@ -266,7 +268,7 @@ async function addMembers(userId: string, groupId: string, input: unknown, req: 
 async function removeMember(userId: string, groupId: string, memberId: unknown, req: AuthRequest | null = null): Promise<{ removed: true }> {
   await assertGroup(userId, groupId, 'manage');
   if (typeof memberId !== 'string' || !UUID.test(memberId)) throw notFound('MEMBER_NOT_FOUND', 'This person is not in the group.');
-  return underRulesLock(async cx => {
+  const removed = await underRulesLock(async cx => {
     await assertGroup(userId, groupId, 'manage', cx);
     const [[membership]] = await cx.execute<RowDataPacket[]>('SELECT user_id, role FROM org_group_members WHERE group_id = ? AND user_id = ? FOR UPDATE', [groupId, memberId]);
     if (!membership) throw notFound('MEMBER_NOT_FOUND', 'This person is not in the group.');
@@ -279,6 +281,8 @@ async function removeMember(userId: string, groupId: string, memberId: unknown, 
     await recordAudit({ action: 'group.member_removed', actorId: userId, targetUserId: member, req, details: { group: groupId } }, cx);
     return { value: { removed: true as const }, reached: [member] };
   });
+  await chat().followedGroupChanged(groupId, [memberId.toLowerCase()]);
+  return removed;
 }
 
 /** PUT /api/admin/groups/:id/managers/:userId (groups.manage): a person who is not in the group yet joins it as its manager. */

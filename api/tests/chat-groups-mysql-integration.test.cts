@@ -115,11 +115,11 @@ test('group chats: reach, following a group, joining and removal, the limit, man
   const NAME = "SHA2(CONCAT(DATABASE(), ':notification-jobs'), 256)";
   await lock.query(`SELECT GET_LOCK(${NAME}, 10)`);
   // A pass that meets another running is skipped; run until one really ran, then read what Blair's browser was sent.
-  const shown = async () => {
+  const shown = async (to = endpoint) => {
     await lock.query(`SELECT RELEASE_LOCK(${NAME})`);
     while ('skipped' in await processNotificationJobs()) await new Promise(resolve => setTimeout(resolve, 50));
     await lock.query(`SELECT GET_LOCK(${NAME}, 10)`);
-    return pushed.splice(0).filter(push => push.endpoint === endpoint).map(push => [push.payload.title, push.payload.body, push.payload.preview ?? null]);
+    return pushed.splice(0).filter(push => push.endpoint === to).map(push => [push.payload.title, push.payload.body, push.payload.preview ?? null]);
   };
   const sealed = random(120);
   const post = (extra: Record<string, unknown> = {}) => send(alex, launch, message(g3, { previews: [{ chat_device_id: b1, sealed }], ...extra }));
@@ -141,6 +141,13 @@ test('group chats: reach, following a group, joining and removal, the limit, man
   await call(blair, 'PUT', url(launch, '/notify'), { notify: 'none' });
   await post({ mentions: [ids.member] });
   assert.deepEqual([await shown(), (await listed(blair, launch)).notify, (await listed(blair, launch)).unread > 0], [[], 'none', true], 'nothing, while unread still counts');
+  // Someone in the chat without a chat device is served no message, so none is announced to them.
+  const waiting = 'https://fcm.googleapis.com/fcm/send/chat-groups-test-admin';
+  await call(admin, 'POST', '/api/notifications/subscription', { subscription: { endpoint: waiting, keys: pushKeys().keys } });
+  await call(alex, 'POST', url(launch, '/members'), { user_ids: [ids.admin] });
+  await post();
+  assert.deepEqual(await shown(waiting), []);
+  await call(alex, 'DELETE', url(launch, `/members/${ids.admin}`));
   await lock.query(`SELECT RELEASE_LOCK(${NAME})`);
 
   // ── The limit: 100 people in one chat ──
@@ -168,7 +175,15 @@ test('group chats: reach, following a group, joining and removal, the limit, man
   await send(blair, support, message(s2));
 
   // ── Leaving: Blair is refused from then on ──
+  const g4 = await group(alex, launch, g3, [a1, b1]);
+  await send(alex, launch, message(g4));
   assert.deepEqual(await call(blair, 'POST', url(launch, '/leave')), { left: true });
   assert.deepEqual(await refused(blair, 'GET', url(launch, '/messages')), [404, 'CONVERSATION_NOT_FOUND']);
   assert.deepEqual(await people(alex, launch), [ids.manager]);
+
+  // ── Added back before anyone wrote: the group still holds her device, yet a new one is asked for, and she reads from it ──
+  await call(alex, 'POST', url(launch, '/members'), { user_ids: [ids.member] });
+  assert.deepEqual(await refused(alex, 'POST', url(launch, '/messages'), message(g4)), [409, 'CHAT_GROUP_STALE']);
+  const back = await send(alex, launch, message(await group(alex, launch, g4, [a1, b1])));
+  assert.deepEqual((await call(blair, 'GET', `${url(launch, '/messages')}?after=0`)).messages.map((item: FixtureValue) => item.id), [back.id]);
 });

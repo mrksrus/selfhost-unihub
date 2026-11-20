@@ -345,6 +345,11 @@ async function unfollowDeletedGroup(cx: SqlExecutor, groupId: string) {
   }
 }
 
+/** An organisation group gained or lost people: the chats that follow it tell their people, and those who came or went. */
+async function followedGroupChanged(groupId: string, reached: string[]) {
+  for (const id of await grantedTo('conversation', { kind: 'group', id: groupId })) publishChatChanged([...await conversationPeople(id), ...reached], id);
+}
+
 /** The people a conversation reaches, managers first, with their reasons, marks and presence as the caller may see them. */
 async function chatMembers(userId: string, conversationId: string): Promise<ChatMember[]> {
   await assertCan(userId, conversationOf(conversationId), 'member');
@@ -520,6 +525,11 @@ async function postMessage(userId: string, token: string | null, conversationId:
     const devices = await validDevices(people, cx);
     const [members] = await cx.execute<RowDataPacket[]>('SELECT chat_device_id FROM chat_group_devices WHERE group_id = ?', [message.groupId]);
     if (!sameSet(members.map(item => String(item.chat_device_id)), devices.map(device => device.chat_device_id))) throw stale(conversation.current_group_id);
+    if (!direct) {
+      // Someone added back since this group was made has no place in the chat yet and would be served nothing: a new group gives them one.
+      const [placed] = await cx.execute<RowDataPacket[]>('SELECT user_id FROM chat_members WHERE conversation_id = ?', [conversationId]);
+      if (devices.some(device => !placed.some(row => String(row.user_id) === device.user_id))) throw stale(conversation.current_group_id);
+    }
     if (message.mentions.length && (direct || message.mentions.some(id => id === userId || !people.includes(id)))) {
       throw badRequest('CHAT_MENTION_INVALID', 'Mention only other people of this group chat.');
     }
@@ -675,7 +685,7 @@ interface ChatNotificationSource { sender: string; chat: string | null; mentione
 
 /**
  * A message as its notification sees it: still there, not an edit, not the
- * person's own, not read yet, and wanted by the person's choice for the chat
+ * person's own, not read yet, one they are served, and wanted by the person's choice for the chat
  * (everything, mentions only, or nothing).
  */
 async function notificationSource(userId: string, messageId: string, executor: SqlExecutor, payload: Record<string, unknown> = {}): Promise<ChatNotificationSource | null> {
@@ -683,7 +693,7 @@ async function notificationSource(userId: string, messageId: string, executor: S
     FROM chat_messages m JOIN chat_conversations c ON c.id = m.conversation_id LEFT JOIN users u ON u.id = m.sender_user_id
     LEFT JOIN chat_members me ON me.conversation_id = m.conversation_id AND me.user_id = ?
     WHERE m.id = ? AND m.kind = 'message' AND m.replaces IS NULL AND m.ciphertext IS NOT NULL AND NOT (m.sender_user_id <=> ?)
-      AND m.seq > COALESCE(me.read_seq, 0)`, [userId, messageId, userId]);
+      AND m.seq > GREATEST(COALESCE(me.read_seq, 0), ${JOINED})`, [userId, messageId, userId]);
   const mentioned = payload.mentioned === true;
   if (!row || row.notify === 'none' || (row.notify === 'mentions' && !mentioned)) return null;
   if (!await can(userId, conversationOf(String(row.conversation_id)), 'member', executor)) return null;
@@ -730,5 +740,5 @@ export type { ChatNotificationSource };
 export {
   listConversations, startConversation, createGroup, confirmJoined, postMessage, fetchMessages, deleteMessage, moveMarks,
   storeArchive, listArchive, notificationSource, previewFor,
-  renameChat, addChatMembers, removeChatMember, leaveChat, unfollowChat, unfollowDeletedGroup, chatMembers, setNotify, chatCandidates,
+  renameChat, addChatMembers, removeChatMember, leaveChat, unfollowChat, unfollowDeletedGroup, followedGroupChanged, chatMembers, setNotify, chatCandidates,
 };
