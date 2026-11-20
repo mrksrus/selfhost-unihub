@@ -707,7 +707,7 @@ stricter. See [Data-safety policies](#data-safety-policies).
 | Key | Allowed values | Default | Settings page |
 | --- | --- | --- | --- |
 | `email_link_behavior` | `mailto`, `internal` | `mailto` | General |
-| `default_start_page` | `mail`, `calendar`, `todo`, `contacts`, `recordings`, `music`, `dashboard` | `mail` | General |
+| `default_start_page` | `mail`, `calendar`, `todo`, `contacts`, `recordings`, `music`, `chat`, `dashboard` | `mail` | General |
 | `accent_color` | `blue`, `indigo`, `violet`, `pink`, `teal`, `green` (src/lib/accent.ts) | `blue` | Appearance |
 | `week_start` | `monday`, `sunday`, `saturday` | `monday` | General, Calendar |
 | `default_event_reminder` | minutes before a new event: `0`, `5`, `15`, `30`, `60`, `120`, `1440`, or `null` for none | `0` | General, Calendar |
@@ -724,6 +724,9 @@ stricter. See [Data-safety policies](#data-safety-policies).
 | `snoozed_messages` | `hide` (out of the lists until due), `keep` (stays in its folder, marked); a view rule applied at once ([Snooze](MAIL_SYNC.md#snooze)) | `hide` | Mail |
 | `bin_retention` | how long the bin keeps a deleted item: `7`, `30`, `90` days or `forever`; while deleting from the bin for good is forbidden, never below the administrator's minimum (its `floor`) | `30` | Bin |
 | `contacts_phone_books_off` | a list of shared book ids and `company` that stay off the person's phones ("On my phones" on each book, [Contacts](CONTACTS.md#where-shared-books-appear)); unknown ids are ignored | empty | Contacts |
+| `chat_presence` | `true`, `false`: others see a dot while a UniHub page of the person is open, and the person sees theirs; locked by `chat.presence` | `true` | Chat |
+| `chat_read_receipts` | `true`, `false`: "Read" under messages, shown only while both people have it on; locked by `chat.read_receipts` | `true` | Chat |
+| `chat_notification_detail` | `full` (the sender and the message), `sender`, `none` (only "New message"); floored by `notifications.detail` ([Chat](CHAT.md#notifications)) | `full` | Chat |
 
 A reference (`default_mail_account_id`, `default_task_list_id`,
 `default_calendar_id`) is checked against its own kind of record when it is
@@ -802,7 +805,9 @@ The activity log records it as `device.removed`. A device without a session
 that was last used more than 30 days ago is removed by the hourly cleanup.
 Devices are never in a personal backup and an instance restore deletes them.
 Settings → Security → Devices shows the list in place of the signed-in
-sessions; `GET /api/auth/sessions` stays for pages from before 0.29.
+sessions; `GET /api/auth/sessions` stays for pages from before 0.29. A device
+that holds chat keys carries `chat: true` and the mark "Chat"; signing it out
+also removes it from the person's chats ([Chat](CHAT.md#devices)).
 
 ### On this device
 
@@ -824,9 +829,10 @@ deletes nothing: the services read the rules when they act.
 **Groups only make rules stricter.** Everyone's value is the most anyone
 gets. A group's page offers only the values at least as strict as
 Everyone's (else `400 POLICY_INVALID`), and among a person's groups the
-strictest value wins. Two keys have no order of strictness,
-`mail.mode.new_accounts` and `mail.provider_delete`: there a group value
-that refuses the action wins, else the value the person's groups agree on;
+strictest value wins. Four keys have no order of strictness,
+`mail.mode.new_accounts`, `mail.provider_delete`, `chat.presence` and
+`chat.read_receipts`: there a group value that refuses the action wins, else
+the value the person's groups agree on;
 when they disagree, Everyone's value holds for that person and Everyone's
 page flags the key. Everyone's page names the groups that set each key. A
 request resolves the person's levels once, in one query, and every gate of
@@ -846,15 +852,16 @@ that request reads them.
 | `data.clear` | `allowed`, `forbidden`; also forbidden while `bin.delete` is | Settings > Delete data |
 | `bin.delete` | `allowed`, `forbidden` | deleting from the bin for good and emptying it, and deleting messages in a Download mail account's Trash for good; the automatic purge then keeps items for the bin's minimum |
 | `accounts.admin_manage` | `available` | nothing: the administrator's path is always there |
-| `app_lock.required` | nothing, `app`, or a list of modules (`mail`, `contacts`, `calendar`, `recordings`) | using the listed parts on a device that does not lock them ([App lock](APP_LOCK.md#required-by-the-administrator)); a floor of the device setting `app_lock_scope` |
+| `app_lock.required` | nothing, `app`, or a list of modules (`mail`, `contacts`, `calendar`, `recordings`, `chat`) | using the listed parts on a device that does not lock them ([App lock](APP_LOCK.md#required-by-the-administrator)); a floor of the device setting `app_lock_scope` |
 | `app_lock.max_background` | `none`, `900`, `300`, `60`, `0` (seconds) | a longer **Ask again** (`app_lock_relock_after`) while a lock is required |
-| `app_lock.screenshots` | `allowed`, `forbidden` | screenshots in the Android app (a secure window) |
+| `app_lock.screenshots` | `allowed`, `forbidden` | screenshots in the Android app (a secure window); Chat blocks them in any case |
 | `auth.two_factor` | `optional`, `required` | using UniHub without 2FA after a 7-day grace, and turning 2FA off ([Sign-in policies](#sign-in-policies)) |
 | `auth.password_min_length` | `12`, `14`, `16`, `20` | a shorter new password; existing passwords keep working |
 | `auth.session_max_days` | `none`, `30`, `14`, `7`, `1` | a session older than that since its sign-in |
-| `modules.mail`, `modules.calendar`, `modules.contacts`, `modules.recordings` | `allowed`, `forbidden` | using the module at all: it is off and locked for the person and its data stays ([Modules](MODULES.md#administrator-policies)) |
+| `modules.mail`, `modules.calendar`, `modules.contacts`, `modules.recordings`, `modules.chat` | `allowed`, `forbidden` | using the module at all: it is off and locked for the person and its data stays ([Modules](MODULES.md#administrator-policies)) |
+| `chat.presence`, `chat.read_receipts` | `user_choice`, `on`, `off` | nothing: `on` and `off` lock the person's `chat_presence` or `chat_read_receipts` switch ([Chat](CHAT.md#presence-and-read-receipts)) |
 | `pages.music` | `allowed`, `forbidden` | the Music page alone; recordings keep working |
-| `notifications.detail` | `full`, `sender`, `none` | more detail than that in notifications: the floor of each mail account's `notify_detail`; `none` also floors reminders (a reminder has no sender, so `sender` leaves them full) |
+| `notifications.detail` | `full`, `sender`, `none` | more detail than that in notifications: the floor of each mail account's `notify_detail` and of `chat_notification_detail`; `none` also floors reminders (a reminder has no sender, so `sender` leaves them full) |
 | `contacts.phone_sync` | `allowed`, `forbidden` | UniHub contacts in the Android app's phone contacts: the app's contacts sync is told Contacts is off (`403 MODULE_DISABLED` with the policy), so the phone removes them at its next sync; they stay in UniHub, and changes made on the phone since its last sync are lost |
 | `offline.copies` | `allowed`, `forbidden` | new offline copies (`GET /api/offline/snapshot`); each browser and app deletes its own copy when it next reads the rules online, and one that never comes online keeps it |
 

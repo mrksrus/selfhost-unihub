@@ -3,7 +3,7 @@
 Settings → Modules has two lists.
 
 **Pages** controls the navigation. Each page has its own entry: Mail, Calendar,
-ToDo, Contacts, Recordings, Music and Today.
+ToDo, Contacts, Recordings, Music, Chat and Today.
 
 - **Order:** drag a page by its ≡ handle, or use Move up and Move down in its
   menu (also with the keyboard). The navigation rail, the mobile bar and the More
@@ -43,6 +43,15 @@ again ([Calendar](CALENDAR.md#shared-group-and-organisation-calendars)).
 Server › Calendars and a group page's Calendars need the administrator's own
 Calendar on; the page says so.
 
+Chat (0.33.0, [Chat](CHAT.md)) is on for everyone after the upgrade and has
+no background switch. With Chat off for a person (their switch or a policy),
+its page, its unread count and Settings › Chat leave their navigation, every
+`/api/chat/` route answers `403 MODULE_DISABLED`, their pages stop receiving
+chat hints and they get no chat notifications. Others cannot write to them
+("Chat is off for <name>"), but their chats stay readable for the other side.
+Nothing is deleted: the messages on the server and on their devices stay,
+and the chats come back when Chat is on again.
+
 Contacts and recordings have no automatic provider worker to pause.
 Temporary-upload housekeeping continues to remove expired incomplete uploads.
 The contacts housekeeping (merged contacts past their 30-day undo, expired
@@ -74,9 +83,9 @@ An administrator can turn a module off for people, for everyone or for a
 group, under Server settings → Policies → Modules and pages
 ([Data-safety policies](AUTH_ADMIN_SETTINGS.md#data-safety-policies)):
 
-- **Mail, Calendar and ToDo, Contacts, Recordings and Music**
+- **Mail, Calendar and ToDo, Contacts, Recordings and Music, Chat**
   (`modules.mail`, `modules.calendar`, `modules.contacts`,
-  `modules.recordings`). A forbidden module is off for the person whatever
+  `modules.recordings`, `modules.chat`). A forbidden module is off for the person whatever
   their own switch says: its switch is greyed out with the administrator's
   reason, its pages leave the navigation, More, the start page choices and
   the search, its API routes answer `403 MODULE_DISABLED` with

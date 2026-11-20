@@ -5,6 +5,52 @@
 For a new installation, use [Installation](INSTALLATION.md). This page includes
 version-specific upgrade guidance. Preserve existing data and keys when upgrading.
 
+## 0.33.0 Chat
+
+**Make a database backup first**, as before every upgrade. One automatic
+database upgrade runs at the first start: **step 31** adds Chat's nine
+tables, empty. It changes no existing table or row and takes moments, not
+minutes. Going back to 0.32.x means restoring that backup: 0.32.x does not
+know step 31 and refuses to start ("Database upgrade history is unknown or
+out of order"). Personal backups stay **data schema 8** and carry no chats;
+the instance backup carries them as ciphertext
+([Data recovery](DATA_RECOVERY.md#backup-versions-and-restore-behavior)).
+
+- **Chat is on for everyone after the upgrade.** Everyone sees the Chat page,
+  and anyone who has opened UniHub since the upgrade can be written to. To
+  keep Chat off for everyone or for some groups, an administrator sets
+  **Chat** to not allowed under Server settings → Policies → Modules and pages right
+  after the first start; nothing is deleted, and allowing it later brings it
+  back. Presence and read receipts are each person's choice until an
+  administrator locks them there too ([Chat](CHAT.md#presence-and-read-receipts)).
+- **Each person chooses a chat passphrase** the first time they open Chat.
+  Tell people that nobody, an administrator included, can restore their
+  chats without it or without another of their signed-in devices: there is
+  no recovery key ([Chat](CHAT.md#history-and-the-passphrase)).
+- **Android app.** Message text in chat notifications, screenshots blocked
+  while Chat is open, and Chat under the app lock need the 0.33.0 app
+  (offered under Settings → General → App). Older apps keep working with
+  Chat but show "New message" without text, do not block screenshots in
+  Chat and cannot lock Chat; where an administrator requires the app lock on
+  Chat, update the app first ([App lock](APP_LOCK.md#limits)).
+- **Browsers.** Chat needs WebAssembly: Chrome and Edge 97, Firefox 102,
+  Safari 16 or later, with WebAssembly not switched off. Older or locked-down
+  browsers keep everything else; the Chat page says it cannot start there.
+- **Reverse proxy.** Nothing to change. Chat uses ordinary requests and the
+  existing live update stream (`/api/events`), which must stay unbuffered
+  as before; there is no WebSocket. Only if your proxy sets its own
+  `Content-Security-Policy` must its `script-src` also allow
+  `'wasm-unsafe-eval'`, as UniHub's own header now does
+  ([Architecture](ARCHITECTURE.md#runtime-topology)).
+- **The image.** Nothing to do with the published image. Building the image
+  yourself now also builds Chat's encryption module in a Rust stage of the
+  Dockerfile, a few minutes longer, with no setting to change.
+- **API clients.** The new routes are under `/api/chat/`. A device in
+  `GET /api/devices` carries `chat`; `default_start_page` can be `chat`, and
+  the app lock's areas can include `chat`.
+- **No new configuration.** No environment variable, port, container or
+  volume is added.
+
 ## 0.32.0 Shared calendars
 
 **Make a database backup first.** One automatic database upgrade runs at the

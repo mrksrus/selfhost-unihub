@@ -14,9 +14,9 @@ the nonprofit/public-institution uses it expressly lists. See [Licensing](LICENS
 ## Who is this for?
 
 UniHub is meant to become a complete, self-hosted system for communicating and
-organising: mail, contacts, calendar and ToDo, voice and music recordings, and
-later chat and calls, with notifications that are delivered independently as
-well. There is still a lot to do, but it is intended as a fully independent
+organising: mail, contacts, calendar and ToDo, voice and music recordings,
+end-to-end encrypted chat, and later calls, with notifications that are
+delivered independently as well. There is still a lot to do, but it is intended as a fully independent
 service. That is also why the app is for Android only right now: on Android,
 UniHub can deliver its own notifications. An iOS app will probably come, but I
 am still working out the best way to do it there.
@@ -52,13 +52,14 @@ Outlook, Apple, WhatsApp and the rest.
 
 ## What you can do
 
-Built and released today (0.31):
+Built and released today (0.33):
 
 | Feature | What to expect |
 | --- | --- |
 | Mail | Read and send mail with attachments, folders, search, conversations, templates, snooze, scheduled send and a signature per account. Download mode can optionally delete downloaded mail from the provider. Sync mode follows the server's read, star and folder changes, sends yours back with visible pending and failure states, and keeps messages that vanish from the server. [Mail modes](docs/MAIL_MODES.md) |
 | Contacts | Contacts with every vCard field, vCard and Google/Outlook CSV import and export, and duplicate merging that can be undone. The **company directory** lists everyone in the organisation; **shared address books** are shared with people or groups for reading or editing. [Contacts](docs/CONTACTS.md) |
-| Calendar and ToDo | Local calendars inside UniHub, plus two-way sync with CalDAV servers such as Stalwart, Nextcloud, iCloud and Fastmail, including recurring events; Google and Microsoft calendars as read-only subscriptions. Tasks with subtasks, reminders, your own order and default lists. [Calendar](docs/CALENDAR.md) |
+| Calendar and ToDo | Local calendars inside UniHub, shared with people or groups, group and organisation calendars, repeating events, plus two-way sync with CalDAV servers such as Stalwart, Nextcloud, iCloud and Fastmail, including recurring events; Google and Microsoft calendars as read-only subscriptions. Tasks with subtasks, reminders, your own order and default lists. [Calendar](docs/CALENDAR.md) |
+| Chat | 1:1 chats with colleagues on the web and in the Android app, always end-to-end encrypted: replies, edits, deleting for both, delivery and read state, presence. A chat passphrase brings the history to a new phone or browser; nobody else can read or restore a chat. [Chat](docs/CHAT.md) |
 | Recordings and Music | Record in the browser or import audio, then organise, play and download it; Music keeps chords and lyrics with a recording. |
 | People, groups and rules | Add people with a one-time setup link, put them in groups with managers, and set rules for everyone or a group: required two-factor authentication, password length, session lifetime, modules, notification detail, app lock, phone contacts, offline copies and data safety. One owner manages the administrators; an activity log records sign-ins and administrative actions. [Administration](docs/AUTH_ADMIN_SETTINGS.md) |
 | Optional modules | Reorder, hide or disable modules and their background work. Disabling a module keeps its data. [Modules](docs/MODULES.md) |
@@ -71,8 +72,6 @@ Planned, one theme per version ([Road to 1.0](docs/ROADMAP.md); nothing below is
 
 | Version | Planned |
 | --- | --- |
-| 0.32 | Share local calendars and task lists with people or groups, organisation calendars such as a holiday or support rota, and Android home-screen widgets for Calendar and ToDo. |
-| 0.33 | Chat: 1:1 chats on the web and Android, always end-to-end encrypted, with a key backup for a new phone. |
 | 0.34 | Group chats, encrypted attachments and voice messages, mentions and retention rules. |
 | 0.35 | Encrypted 1:1 voice calls between UniHub users that ring like phone calls on Android, and calls in the browser. |
 | 0.36 | Video, screen sharing in the browser and group calls through an optional self-hosted media server. |
@@ -91,7 +90,7 @@ that change details.
 
 | | Who runs the server | End-to-end encrypted | Notifications travel through | Administration | Source code |
 | --- | --- | --- | --- | --- | --- |
-| **UniHub today** | You | Nothing yet; chat and calls are planned to be | Android app: its own connection to your server. Browser: the browser's push service, encrypted for the device | People, groups, roles, rules, activity log | Source-available ([PolyForm Noncommercial](LICENSE)) |
+| **UniHub today** | You | Chat messages (not against a server changed to attack its users, see [Chat](docs/CHAT.md#what-the-encryption-protects)); calls are planned to be | Android app: its own connection to your server. Browser: the browser's push service, encrypted for the device | People, groups, roles, rules, activity log | Source-available ([PolyForm Noncommercial](LICENSE)) |
 | WhatsApp-style messengers | The company (Meta for WhatsApp) | Messages and calls | Google's or Apple's push service | None for most users | Closed |
 | Signal | Signal Foundation | Messages and calls | Google's or Apple's push service; on Android without Google services, Signal's own connection | None | Open source |
 | Slack or Teams-style team chat | The vendor | Not for messages | Google's or Apple's push service | Yes | Closed |
@@ -117,19 +116,19 @@ What UniHub protects today, and how:
 | Notifications | Encrypted for each device as Web Push does (RFC 8291), in the browser and the Android app; how much they show is set on the server and by the app lock | The device; the push service sees that a notification was sent, when and how large, but not its content |
 | Account backups (ALPHA) | AES-256 ZIP (WinZip AE-2) with a random 256-bit recovery password | You with the password, and the server, which keeps that password sealed with its backup key (by default the same `ENCRYPTION_KEY`) |
 | Whole-server backup (ALPHA) | AES-256-GCM with a key of its own from the deployment's settings; never offered for download | Whoever holds that key |
-| On a phone or computer | The offline copy sits in the browser's storage; the app lock is a gate, not encryption | The device; rely on its own encryption |
+| Chat messages | End-to-end encrypted on the devices with MLS (OpenMLS); the server stores ciphertext and sees who writes to whom and when. The history is kept under a key protected by each person's chat passphrase | The devices of the two people in the chat. Not the server's database, backups or administrators, as long as the chat passphrase is not easy to guess; no recovery key exists. It does not protect against a server someone changed to attack its users, because every client loads its code from the server ([Chat](docs/CHAT.md#what-the-encryption-protects)) |
+| On a phone or computer | The offline copy and Chat's messages sit in the browser's or app's storage; the app lock is a gate, not encryption | The device; rely on its own encryption |
 
-Planned: chat (0.33) is end-to-end encrypted with MLS, so the server stores only
-ciphertext. An organisation can turn on a recovery key, off by default and kept
-offline by the owner; with it on, the owner can recover a person's chats sent while it is on, with that key
-and their password; this is logged and the person is told.
-1:1 calls (0.35) are encrypted between the two devices, also through the
-optional relay.
+Planned: 1:1 calls (0.35) are encrypted between the two devices, also
+through the optional relay.
 
 **Honest self-rating.** UniHub keeps your data on hardware you control and
 keeps Google and Apple out of notifications on Android, which most hosted
-services cannot offer. But nothing is end-to-end encrypted yet, the content on
-the server is readable by whoever runs it, backup and restore are still
+services cannot offer. Chat is end-to-end encrypted, with OpenMLS, whose
+protocol code was audited independently; the audit did not cover the parts
+around it or UniHub's own code ([Chat](docs/CHAT.md#mls-and-the-library)).
+Everything else on the server (mail, contacts, calendars, recordings) is
+readable by whoever runs it, backup and restore are still
 experimental, it is pre-1.0, and it is AI-written without an independent
 security audit (see [Project](#project)). Treat it as a strong privacy step for
 a self-hoster, not yet as audited infrastructure for confidential company data.

@@ -48,11 +48,15 @@ markup. `img-src` also admits `http:` and `https:` because the mail reader's
 (`src/lib/email-privacy.ts`), and that inner policy alone decides whether remote
 images load; the page never renders sender HTML outside that frame. The
 service worker and the pdf.js worker run under the policy of their own script
-response, so `/sw.js` and `/assets/` must carry it. The policy allows no
-WebAssembly, so the viewer loads pdf.js's JavaScript image decoders (JPEG 2000,
-JBIG2) from `/pdfjs/wasm/` instead of its `.wasm` files (`src/lib/pdf.ts`), and
-uses pdf.js's legacy build, which brings fallbacks for JavaScript features
-older Android WebViews lack. `scripts/container-smoke.sh`
+response, so `/sw.js` and `/assets/` must carry it. Since 0.33.0
+`script-src` also allows `'wasm-unsafe-eval'`, which lets the page compile
+WebAssembly (Chat's encryption module, [Chat](CHAT.md#mls-and-the-library));
+`eval` and scripts from elsewhere stay refused. Before that the policy allowed
+no WebAssembly, and pdf.js was fitted to it: the viewer still loads pdf.js's
+JavaScript image decoders (JPEG 2000, JBIG2) from `/pdfjs/wasm/` instead of
+its `.wasm` files (`src/lib/pdf.ts`), so a PDF opens the same way where
+WebAssembly is switched off, and uses pdf.js's legacy build, which brings
+fallbacks for JavaScript features older Android WebViews lack. `scripts/container-smoke.sh`
 asserts the headers on `/`, `/sw.js`, `/theme-init.js`, an asset, the manifest
 and an icon, and that the page loads no inline script.
 
@@ -64,7 +68,8 @@ and an icon, and that the page loads no inline script.
 | `api/src/service-supervisor.ts` | Supervises API/nginx and essential-service failure |
 | `api/src/app.ts` | Initializes DB, resumes backup workers, starts HTTP server and the background work |
 | `api/src/services/background-work.ts`, `timers.ts` | The periodic jobs of the API process behind one start/stop (see Scheduled Jobs) |
-| `api/src/services/realtime.ts` | Front for the live channels (browser event stream, Android notification stream); the mail and calendar event producers |
+| `api/src/services/realtime.ts` | Front for the live channels (browser event stream, Android notification stream); the mail, calendar and chat event producers and chat presence |
+| `api/src/modules/chat.ts`, `services/chat.ts`, `services/chat-devices.ts` | Chat's manifest; conversations, groups, messages, marks, the archive and presence; chat accounts, devices and key packages. The server handles ciphertext only ([Chat](CHAT.md)) |
 | `api/src/request-handler.ts` | CORS, auth, CSRF, module/restore gates, body parsing, route dispatch; every gate reads the matched route's spec |
 | `api/src/http/route.ts` | `RouteSpec`, `defineRoutes`, `mergeRouteTables` and the route-table invariants (see Request Handling) |
 | `api/src/routes/` | Route handlers grouped by feature; `routes/mail.ts` combines `mail-folders`, `mail-accounts`, `mail-drafts` (and send), `mail-messages`, `mail-operations` and `mail-sync`. Every mail route answers a caught error through `routeError` in `mail-route-helpers.ts`: a status-bearing error passes its message, anything else gets the route's fallback with 500. Account fields are parsed by `services/mail-account-input.ts` before anything is tested or stored |
@@ -308,7 +313,15 @@ user and one session.
   `import`, `flags`, `folders`, `content` (fetched bodies, and Sync policy
   removals/merges by the local `prune` job), `operation`, `local`) and `end`
   (`{reason}`: `signed_out`, `session_ended` or `shutdown`). `accountId` may be
-  `null` when a change spans accounts.
+  `null` when a change spans accounts. Chat adds `chat.changed`
+  (`{conversation_id}`) and `chat.presence` (`{user_id, online}`)
+  ([Chat](CHAT.md#live-hints)).
+- **No WebSocket.** Everything the server pushes is a hint on this stream;
+  everything a client sends, chat messages included, is an ordinary request.
+  Calls take up the question of a socket in their own version. Chat's
+  presence is the browser stream itself: a person is online while a page of
+  theirs holds one (`realtime.isPresent`); the Android app's notification
+  stream does not count.
 - **Rate.** Each event type is throttled to one per second per account; the last
   event of a burst is always delivered when the interval ends.
 - **Lifetime.** The stream starts with a `retry:` hint and a `ready` event and
@@ -632,6 +645,27 @@ connects. See [Android](ANDROID.md#notifications).
 
 Opt-in offline reading uses a separate versioned IndexedDB snapshot with explicit account/epoch ownership. It contains the latest 100 full emails, all contacts and events, bounded to 32 MiB; it is not an authentication-response cache. Account changes and explicit clearing invalidate pending saves across tabs. See [PWA](PWA.md) and [Offline reading](OFFLINE.md).
 
+## Chat encryption
+
+Chat is end-to-end encrypted with MLS ([Chat](CHAT.md) holds the contract).
+As built:
+
+- **The server orders messages per conversation** (a sequence number per
+  chat) and checks that a message goes to a group of exactly the valid
+  devices of the chat's people. It does not order MLS commits, because a
+  group never changes after it is made, and it does not deliver per device:
+  every device fetches the conversation's entries after its own cursor.
+- **One module everywhere.** OpenMLS is compiled to WebAssembly from a small
+  crate (`crypto/chat-mls`) and runs in the page; the Android WebView runs
+  the same module. There are no native bindings; the app's native code only
+  opens notification previews with the push keys it already has.
+- **Keys.** MLS state and keys are bytes in the module's memory and in the
+  device's IndexedDB store; only the browser's preview key is a
+  non-extractable WebCrypto key.
+- **What it protects** is the same for every client: the Android app loads
+  its page from the server, so it protects as the web does, against a read
+  of the database, backups, disks and logs, not against a changed server.
+
 ## Security Boundaries
 
 Important boundaries in the current code:
@@ -655,6 +689,9 @@ Important boundaries in the current code:
   data chunk
 - recovery passwords are never stored as plaintext and can be revealed only once
 - `JWT_SECRET` is not used for backup encryption
+- chat messages, previews, archive copies and key backups reach the server
+  only as ciphertext; every conversation route asks the access service for the
+  conversation and answers 404 to anyone not in it
 
 ## Operational Notes
 

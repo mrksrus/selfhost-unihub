@@ -6,8 +6,7 @@ released when it is ready and has been tested. The [changelog](../CHANGELOG.md)
 shows what has shipped.
 
 The plan may still change, but only under the rules below. Details that are
-still open, such as how chats recover their history on a new phone, are
-decided when that version starts.
+still open are decided when that version starts.
 
 ## What 1.0 is
 
@@ -81,7 +80,7 @@ UniHub servers, AI features and new Music features.
 | 0.30.0 | Organisation I | Users created by administrators or invited with a link, deactivated with their data kept, or deleted; groups and departments; owner, admin and member roles; a complete policies page per installation or group (2FA, sessions, modules, notification detail, app lock, phone sync, offline copies, data safety); login limits that survive a restart. |
 | 0.31.0 | Organisation II | A company directory of every active user, as the read-only address book "Company", also on the phone; shared address books that work like groups: anyone creates one and shares it for reading or editing (administrators with anyone, members with their own groups and the people in them), they belong to the organisation and go to the phone read-only, as each person chooses per book; copy contacts or import a file into a book; each book's own bin; UniHub as the phone's email app (email links open its composer). |
 | 0.32.0 | Organisation III | Share local calendars and task lists with people or groups (free/busy, read, contribute, edit, manage); group calendars every member adds to, and organisation calendars such as a holiday or support rota; repeating events in UniHub's own calendars; each shared calendar's own bin; a calendar changes its owner at any time (offered and accepted, or handed over by a group manager or an administrator) or is archived, and when someone leaves an administrator decides for each of their shared calendars; Android home-screen widgets for Calendar and ToDo. |
-| 0.33.0 | Messaging I | A Chat module with 1:1 chats on the web, PWA and Android that are always end-to-end encrypted (MLS); delivery and read state; presence; a key backup so a new phone keeps the history; an optional organisation recovery key, off by default and kept offline by the owner. |
+| 0.33.0 | Messaging I | A Chat module with 1:1 chats on the web, PWA and Android that are always end-to-end encrypted (MLS through OpenMLS in the page); delivery and read state; presence; a passphrase-protected key backup so a new phone or browser gets the history. Nobody but the two people can read a chat: there is no organisation recovery key. Messages travel over ordinary requests with hints on the existing live stream; there is no WebSocket. |
 | 0.34.0 | Messaging II | Group chats, optionally following an organisation group; encrypted attachments and voice messages; mentions; retention policies. |
 | 0.35.0 | Calls I | Encrypted 1:1 voice calls between UniHub users that ring like normal phone calls on Android (system call screen, lock screen, headsets), plus calls in the browser; an optional TURN relay. |
 | 0.36.0 | Calls II | Video, screen sharing in the browser, and group calls through an optional self-hosted media server. |
@@ -104,7 +103,7 @@ condensed rules are in [Building toward 1.0](agents/building-toward-1.0.md).
 | F4 | Ownership and grants: one access service decides who may read, edit or manage a shared resource. | 0.30.0, first used in 0.31.0 |
 | F5 | Devices as records that can be listed, locked and removed. | 0.29.0 |
 | F6 | One notification pipeline that applies the privacy level before anything leaves the server. | 0.24.0 |
-| F7 | Realtime: change hints to clients, WebSocket for chat and calls. | 0.33.0 |
+| F7 | Realtime: change hints to clients over the live stream; chat needs no WebSocket, and calls decide whether they need one. | 0.33.0 |
 | F8 | Platform boundary between the web app and the Android shell (keyboard, files, biometrics, calls). | 0.25.0, 0.29.0 |
 | F9 | Short-lived tickets for file downloads, so a session cookie is never handed to another app. | 0.25.0 |
 | F10 | Keys: secrets from files, versioned encryption, a separate key for instance backups. | step by step |
@@ -143,6 +142,7 @@ These items are not planned. Each one can come after 1.0, or never.
 - Encrypting mail and files inside the server beyond volume encryption
 - Several API processes or replicas
 - Communication between UniHub servers
+- A recovery key with which the organisation can read a person's chats
 - Collaborative documents and notes
 - Calls to and from ordinary phone numbers
 - Automated CI tests against self-hosted mail and calendar servers in

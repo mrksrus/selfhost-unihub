@@ -232,7 +232,9 @@ The restore changes these rows in the same transaction, after the load
 it: users with their roles and the owner, their data, groups with their
 members and managers, shared address books with their shares, contacts and
 bins, the directory's fields, shared, group and organisation calendars with
-their shares, views, personal reminders, offers, archive marks and bins, the policies for everyone and for each group, the
+their shares, views, personal reminders, offers, archive marks and bins,
+chats with their messages, archive copies and key backups (as ciphertext),
+the policies for everyone and for each group, the
 activity log and the push identity, so phones keep receiving notifications.
 Ids are kept, so nothing that names a group or a person needs remapping.
 
@@ -240,6 +242,12 @@ The old installation's sessions and credentials of the moment:
 
 - **Sessions** and **devices** are deleted: everyone signs in again, and
   each browser and app becomes a device of the restored installation.
+  Deleting the devices removes every chat device. Each browser and app
+  enrols for Chat again at its next sign-in and keeps the messages it holds;
+  the next message of each chat makes a new group. Messages newer than the
+  backup exist only on the devices that hold them; older ones come back from
+  the archive with each person's chat passphrase
+  ([Chat](CHAT.md#limits-of-this-version)).
 - **Setup links** (`invites`) are deleted. A link is a credential and is
   never resurrected: the administrator makes a new one for anyone who had
   not set up their account yet.
@@ -347,6 +355,20 @@ subtasks, attendees and bin items travel only in the instance backup, with
 their ids; the personal export reads only `user_id` rows, so they never
 enter or leave a personal backup. See
 [Calendar](CALENDAR.md#shared-group-and-organisation-calendars).
+
+0.33.0 keeps data schema 8. Chat's nine tables (upgrade step 31,
+[Chat](CHAT.md#tables)) are in no personal backup: the server cannot read
+the messages, so it cannot write a copy that opens outside UniHub, and a
+chat names another person, who does not exist in another installation. Chat
+has its own recovery, the archive and the passphrase. The data inventory
+declares the tables left out of personal backups, and every new personal
+backup says "Chats are not in this backup. They are restored with your chat
+passphrase." The instance backup's dump carries them as stored: messages,
+archive copies and key backups stay ciphertext, and no key that opens them
+is in the backup. The drill seeds two people with chat accounts, devices,
+key packages, a chat with its grants and marks, a group with its Welcome,
+messages (one edited, one deleted) and archive copies, compares every chat
+table and requires every chat device to come back removed.
 
 0.28.0 writes data schema 7: a backup holds data by class (local,
 configuration, Download-mode mail by choice or policy), never a provider's

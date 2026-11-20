@@ -16,8 +16,8 @@ not replace or restrict those rights.
 
 Chat's encryption module (`crypto/chat-mls`, built to WebAssembly) contains
 [OpenMLS](https://github.com/openmls/openmls) 0.9.2 (MIT, notice in
-`licenses/third-party/openmls-MIT.txt`) and the Rust crates it depends on,
-unmodified. `crypto/chat-mls/Cargo.lock` identifies their versions and sources.
+`licenses/third-party/openmls-MIT.txt`) and the Rust crates it and the
+wrapper depend on (`wasm-bindgen` among them), unmodified. `crypto/chat-mls/Cargo.lock` identifies their versions and sources.
 The image lists every crate with its licence, its source on crates.io and the
 licence files it ships in `/app/licenses/crypto-dependency-notices.txt`. In
 particular, `hpke-rs`, `hpke-rs-crypto` and `hpke-rs-rust-crypto` are MPL-2.0;

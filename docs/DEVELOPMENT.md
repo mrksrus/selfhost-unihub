@@ -60,6 +60,31 @@ Vite serves those files during development and includes them in production
 under the existing `/sw-custom.js` and `/audio-recorder-worklet.js` URLs.
 Rebuild workers after editing their source during a running development session.
 
+### Chat's encryption module (Rust)
+
+Chat's MLS module is Rust (`crypto/chat-mls`) built to WebAssembly
+([Chat](CHAT.md#mls-and-the-library)). Building it needs:
+
+- Rust 1.100.0 with the `wasm32-unknown-unknown` target. With `rustup`,
+  running `rustup toolchain install` in `crypto/chat-mls/` installs both from
+  `rust-toolchain.toml`.
+- The `wasm-bindgen` command line tool 0.2.130, the version `Cargo.lock`
+  pins (it refuses others). `sh scripts/install-wasm-bindgen.sh <folder>`
+  downloads the release binary for Linux on x86_64 or aarch64, checks its
+  checksum and puts it in that folder; add the folder to `PATH`.
+
+`npm run build:crypto` then runs `cargo build --locked --release --target
+wasm32-unknown-unknown` and `wasm-bindgen --target web` into the ignored
+`src/lib/chat/mls-module/`, with the machine's paths remapped so every machine
+builds the same file. `cargo test --locked` in `crypto/chat-mls/` runs the
+crate's own tests. The module is never committed; the image's
+`crypto-builder` stage and CI build it from the same pins.
+
+Without it everything else works: `npm run dev`, the frontend build, type
+checks, lint, the API tests and vitest (locally, the tests that need the
+built module are skipped or use a stand-in; CI requires the module). Chat itself then does not start;
+its page says the module was not built.
+
 API tests import `api/dist/` and worker tests read `.worker-dist/`, so run
 `npm --prefix api run build` before a direct `node --test` invocation. Npm API
 test commands and `scripts/local-db.sh` build automatically. API-only Docker

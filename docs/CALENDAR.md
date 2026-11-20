@@ -483,8 +483,10 @@ no owner change.
   once and every administrator action leave an activity-log entry
   ([Auth and admin](AUTH_ADMIN_SETTINGS.md#activity-log)).
 - **Archive.** Read-only for everyone, the owner included: no event,
-  subtask, tick, share, offer, move into or out of it, RSVP, own-reminder
-  change or delete. Removing the calendar account that holds it, and
+  subtask, tick, share, offer, move into or out of it, RSVP or delete.
+  Everyone it is shared with still sets their own reminders on its events,
+  which are theirs, not the calendar's; the owner's reminders belong to the
+  event and are refused like any other change. Removing the calendar account that holds it, and
   Settings › Delete data for Calendar, are refused (`403 CALENDAR_FORBIDDEN`)
   until an administrator unarchives it or hands it over. Reading and the
   person's own view go on; the owner of a person's calendar still changes

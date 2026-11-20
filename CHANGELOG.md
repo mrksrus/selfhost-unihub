@@ -8,54 +8,57 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
 ## 0.33.0 (unreleased)
 
+Chat: 1:1 chats between the people of your UniHub, on the web and in the
+Android app, always end-to-end encrypted. The first start after the upgrade
+runs database upgrade 31, which adds empty tables and takes moments; Chat is
+then on for everyone (see [Upgrading](docs/UPGRADING.md#0330-chat)).
+[Chat](docs/CHAT.md) says what the encryption protects and what it does not.
+
 ### Added
 
-- **Chat messages are end-to-end encrypted.** The server stores and passes
-  on what it cannot read; only the two people in a chat can open it. One
-  chat per pair of people: starting it again opens the same one.
+- **Chat messages are end-to-end encrypted** with MLS (OpenMLS, built into
+  the page as WebAssembly). The server stores and passes on what it cannot
+  read; it sees who writes to whom and when, never what. Only the devices of
+  the two people in a chat can open it. It protects against anyone who reads
+  the server's database, backups, disks or logs, an administrator included,
+  as long as the chat passphrase is not easy to guess
+  ([why](docs/CHAT.md#what-the-encryption-protects)), but not against a
+  server someone changed to attack its users, because every client loads
+  its code from the server.
 - **The Chat page.** Your chats are listed with the newest first, each with
   its last message, its unread count and a dot while the other person has
   UniHub open. A chat shows its messages by day; under your own messages it
   says "Sending…", "Sent", "Delivered" or "Read", and a message that did not
-  go out offers "Try again". Each message has a menu: Reply quotes the
-  message, Edit and Delete are for your own. A device a person added shows
-  as a line in the chat, and a message this device could not open says so.
-  On a phone an open chat takes the screen above the keyboard.
+  go out offers "Try again" or can be discarded. Each message has a menu:
+  Reply quotes the message, Edit and Delete are for your own. Web addresses
+  become links. A device someone added shows as a line in the chat ("You
+  added a device" for your own, as a quote of your own message says "You"),
+  and a message this device could not open says so. On a phone an open chat takes the screen above the keyboard.
 - **Start a chat with "Message"** on a colleague's entry in Contacts ›
-  Company, or on one of your contacts that has a colleague's address. A
-  person who cannot be written to (deactivated, Chat off for them, or not
-  opened UniHub since the update) keeps their chat readable, with the reason
-  in place of the composer.
-- **Chat in navigation.** Chat shows its unread count in the rail and the
-  bottom bar and can be chosen as the start page under Settings › General.
-- **Deleting a chat message** removes it, with its earlier versions, for
-  both people. It is final, so it is refused while the administrator does
-  not allow deleting for good.
-- **Read receipts and presence** ("UniHub is open") show only when both
-  people have them on; an administrator can lock either on or off for a
-  group.
-- **Chat notifications.** At the detail "Full" each device shows the text
-  the sender encrypted for it; "Sender" shows only who wrote, "None" only
-  "New message". A device whose app lock covers Chat, or a person whose time
-  to set up two-factor sign-in has run out, gets "New message" only. A
-  message read or deleted before its notification went out is not sent.
-- **Chat in the Android app.** Notifications show the message text, one
-  per conversation, replaced and sounding again with the newest message;
-  tapping one opens the conversation. While Chat is open the app refuses
-  screenshots and screen recording and shows blank in recent apps. Apps
-  before 0.33 show "New message" and do not block Chat.
+  Company, or on one of your contacts that has a colleague's address. One
+  chat per pair of people: starting it again opens the same one. A person
+  who cannot be written to (deactivated, Chat off for them, or not opened
+  UniHub since the update) keeps their chat readable, with the reason in
+  place of the composer.
 - **The chat passphrase.** Chat asks you to choose one when you first open
   it: at least 12 characters, with a hint at its strength. It brings your
   earlier messages to a new phone or browser. Without the passphrase and
   without another signed-in device, a lost device means lost history:
   nobody else can restore it, not your organisation and not an
-  administrator. It is not your sign-in password and never leaves your
-  devices.
+  administrator. It should not be your sign-in password, and it never
+  leaves your devices.
 - **Chat on a new device.** New messages arrive at once. "Enter your chat
   passphrase" brings the earlier ones, and the list says how far they are;
-  "Not now" opens the chats without them. A forgotten passphrase is replaced
-  on a device that still shows your chats; if none does, "Start a new key"
-  says what is lost before it starts.
+  "Not now" opens the chats without them, and a fetch that broke off goes on
+  by itself. A forgotten passphrase is replaced
+  on a device that still shows your chats, with your account password; if
+  none does, "Start a new key" says what is lost before it starts.
+- **Deleting a chat message** removes it, with its earlier versions, for
+  both people. It is final, so it is refused, greyed out with the reason,
+  while the administrator does not allow deleting for good. An edit is
+  marked "edited".
+- **Read receipts and presence** ("UniHub is open") show only when both
+  people have them on.
 - **Settings › Chat.** Whether others see that you have UniHub open,
   whether they see that you read their message, and what a chat
   notification shows, each greyed out with the reason where your
@@ -63,25 +66,51 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
   password, not the old passphrase. The page says what the encryption
   protects, and that a browser cannot block screenshots while the Android
   app does in Chat.
+- **Chat notifications.** At "Sender and message" each device shows the
+  start of the message, which the sender encrypted for that device; "Sender
+  only" shows who wrote, "Nothing" only "New message". A device whose app
+  lock covers Chat, or a person whose time to set up two-factor sign-in has
+  run out, gets "New message" only. One notification per chat, replaced and
+  sounding again with the newest message; tapping it opens the chat. A
+  message read or deleted before its notification went out is not sent.
+- **Chat in the Android app.** Notifications show the message text, in a
+  "Chat messages" channel of their own. While Chat is open the app refuses
+  screenshots and screen recording and shows blank in recent apps, whatever
+  the screenshot policy. Apps before 0.33 show "New message", do not block
+  Chat and cannot lock it.
 - **Chat for administrators.** Server › Policies has Chat among the modules
-  and a Chat group that leaves presence and read receipts to each person or
-  keeps them always on or always off. Chat can be one of the modules the app
-  lock covers or must cover; an Android app from before 0.33 locks the other
-  modules and says "Update the UniHub app to lock Chat."
+  (off for everyone or a group) and a Chat group that leaves presence and
+  read receipts to each person or keeps them always on or always off. Chat
+  can be one of the modules the app lock covers or must cover; an Android
+  app from before 0.33 locks the other modules and says "Update the UniHub
+  app to lock Chat."
 - **Which devices hold chat keys.** Settings › Security › Devices marks
   them "Chat"; signing such a device out also takes it out of your chats.
-- **Smaller things in Chat.** On a phone, More carries the unread count of
-  the pages it holds. A message that was not sent can be discarded from its
-  menu. Your own name reads "You" in a quote and in "You added a device".
-  A message of a person who cannot be written to has no empty menu.
+- **Chat in navigation.** Chat shows its unread count in the rail and the
+  bottom bar (on a phone, More carries the count of the pages it holds) and
+  can be chosen as the start page under Settings › General.
 - **Reference pictures.** Twenty new pictures with fixed synthetic data:
   Chat beside an open chat at its newest and at its first messages (Wide),
   the list and an open chat (Phone), and the chat passphrase where it is
   chosen and where it is entered and Settings › Chat (Wide and Phone).
-  Changed with these screens: the chat pictures (a quote of your own
-  message says "You", and a failed message's reason follows a full stop),
-  Settings › Security › Devices (the "Chat" mark) and the Policies page at
-  its App lock group (Chat among the modules).
+  Changed with these screens: Settings › Security › Devices (the "Chat"
+  mark) and the Policies page at its App lock group (Chat among the
+  modules).
+
+### Changed
+
+- **The page may now run WebAssembly.** Its security policy allows
+  `'wasm-unsafe-eval'` for Chat's encryption module; `eval` and scripts from
+  elsewhere stay refused. A reverse proxy that sets its own policy needs the
+  same.
+- **Backups.** Chats are in no personal backup, which says so ("Chats are
+  not in this backup. They are restored with your chat passphrase.");
+  personal backups stay data schema 8. The instance backup carries chats as
+  ciphertext. After an instance restore every device enrols for Chat again,
+  and messages newer than the backup are only on the devices that hold them.
+- **Building the image** also builds Chat's encryption module from Rust in
+  a stage of its own, which adds a few minutes. The crates' licence notices
+  ship in the image.
 
 ## 0.32.0
 
@@ -153,8 +182,9 @@ seconds per 100,000 events; back up first (see
   calendar of Server › Calendars to a person or to the organisation at
   once, with their password; the former owner is told.
 - **Archive a calendar.** An administrator archives a calendar under
-  Server › Calendars: everyone still sees it, nobody changes it, its owner
-  included, until an administrator unarchives it.
+  Server › Calendars: everyone still sees it, nobody changes its events or
+  shares, its owner included, until an administrator unarchives it. Its
+  owner can still rename it and change its colour.
 - **Shared calendars when a person leaves.** The Deactivate and Delete
   dialogs under Server › People list the calendars the person shares and
   ask what happens to each: leave it as it is (only when deactivating, the

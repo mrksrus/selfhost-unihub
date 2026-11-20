@@ -12,8 +12,8 @@ relying on it.
 ## Choosing what locks
 
 - **Lock:** Off, **Whole app** (everything, Today and Settings included) or
-  **Chosen modules** (Mail, Contacts, Calendar and ToDo, Recordings and Music;
-  Calendar and ToDo lock together, as do Recordings and Music).
+  **Chosen modules** (Mail, Contacts, Calendar and ToDo, Recordings and Music,
+  Chat; Calendar and ToDo lock together, as do Recordings and Music).
 - **Unlock with:** in the Android app, a fingerprint or face (Android's
   BiometricPrompt) with the phone's PIN, pattern or password as the
   alternative. In a browser or the installed web app, a **UniHub PIN** of 6 to
@@ -49,8 +49,9 @@ and the Settings row says so.
   the page with the UniHub mark whenever it goes to the background with the
   lock on, and from Android 13 it also turns the recents screenshot off.
 - **Screenshots** can be blocked by the administrator: the Android app's window
-  is then secure (FLAG_SECURE), also with the lock off. Browsers cannot block
-  screenshots.
+  is then secure (FLAG_SECURE), also with the lock off. Whatever the policy,
+  the Android app (0.33 or later) keeps its window secure while Chat is open.
+  Browsers cannot block screenshots.
 - **The offline copy is locked too.** Starting UniHub without a connection
   asks for the unlock before any saved view shows; the lock's settings and the
   PIN are kept in this browser, so it works offline.
@@ -149,6 +150,13 @@ out.
   device's job (a phone or disk encrypted by its own lock).
 - **Contacts synced to the phone** and notifications already shown before the
   lock took effect are outside UniHub's lock.
+- **Chat's store on the device** (messages and keys) is not encrypted by the
+  lock either ([Chat](CHAT.md#what-the-encryption-protects)).
+- **Android apps before 0.33 cannot lock Chat.** They refuse a lock that
+  names Chat; the page then locks the other modules, and Settings and the
+  lock prompt say "Update the UniHub app to lock Chat." Where Chat is
+  required, such an app falls short of the requirement and is refused as
+  above until it is updated.
 - **Making a task from an email** while Mail is locked on a device that is
   short of a required Mail lock can still copy that email's subject into the
   task, because the task route is Calendar's. It shows nothing else of the

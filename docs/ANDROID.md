@@ -358,9 +358,10 @@ connection to it, and no Google, Apple or other push service sees anything.
   gets them only after turning them on.
 - **Another server.** Notifications belong to a server: connecting the app
   to another server stops them, and connecting back resumes them.
-- **Chat messages** (0.33.0) arrive over the same connection, in a channel of
-  their own. The server cannot read them: at the level **full** the sender
-  sealed the message's start to this phone's notification key (the key pair
+- **Chat messages** (0.33.0, [Chat](CHAT.md#notifications)) arrive over the
+  same connection, in a channel of their own ("Chat messages"). The server
+  cannot read them: at the level **full** the sender sealed the message's
+  start to this phone's notification key (the key pair
   above, RFC 8291), and the app opens it and shows it under the sender's name.
   A preview that cannot be opened, the level **sender**, and an app from
   before 0.33 show "New message"; the level **none** shows no name. While the
@@ -402,8 +403,9 @@ page until it has shown its lock screen, and asks the phone.
   the page is in Chat (under `/chat`, 0.33.0): Android then refuses
   screenshots and screen recording and shows the app blank in recent apps.
   Leaving Chat releases it. Apps before 0.33 do not block Chat and refuse a
-  lock setting that names Chat: they keep the setting they had before, so
-  update the app when Chat is to be locked.
+  lock setting that names Chat: the page then gives them the setting without
+  Chat, so they lock the other modules, and says "Update the UniHub app to
+  lock Chat."
 - **Notifications.** While the lock covers a notification's module, the app
   shows only the kind's generic text, whatever the server sent; it takes the
   module from the payload, or from the kind for servers before 0.29.
