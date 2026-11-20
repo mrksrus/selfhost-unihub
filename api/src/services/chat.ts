@@ -254,7 +254,7 @@ async function postMessage(userId: string, token: string | null, conversationId:
       const previews = Object.fromEntries((await validDevices([peerId], cx)).filter(device => message.previews.has(device.chat_device_id))
         .map(device => [device.chat_device_id, message.previews.get(device.chat_device_id)]));
       await enqueueFromSource({ kind: 'chat', userId: peerId, sourceId: message.id, dedupeKey: `chat:${message.id}`,
-        url: `/chat?conversation=${encodeURIComponent(conversationId)}`, data: { conversationId, messageId: message.id, tag: `chat:${conversationId}`, previews } }, cx);
+        url: `/chat?c=${encodeURIComponent(conversationId)}`, data: { conversationId, messageId: message.id, tag: `chat:${conversationId}`, previews } }, cx);
     }
     const [[row]] = await cx.execute<RowDataPacket[]>(`SELECT ${MESSAGE_COLUMNS} FROM chat_messages WHERE id = ?`, [message.id]);
     return { row, created: true };

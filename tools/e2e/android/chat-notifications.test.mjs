@@ -82,7 +82,7 @@ test('a chat message shows its text at "full", the sender at "sender", nothing u
     // The tap opens the conversation; Chat's window is secure, Mail's is not.
     adb('shell', 'cmd', 'statusbar', 'expand-notifications');
     await tapNative(new RegExp(lunch.replace(/[?]/g, '\\?')));
-    await page.waitForURL(url => url.pathname === '/chat' && url.searchParams.get('conversation') === conversation, { timeout: 60_000 });
+    await page.waitForURL(url => url.pathname === '/chat' && url.searchParams.get('c') === conversation, { timeout: 60_000 });
     await until(() => windowIsSecure(), 'a secure window in Chat');
     await navigate(page, '/mail');
     await until(() => !windowIsSecure(), 'a window that can be captured in Mail');

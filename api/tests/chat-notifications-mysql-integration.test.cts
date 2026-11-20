@@ -56,7 +56,7 @@ test('chat notifications: levels, the floor, previews per device, locked devices
   let sent = await delivered();
   assert.deepEqual(Object.keys(sent).sort(), ['desk', 'laptop']);
   assert.deepEqual([shown(sent.desk), shown(sent.laptop)], [['Alex Manager', 'New message', sealed.desk], ['Alex Manager', 'New message', sealed.laptop]]);
-  assert.deepEqual([sent.desk.module, sent.desk.tag, sent.desk.url, 'previews' in sent.desk], ['chat', `chat:${conversation}`, `/chat?conversation=${conversation}`, false]);
+  assert.deepEqual([sent.desk.module, sent.desk.tag, sent.desk.url, 'previews' in sent.desk], ['chat', `chat:${conversation}`, `/chat?c=${conversation}`, false]);
   assert.doesNotMatch(JSON.stringify(sent.desk), new RegExp(sealed.laptop));
 
   // ── An edit is not news ──
