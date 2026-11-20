@@ -45,7 +45,7 @@ export function ChatPassphraseGate({ engine, state, onLater }: Props) {
     } catch (failure) {
       if (scope.ended) return;
       // The key was taken and the chats are open: only reading the earlier messages failed.
-      if (engine.snapshot().holds_history_key) toast({ title: 'Your earlier messages could not all be fetched', description: failure instanceof Error ? failure.message : undefined, variant: 'destructive' });
+      if (engine.snapshot().holds_history_key) toast({ title: 'Your earlier messages could not all be fetched', description: 'UniHub fetches the rest when the connection is back.', variant: 'destructive' });
       else setError(failure instanceof WrongPassphraseError ? 'This is not your chat passphrase. Check for a typing mistake and try again.' : failure instanceof Error && failure.message ? failure.message : 'The passphrase was not taken.');
     } finally {
       setPending(false);
@@ -68,7 +68,7 @@ export function ChatPassphraseGate({ engine, state, onLater }: Props) {
       {choosing ? <PassphraseFields onChange={setChosen} disabled={pending} autoFocus /> : (
         <div className="space-y-2">
           <Label htmlFor={id}>Chat passphrase</Label>
-          <Input id={id} type="password" autoComplete="off" autoCapitalize="off" spellCheck={false} autoFocus disabled={pending} value={typed}
+          <Input id={id} type="password" autoComplete="off" autoCapitalize="off" spellCheck={false} autoFocus readOnly={pending} value={typed}
             aria-invalid={!!error} aria-describedby={error ? `${id}-error` : undefined} onChange={event => { setTyped(event.target.value); setError(null); }} />
         </div>
       )}

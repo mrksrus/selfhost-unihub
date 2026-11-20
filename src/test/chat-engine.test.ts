@@ -150,7 +150,7 @@ function deliveryService() {
   const groups = new Map<string, Group>();
   const messages: (ChatMessage & { conversation_id: string })[] = [];
   const archive = new Map<string, { user: string; message: string; sealed: string }>();
-  const state = { forbidDelete: false, loseGroupAnswer: false, refusedOffline: () => {}, groupGate: null as null | { waiting: number; size: number; open: () => void; opened: Promise<void> } };
+  const state = { forbidDelete: false, loseGroupAnswer: false, failArchive: false, refusedOffline: () => {}, groupGate: null as null | { waiting: number; size: number; open: () => void; opened: Promise<void> } };
 
   const ok = (data: unknown) => ({ data });
   const refuse = (status: number, code: string, details?: unknown) => ({ error: code, status, code, details });
@@ -293,6 +293,7 @@ function deliveryService() {
         }
         return ok({ stored: 0 });
       case 'GET /chat/archive':
+        if (state.failArchive) { state.failArchive = false; return { error: 'You are offline.' }; }
         return ok({ cursor: null, copies: [...archive.values()].filter(copy => copy.user === me).map(copy => {
           const message = messages.find(item => item.id === copy.message)!;
           return { message_id: copy.message, sealed: copy.sealed, conversation_id: message.conversation_id, seq: message.seq };
@@ -416,7 +417,11 @@ describe('the chat engine', { timeout: 60_000 }, () => {
     const copies = [...server.archive.values()].filter(copy => copy.user === BLAIR);
     const [first, second] = [copies.find(copy => server.messages.find(item => item.id === copy.message)?.seq === 1)!, copies.find(copy => server.messages.find(item => item.id === copy.message)?.seq === 2)!];
     second.sealed = first.sealed;
-    await blair3.as(engine => engine.enterPassphrase(PASSPHRASES[BLAIR]));
+    // The connection breaks while the history is read: the key is kept, and the next sync reads the history.
+    server.state.failArchive = true;
+    await expect(blair3.as(engine => engine.enterPassphrase(PASSPHRASES[BLAIR]))).rejects.toThrow();
+    expect(texts(blair3, conversation)).toEqual(['(unreadable)', '(unreadable)', 'blair has a new browser']);
+    await blair3.as(engine => engine.sync());
     expect(texts(blair3, conversation)).toEqual(['hello blair', '(unreadable)', 'blair has a new browser']);
     expect(blair3.engine.snapshot()).toMatchObject({ readiness: { state: 'ready' }, holds_history_key: true, restore: null });
   });

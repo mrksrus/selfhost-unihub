@@ -112,6 +112,8 @@ class Engine implements ChatEngine {
   private messages = new Map<string, Stored>();
   private outbox: Outgoing[] = [];
   private cursors = new Map<string, Cursor>();
+  /** The archive was not read to its end (the connection broke off): a later sync reads it again. */
+  private restorePending = false;
   /** undefined until read from the store or the server. */
   private account: ChatAccount | null | undefined;
   private historyKey: SealKey | null = null;
@@ -203,8 +205,9 @@ class Engine implements ChatEngine {
   /** Reads everything the device keeps (at the start, and when another tab changed it). */
   private async load() {
     const store = this.store!;
-    const [messages, outbox, cursors, historyKey, account] = await Promise.all([store.all<Stored>('messages'), store.all<Outgoing>('outbox'),
-      store.all<Cursor>('cursors'), store.historyKey(), store.get<ChatAccount | null>('keys', 'account')]);
+    const [messages, outbox, cursors, historyKey, account, restore] = await Promise.all([store.all<Stored>('messages'), store.all<Outgoing>('outbox'),
+      store.all<Cursor>('cursors'), store.historyKey(), store.get<ChatAccount | null>('keys', 'account'), store.get<boolean>('keys', 'restore')]);
+    this.restorePending = !!restore;
     this.messages = new Map(messages.map(record => [record.id, record]));
     this.outbox = outbox;
     this.cursors = new Map(cursors.map(cursor => [cursor.conversation_id, cursor]));
@@ -335,6 +338,7 @@ class Engine implements ChatEngine {
       this.channel?.postMessage('changed');
       await this.archiveHeld();
       await this.flush();
+      if (this.restorePending && this.historyKey && !this.restoring) await this.restore().catch(() => undefined);
     } catch (error) {
       // The device must meet the person's app lock rule before Chat answers it.
       if (error instanceof AppLockRequired) this.fail(error);
@@ -703,6 +707,10 @@ class Engine implements ChatEngine {
         this.changed();
         cursor = page.cursor;
       } while (cursor && !this.stopped);
+      if (!cursor) {
+        await this.store!.write([], transaction => { transaction.objectStore('keys').delete('restore'); });
+        this.restorePending = false;
+      }
     } finally {
       this.restoring = null;
       this.changed();
@@ -731,6 +739,8 @@ class Engine implements ChatEngine {
     const account = await this.currentAccount();
     if (!account) throw new Error('Choose a chat passphrase first.');
     await this.keepKey(await unwrapHistoryKey(account, passphrase), account);
+    await this.store!.write([], transaction => { transaction.objectStore('keys').put(true, 'restore'); });
+    this.restorePending = true;
     await this.restore();
   }
 
