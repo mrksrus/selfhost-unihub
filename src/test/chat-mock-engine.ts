@@ -24,7 +24,7 @@ export interface MockChatEngine extends ChatEngine {
   listeners(): number;
 }
 
-export const peer = (user_id: string | null, name: string, fields: Partial<ChatPeer> = {}): ChatPeer => ({ user_id, name, can_write: true, reason: null, online: null, active: true, ...fields });
+export const peer = (user_id: string | null, name: string, fields: Partial<ChatPeer> = {}): ChatPeer => ({ user_id, name, can_write: true, reason: null, online: null, ...fields });
 
 /** A direct conversation's summary with the defaults of a chat that keeps its messages and notifies of all. */
 export const direct = (fields: Pick<ChatConversationSummary, 'id' | 'peer' | 'unread' | 'last_activity_at' | 'last_message'>): ChatConversationSummary => ({

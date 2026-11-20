@@ -184,7 +184,7 @@ function deliveryService() {
     }
     const peer = conversation.people.find(person => person !== userId)!;
     const theirs = marksOf(conversation, peer);
-    return { ...base, kind: 'direct', peer: { user_id: peer, name: names.get(peer)!, can_write: valid([peer]).length > 0, reason: null, online: null, active: true },
+    return { ...base, kind: 'direct', peer: { user_id: peer, name: names.get(peer)!, can_write: valid([peer]).length > 0, reason: null, online: null },
       peer_read_seq: theirs.read, peer_delivered_seq: theirs.delivered };
   };
   const members = (conversation: Conversation) => ({ members: conversation.people.map(person => ({
