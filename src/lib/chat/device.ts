@@ -3,6 +3,7 @@
 // packages, a last resort, and in a browser the preview key).
 import { api } from '@/lib/api';
 import { hasCode, unwrap } from '@/lib/api-error';
+import { unreachable } from '@/lib/chat-api';
 import { androidApp } from '@/lib/platform';
 import type { ChatDeviceEnrolRequest, ChatDeviceResponse, ChatKeyPackagesRequest } from '../../../api/src/contracts/chat';
 import { toBase64Url } from './bytes';
@@ -47,6 +48,8 @@ export class ChatDevice {
   }
 
   get id() { return this.record.chat_device_id; }
+  /** Frees the module's memory of a device that is not used any more. */
+  free() { try { this.mls.free(); } catch { /* freed before, or of a module instance that stopped */ } }
   get name() { return this.record.name; }
 
   /**
@@ -124,8 +127,12 @@ export async function startDevice(store: ChatStore, userId: string): Promise<Cha
         return stored;
       }
     } catch (error) {
-      if (!hasCode(error, 'CHAT_DEVICE_NOT_ENROLLED')) throw error;
+      // Offline: the stored device goes on, and the server checks it at the next start.
+      if (unreachable(error)) return stored;
+      // A stored identity the module cannot read is a lost one.
+      if (!hasCode(error, 'CHAT_DEVICE_NOT_ENROLLED') && !(error instanceof MlsError && error.kind === 'no-identity')) throw error;
     }
   }
+  stored?.free();
   return enrol(store, userId);
 }

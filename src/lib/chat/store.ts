@@ -14,7 +14,8 @@ export type ChatStoreName = typeof STORES[number];
 /** The record under `keys`/`device`: the MLS identity's name and the server's id for it (null until enrolled). */
 export interface ChatDeviceRecord { name: string; chat_device_id: string | null }
 
-const databaseName = (userId: string) => `unihub-chat:${userId}`;
+const PREFIX = 'unihub-chat:';
+const databaseName = (userId: string) => `${PREFIX}${userId}`;
 
 function done<T>(request: IDBRequest<T>) {
   return new Promise<T>((resolve, reject) => {
@@ -112,4 +113,13 @@ export function wipeChatStore(userId: string): Promise<void> {
     deleting.onsuccess = () => resolve();
     deleting.onerror = () => reject(deleting.error);
   });
+}
+
+/** Deletes the chat state of every person on this device but `keep`'s: all at sign-out, the earlier person's when another signs in. */
+export async function wipeChatStores(keep?: string) {
+  if (typeof indexedDB === 'undefined') return;
+  // shortcut: a browser without indexedDB.databases() (Firefox before 126) lists nothing to wipe; track the names if such browsers matter.
+  const names = indexedDB.databases ? (await indexedDB.databases()).map(item => item.name ?? '') : [];
+  await Promise.all(names.filter(name => name.startsWith(PREFIX) && (keep === undefined || name !== databaseName(keep)))
+    .map(name => wipeChatStore(name.slice(PREFIX.length))));
 }

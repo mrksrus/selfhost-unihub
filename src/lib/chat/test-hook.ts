@@ -5,6 +5,7 @@
 // the server will.
 import { concat, fromBase64Url, toBase64Url } from './bytes';
 import { ChatDevice } from './device';
+import { MlsError, type MlsDevice } from './mls';
 import { ChatStore } from './store';
 
 const devices = new Map<string, ChatDevice>();
@@ -32,6 +33,12 @@ const chatTest = {
     toBase64Url(await (await device(name)).step(mls => mls.encrypt(encode(groupId), encode(text)))),
   decrypt: async (name: string, groupId: string, message: string) =>
     decode(await (await device(name)).step(mls => mls.decrypt(encode(groupId), fromBase64Url(message)))),
+  /**
+   * Crashes the module for real: a call through a pointer outside its memory
+   * traps. True when the step reported the restart (MlsError `stopped`).
+   */
+  trap: async (name: string) => (await device(name)).step(mls => (Object.assign(Object.create(Object.getPrototypeOf(mls)), { __wbg_ptr: 0xfffffff0 }) as MlsDevice)
+    .members(encode('any'))).then(() => false, (error: unknown) => error instanceof MlsError && error.kind === 'stopped'),
 };
 
 Object.assign(window, { chatTest });

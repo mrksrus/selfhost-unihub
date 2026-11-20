@@ -2,6 +2,7 @@ import type { QueryClient } from '@tanstack/react-query';
 import { invalidateChangedMail, mailQueryKeys } from '@/lib/mail-api';
 import { invalidateCalendarQueries } from '@/lib/calendar-api';
 import { invalidateBookQueries } from '@/lib/address-books-api';
+import { emitAppEvent } from '@/lib/app-events';
 
 // Live status updates from GET /api/events (Server-Sent Events). Events are
 // hints: each one only marks the matching queries stale, and the normal API
@@ -117,6 +118,7 @@ export function startServerEvents({
     schedule('lists');
     schedule('calendar');
     schedule('books');
+    emitAppEvent('unihub:chat-changed', null);
   }
 
   function close() {
@@ -161,6 +163,12 @@ export function startServerEvents({
     current.addEventListener('calendar.changed', live(() => schedule('calendar')));
     current.addEventListener('contacts.books', live(() => schedule('books')));
     current.addEventListener('calendar.shares', live(() => schedule('calendar')));
+    // Chat's engine fetches by itself (lib/chat/engine.ts); it holds no queries.
+    current.addEventListener('chat.changed', live(event => emitAppEvent('unihub:chat-changed', parse<{ conversation_id?: string }>(event)?.conversation_id ?? null)));
+    current.addEventListener('chat.presence', live(event => {
+      const data = parse<{ user_id?: unknown; online?: unknown }>(event);
+      if (typeof data?.user_id === 'string' && typeof data.online === 'boolean') emitAppEvent('unihub:chat-presence', { user_id: data.user_id, online: data.online });
+    }));
     current.addEventListener('end', live(event => {
       const reason = parse<{ reason?: string }>(event)?.reason;
       close();

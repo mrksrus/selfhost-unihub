@@ -34,6 +34,10 @@ export interface AppEvents {
   'unihub:recording-stop': undefined;
   /** The API refused a request with 403 APP_LOCK_REQUIRED (lib/api.ts): show the app lock set-up prompt. */
   'unihub:app-lock-required': AppLockRequiredDetails;
+  /** The live stream said a chat changed (its id), or reconnected after events may have been lost (null). */
+  'unihub:chat-changed': string | null;
+  /** The live stream said a chat partner came online or left. */
+  'unihub:chat-presence': { user_id: string; online: boolean };
   /** The API refused a request with 403 TWO_FACTOR_REQUIRED (lib/api.ts): show the two-factor set-up prompt. */
   'unihub:two-factor-required': TwoFactorRequiredDetails;
 }

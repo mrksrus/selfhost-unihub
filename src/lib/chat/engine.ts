@@ -1,0 +1,776 @@
+// Chat's engine on this device (the ChatEngine of types.ts). It keeps every
+// message in the person's ChatStore and does all encryption: it fetches what
+// the server's hints say changed, joins new groups from their Welcomes,
+// decrypts, sends from an outbox in order (making a new group when the
+// server says the chat's devices changed), keeps the person's sealed archive
+// and restores from it after the passphrase. One tab per person runs the MLS
+// device and talks to the server for it (a Web Lock); the others read the
+// store, put what they send in the shared outbox and hear of changes through
+// a BroadcastChannel.
+import { AppLockRequired, hasCode } from '@/lib/api-error';
+import { onAppEvent } from '@/lib/app-events';
+import { chatApi, unreachable } from '@/lib/chat-api';
+import type { ChatAccount, ChatConversation, ChatMessage, ChatWelcome } from '../../../api/src/contracts/chat';
+import { concat, fromBase64Url, toBase64Url } from './bytes';
+import { startDevice, type ChatDevice } from './device';
+import { createHistoryKey, unwrapHistoryKey, wrapHistoryKey } from './key-backup';
+import { MlsError, MlsUnavailableError, type MlsDevice } from './mls';
+import { open, seal, type SealKey } from './seal';
+import { ChatStore } from './store';
+import type { ChatDeliveryState, ChatEngine, ChatEngineSnapshot, ChatReadiness, ChatThreadItem, ChatThreadMessage } from './types';
+
+export const MAX_TEXT = 8000;
+const PREVIEW_CHARS = 160;
+const FORMAT = 1;
+const ARCHIVE_BATCH = 200;
+const STALE_ATTEMPTS = 3;
+const PREFIX = 'unihub-chat:';
+
+interface Person { id: string; name: string }
+
+/** A message, an edit (`replaces`) or a device line as this device keeps it. */
+interface Stored {
+  id: string;
+  conversation_id: string;
+  /** A device line sits between two messages (a seq plus one half). */
+  seq: number;
+  kind: 'message' | 'device-added';
+  replaces: string | null;
+  sender_user_id: string | null;
+  sender_name: string;
+  text: string | null;
+  reply_to: string | null;
+  deleted: boolean;
+  unreadable: boolean;
+  created_at: string;
+  /** Its copy is in the person's archive. */
+  archived: boolean;
+}
+
+/** A message or an edit waiting to be sent, in send order. */
+interface Outgoing {
+  order?: number;
+  id: string;
+  conversation_id: string;
+  text: string;
+  reply_to: string | null;
+  replaces: string | null;
+  created_at: string;
+  error: string | null;
+  /** Encrypted for a group and maybe taken by the server already: sent again as it is while that group is current. */
+  sealed: { group_id: string; ciphertext: string } | null;
+}
+
+interface Cursor {
+  conversation_id: string;
+  /** The last entry read. */
+  seq: number;
+  /** The groups whose state this device holds, oldest first. */
+  groups: string[];
+  /** The members of the newest of them, for the device line. */
+  members: string[] | null;
+}
+
+/** Inside the MLS ciphertext; unknown fields are ignored. */
+interface Content { text: string; reply_to: string | null; name: string }
+/** Inside an archive copy: the ids are checked on restore, so a copy stored under another message is dropped. */
+interface Copy extends Content { message_id: string; conversation_id: string; sender_user_id: string | null; replaces: string | null; created_at: string }
+
+const encode = (text: string) => new TextEncoder().encode(text);
+const decode = (bytes: Uint8Array) => new TextDecoder().decode(bytes);
+const userOf = (memberName: string) => memberName.split('/')[0];
+const reason = (error: unknown) => error instanceof Error && error.message ? error.message : 'Chat could not start.';
+
+function parseContent(bytes: Uint8Array): Content {
+  const value = JSON.parse(decode(bytes)) as Partial<Content>;
+  if (typeof value.text !== 'string' || typeof value.name !== 'string') throw new SyntaxError('Not a chat message.');
+  return { text: value.text, reply_to: typeof value.reply_to === 'string' ? value.reply_to : null, name: value.name };
+}
+
+/** Puts a record unless the store holds a readable one and this one is not (a restore or another tab came first). */
+function putRecord(transaction: IDBTransaction, record: Stored) {
+  const messages = transaction.objectStore('messages');
+  if (record.text !== null || record.deleted) { messages.put(record); return; }
+  const existing = messages.get(record.id);
+  existing.onsuccess = () => { if ((existing.result as Stored | undefined)?.text == null) messages.put(record); };
+}
+
+class Engine implements ChatEngine {
+  private readonly listeners = new Set<() => void>();
+  private readonly stops: (() => void)[] = [];
+  private readonly lock = new AbortController();
+  private store: ChatStore | null = null;
+  private device: ChatDevice | null = null;
+  private channel: BroadcastChannel | null = null;
+  private leading = false;
+  private stopped = false;
+  private problem: ChatReadiness | null = null;
+  private loaded = false;
+  private server: ChatConversation[] = [];
+  private messages = new Map<string, Stored>();
+  private outbox: Outgoing[] = [];
+  private cursors = new Map<string, Cursor>();
+  /** undefined until read from the store or the server. */
+  private account: ChatAccount | null | undefined;
+  private historyKey: SealKey | null = null;
+  private restoring: ChatEngineSnapshot['restore'] = null;
+  private snap: ChatEngineSnapshot | null = null;
+  private readonly threads = new Map<string, ChatThreadItem[]>();
+  private syncing: Promise<void> | null = null;
+  private syncAgain = false;
+  private flushing: Promise<void> | null = null;
+  private flushAgain = false;
+
+  constructor(private readonly me: Person) {}
+
+  // --- Life ------------------------------------------------------------------------------
+
+  async start() {
+    try {
+      this.store = await ChatStore.open(this.me.id);
+      if (this.stopped) { this.store.close(); return; }
+      await this.load();
+      this.channel = new BroadcastChannel(`${PREFIX}${this.me.id}`);
+      this.channel.onmessage = ({ data }) => {
+        if (data === 'changed') void this.load().catch(() => undefined);
+        if (data === 'flush' && this.leading) void this.flush().catch(() => undefined);
+      };
+      const later = () => void this.sync().catch(() => undefined);
+      this.stops.push(
+        onAppEvent('unihub:chat-changed', later),
+        onAppEvent('unihub:chat-presence', ({ user_id, online }) => {
+          this.server = this.server.map(item => item.peer.user_id === user_id && item.peer.online !== null ? { ...item, peer: { ...item.peer, online } } : item);
+          this.changed(null);
+        }),
+      );
+      const onOnline = () => { if (this.problem?.state === 'failed') this.restart(); else later(); };
+      const onVisible = () => { if (document.visibilityState === 'visible') later(); };
+      window.addEventListener('online', onOnline);
+      document.addEventListener('visibilitychange', onVisible);
+      this.stops.push(() => window.removeEventListener('online', onOnline), () => document.removeEventListener('visibilitychange', onVisible));
+      later();
+      // The tab that holds the lock runs the device; another takes over when it closes.
+      if (!navigator.locks) { void this.lead(); return; }
+      void navigator.locks.request(`${PREFIX}${this.me.id}`, { signal: this.lock.signal },
+        () => new Promise<void>(release => { this.stops.push(release); void this.lead(); })).catch(() => undefined);
+    } catch (error) {
+      this.fail(error);
+    }
+  }
+
+  stop() {
+    this.stopped = true;
+    this.lock.abort();
+    this.stops.forEach(stop => stop());
+    this.channel?.close();
+    this.device?.free();
+    this.store?.close();
+    this.listeners.clear();
+  }
+
+  private async lead() {
+    this.leading = true;
+    try {
+      this.device = await startDevice(this.store!, this.me.id);
+      if (this.stopped) return this.device.free();
+      this.changed();
+      await this.sync();
+    } catch (error) {
+      this.fail(error);
+    }
+  }
+
+  private fail(error: unknown) {
+    if (this.stopped) return;
+    this.problem = error instanceof MlsUnavailableError || (error instanceof Error && /browser storage/.test(error.message))
+      ? { state: 'unsupported', reason: error.message }
+      : { state: 'failed', reason: error instanceof AppLockRequired ? error.requirement.reason ?? 'Chat needs the app lock on this device. Set it up under Settings › Security.' : reason(error) };
+    this.changed();
+  }
+
+  restart() {
+    if (this.problem?.state !== 'failed' || this.stopped) return;
+    this.problem = null;
+    this.changed();
+    if (this.leading && !this.device) void this.lead();
+    else void this.sync().catch(error => this.fail(error));
+  }
+
+  /** Reads everything the device keeps (at the start, and when another tab changed it). */
+  private async load() {
+    const store = this.store!;
+    const [messages, outbox, cursors, historyKey, account] = await Promise.all([store.all<Stored>('messages'), store.all<Outgoing>('outbox'),
+      store.all<Cursor>('cursors'), store.historyKey(), store.get<ChatAccount | null>('keys', 'account')]);
+    this.messages = new Map(messages.map(record => [record.id, record]));
+    this.outbox = outbox;
+    this.cursors = new Map(cursors.map(cursor => [cursor.conversation_id, cursor]));
+    this.historyKey = historyKey ?? null;
+    if (account !== undefined) this.account = account;
+    this.loaded = true;
+    this.threads.clear();
+    this.changed();
+  }
+
+  // --- Snapshots -------------------------------------------------------------------------
+
+  subscribe(listener: () => void) {
+    this.listeners.add(listener);
+    return () => { this.listeners.delete(listener); };
+  }
+
+  /** Something changed: in one conversation's thread, in the snapshot only (null), or anywhere (undefined). */
+  private changed(conversationId?: string | null) {
+    if (this.stopped) return;
+    if (conversationId) this.threads.delete(conversationId);
+    else if (conversationId === undefined) this.threads.clear();
+    this.snap = null;
+    this.listeners.forEach(listener => listener());
+  }
+
+  private readiness(): ChatReadiness {
+    if (this.problem) return this.problem;
+    if (!this.loaded || this.account === undefined || (this.leading && !this.device)) return { state: 'starting' };
+    if (!this.account) return { state: 'choose-passphrase' };
+    return this.historyKey ? { state: 'ready' } : { state: 'enter-passphrase' };
+  }
+
+  snapshot(): ChatEngineSnapshot {
+    this.snap ??= {
+      readiness: this.readiness(),
+      conversations: this.server.map(item => {
+        const last = this.thread(item.id)?.filter((entry): entry is ChatThreadMessage => entry.kind === 'message').at(-1);
+        return { id: item.id, peer: item.peer, unread: item.unread, last_activity_at: item.last_activity_at,
+          last_message: last ? { text: last.text, from_me: last.from_me, deleted: last.deleted } : null };
+      }),
+      holds_history_key: !!this.historyKey,
+      restore: this.restoring,
+    };
+    return this.snap;
+  }
+
+  thread(conversationId: string): ChatThreadItem[] | null {
+    if (!this.loaded) return null;
+    let items = this.threads.get(conversationId);
+    if (!items) this.threads.set(conversationId, items = this.build(conversationId));
+    return items;
+  }
+
+  private nameOf(userId: string | null, conversation?: ChatConversation) {
+    if (userId === this.me.id) return this.me.name;
+    return conversation?.peer.user_id === userId && userId ? conversation.peer.name : 'Deleted person';
+  }
+
+  private delivery(conversation: ChatConversation | undefined, seq: number): ChatDeliveryState {
+    if (conversation?.peer_read_seq != null && seq <= conversation.peer_read_seq) return 'read';
+    return conversation && seq <= conversation.peer_delivered_seq ? 'delivered' : 'sent';
+  }
+
+  private build(conversationId: string): ChatThreadItem[] {
+    const conversation = this.server.find(item => item.id === conversationId);
+    const records = [...this.messages.values()].filter(record => record.conversation_id === conversationId).sort((a, b) => a.seq - b.seq);
+    const items: ChatThreadItem[] = [];
+    const byId = new Map<string, ChatThreadMessage>();
+    const quoted: [ChatThreadMessage, string][] = [];
+    const message = (record: Stored | Outgoing, sending: Outgoing | null): ChatThreadMessage => {
+      const sender = 'sender_user_id' in record ? record.sender_user_id : this.me.id;
+      const item: ChatThreadMessage = {
+        kind: 'message', id: record.id, seq: sending ? null : (record as Stored).seq, sender_user_id: sender,
+        sender_name: 'sender_name' in record ? record.sender_name : this.me.name, from_me: sender === this.me.id,
+        text: record.text, reply_to: null, edited: false, deleted: 'deleted' in record && record.deleted,
+        unreadable: 'unreadable' in record && record.unreadable, created_at: record.created_at,
+        delivery: sender !== this.me.id ? null : sending ? (sending.error ? 'failed' : 'sending') : this.delivery(conversation, (record as Stored).seq),
+        edit_state: null, error: sending?.error ?? null,
+      };
+      if (record.reply_to) quoted.push([item, record.reply_to]);
+      byId.set(item.id, item);
+      return item;
+    };
+    for (const record of records) {
+      if (record.kind === 'device-added') {
+        items.push({ kind: 'device-added', id: record.id, user_id: record.sender_user_id, name: record.sender_name, created_at: record.created_at });
+      } else if (record.replaces) {
+        // An edit counts only from the message's own sender.
+        const original = byId.get(record.replaces);
+        if (original && !original.deleted && record.text !== null && original.sender_user_id === record.sender_user_id) Object.assign(original, { text: record.text, edited: true });
+      } else {
+        items.push(message(record, null));
+      }
+    }
+    for (const entry of this.outbox.filter(item => item.conversation_id === conversationId)) {
+      if (!entry.replaces) { items.push(message(entry, entry)); continue; }
+      const original = byId.get(entry.replaces);
+      if (original && !original.deleted) Object.assign(original, { text: entry.text, edited: true, edit_state: entry.error ? 'failed' : 'sending', error: entry.error });
+    }
+    for (const [item, id] of quoted) {
+      const original = byId.get(id);
+      item.reply_to = { id, sender_name: original?.sender_name ?? '', text: original && !original.deleted ? original.text : null };
+    }
+    return items;
+  }
+
+  // --- Reading ---------------------------------------------------------------------------
+
+  sync(): Promise<void> {
+    if (this.syncing) { this.syncAgain = true; return this.syncing; }
+    this.syncing = (async () => {
+      do {
+        this.syncAgain = false;
+        await this.syncOnce();
+      } while (this.syncAgain && !this.stopped);
+    })().finally(() => { this.syncing = null; });
+    return this.syncing;
+  }
+
+  private async syncOnce() {
+    if (this.stopped || !this.store) return;
+    try {
+      await this.setAccount(await chatApi.account());
+      await this.setConversations(await chatApi.conversations());
+      if (!this.device) return;
+      for (const conversation of this.server) await this.fetchConversation(conversation);
+      this.channel?.postMessage('changed');
+      await this.archiveHeld();
+      await this.flush();
+    } catch (error) {
+      // The device must meet the person's app lock rule before Chat answers it.
+      if (error instanceof AppLockRequired) this.fail(error);
+      else if (!unreachable(error)) throw error;
+    }
+  }
+
+  private async setConversations(conversations: ChatConversation[]) {
+    const before = new Map(this.server.map(item => [item.id, JSON.stringify(item)]));
+    this.server = conversations;
+    for (const item of conversations) if (before.get(item.id) !== JSON.stringify(item)) this.changed(item.id);
+    this.changed(null);
+  }
+
+  private cursor(conversationId: string): Cursor {
+    return this.cursors.get(conversationId) ?? { conversation_id: conversationId, seq: 0, groups: [], members: null };
+  }
+
+  /** One step of the device (or of the store alone) that also stores records and a cursor; memory follows once stored. */
+  private async keep<T = undefined>(call: ((mls: MlsDevice) => T) | null, records: (result: T) => Stored[], cursor?: Cursor | ((result: T) => Cursor)): Promise<T> {
+    let kept: Stored[] = [];
+    let moved: Cursor | undefined;
+    const writes = (transaction: IDBTransaction, result: T) => {
+      kept = records(result);
+      moved = typeof cursor === 'function' ? cursor(result) : cursor;
+      kept.forEach(record => putRecord(transaction, record));
+      if (moved) transaction.objectStore('cursors').put(moved);
+    };
+    const result = call ? await this.device!.step(call, writes) : await this.store!.write([], transaction => writes(transaction, undefined as T)).then(() => undefined as T);
+    for (const record of kept) if (record.text !== null || record.deleted || this.messages.get(record.id)?.text == null) this.messages.set(record.id, record);
+    if (moved) this.cursors.set(moved.conversation_id, moved);
+    for (const id of new Set([...kept.map(record => record.conversation_id), ...moved ? [moved.conversation_id] : []])) this.changed(id);
+    return result;
+  }
+
+  private async fetchConversation(conversation: ChatConversation) {
+    let cursor = this.cursor(conversation.id);
+    // A server restored to an earlier state: read it again from the start; what this device holds stays.
+    if (conversation.last_seq < cursor.seq) await this.keep(null, () => [], cursor = { ...cursor, seq: 0 });
+    const current = conversation.current_group_id;
+    if (conversation.last_seq !== cursor.seq || (current && !cursor.groups.includes(current))) {
+      for (let more = true; more;) {
+        const page = await chatApi.messages(conversation.id, cursor.seq);
+        for (const welcome of page.welcomes) await this.join(conversation, welcome);
+        for (const message of page.messages) await this.receive(conversation, message);
+        cursor = this.cursor(conversation.id);
+        more = page.more;
+      }
+    }
+    // Every message of an older group was read: its state goes.
+    const held = cursor.groups.indexOf(current ?? '');
+    if (held > 0 && cursor.seq >= conversation.last_seq) {
+      for (const group of cursor.groups.slice(0, held)) await this.device!.step(mls => mls.delete_group(encode(group))).catch(() => undefined);
+      await this.keep(null, () => [], { ...cursor, groups: cursor.groups.slice(held) });
+    }
+    if (cursor.seq > conversation.delivered_seq) {
+      await chatApi.marks(conversation.id, { delivered_seq: cursor.seq });
+      conversation.delivered_seq = cursor.seq;
+    }
+  }
+
+  /** The "added a device" lines of a group this device is now in, against the group before it. */
+  private addedDevices(conversation: ChatConversation, groupId: string, members: string[], before: string[] | null, seq: number, at: string): Stored[] {
+    return (before ? members.filter(name => !before.includes(name)) : []).map(name => ({
+      id: `${groupId}:${name}`, conversation_id: conversation.id, seq: seq + 0.5, kind: 'device-added', replaces: null,
+      sender_user_id: userOf(name), sender_name: this.nameOf(userOf(name), conversation), text: null, reply_to: null,
+      deleted: false, unreadable: false, created_at: at, archived: true,
+    }));
+  }
+
+  private async join(conversation: ChatConversation, welcome: ChatWelcome) {
+    const cursor = this.cursor(conversation.id);
+    if (!cursor.groups.includes(welcome.group_id)) {
+      try {
+        await this.keep(mls => { mls.join(fromBase64Url(welcome.welcome)); return mls.members(encode(welcome.group_id)); },
+          members => this.addedDevices(conversation, welcome.group_id, members, cursor.members, cursor.seq, welcome.created_at),
+          members => ({ ...cursor, groups: [...cursor.groups, welcome.group_id], members }));
+      } catch (error) {
+        // A Welcome this device cannot open costs its group; the next message from here makes one it is in.
+        if (!(error instanceof MlsError)) throw error;
+        return;
+      }
+    }
+    await chatApi.joined(welcome.group_id);
+  }
+
+  private async receive(conversation: ChatConversation, message: ChatMessage) {
+    const cursor = this.cursor(conversation.id);
+    if (message.seq <= cursor.seq) return;
+    const next = { ...cursor, seq: message.seq };
+    const known = this.messages.get(message.id);
+    const record: Stored = known ? { ...known, seq: message.seq } : {
+      id: message.id, conversation_id: conversation.id, seq: message.seq, kind: 'message', replaces: message.replaces,
+      sender_user_id: message.sender_user_id, sender_name: this.nameOf(message.sender_user_id, conversation), text: null, reply_to: null,
+      deleted: message.ciphertext === null, unreadable: false, created_at: message.created_at, archived: false,
+    };
+    if (message.kind === 'delete') {
+      const gone = [...this.messages.values()].filter(item => item.id === message.replaces || item.replaces === message.replaces);
+      await this.keep(null, () => gone.map(item => ({ ...item, text: null, deleted: true })), next);
+      await this.dropOutgoing(item => item.replaces === message.replaces);
+      return;
+    }
+    // This device's own messages were stored when they were sent; MLS cannot open them here.
+    if (record.deleted || known?.text != null || message.sender_chat_device_id === this.device!.id) {
+      await this.keep(null, () => [{ ...record, unreadable: !record.deleted && record.text === null }], next);
+      return;
+    }
+    try {
+      await this.keep(mls => mls.decrypt(encode(message.group_id), fromBase64Url(message.ciphertext!)), plain => {
+        const content = parseContent(plain);
+        return [{ ...record, text: content.text, reply_to: content.reply_to, sender_name: content.name }];
+      }, next);
+    } catch (error) {
+      // Not in its group, tampered with, or the module stopped on it: it costs only itself.
+      if (!(error instanceof MlsError || error instanceof SyntaxError)) throw error;
+      await this.keep(null, () => [{ ...record, unreadable: true }], next);
+    }
+  }
+
+  // --- Sending ---------------------------------------------------------------------------
+
+  send(conversationId: string, text: string, replyTo: string | null = null) {
+    void this.enqueue({ id: crypto.randomUUID(), conversation_id: conversationId, text: this.checked(text), reply_to: replyTo, replaces: null }).catch(error => this.fail(error));
+  }
+
+  edit(messageId: string, text: string) {
+    const original = this.messages.get(messageId);
+    if (!original || original.sender_user_id !== this.me.id || original.deleted) throw new Error('Only your own messages can be edited.');
+    void this.enqueue({ id: crypto.randomUUID(), conversation_id: original.conversation_id, text: this.checked(text), reply_to: null, replaces: messageId })
+      .catch(error => this.fail(error));
+  }
+
+  private checked(text: string) {
+    if (!text.trim() || text.length > MAX_TEXT) throw new Error(`A message has 1 to ${MAX_TEXT.toLocaleString('en')} characters.`);
+    return text;
+  }
+
+  private async enqueue(entry: Omit<Outgoing, 'created_at' | 'error' | 'sealed'>) {
+    await this.store!.write([], transaction => {
+      transaction.objectStore('outbox').add({ ...entry, created_at: new Date().toISOString(), error: null, sealed: null } satisfies Outgoing);
+    });
+    await this.outboxChanged(entry.conversation_id);
+  }
+
+  private async outboxChanged(conversationId?: string) {
+    this.outbox = await this.store!.all<Outgoing>('outbox');
+    this.changed(conversationId);
+    if (this.leading) void this.flush().catch(() => undefined);
+    else this.channel?.postMessage('flush');
+  }
+
+  private async dropOutgoing(match: (entry: Outgoing) => boolean) {
+    const gone = this.outbox.filter(match);
+    if (!gone.length) return;
+    await this.store!.write([], transaction => gone.forEach(entry => transaction.objectStore('outbox').delete(entry.order!)));
+    await this.outboxChanged(gone[0].conversation_id);
+  }
+
+  retry(messageId: string) {
+    const entry = this.outbox.find(item => item.error && (item.id === messageId || item.replaces === messageId));
+    if (!entry) return;
+    void this.store!.write([], transaction => { transaction.objectStore('outbox').put({ ...entry, error: null }); })
+      .then(() => this.outboxChanged(entry.conversation_id)).catch(error => this.fail(error));
+  }
+
+  /** Sends the outbox in order, one at a time; stops while the server cannot be reached. */
+  private flush(): Promise<void> {
+    if (this.flushing) { this.flushAgain = true; return this.flushing; }
+    this.flushing = (async () => {
+      do {
+        this.flushAgain = false;
+        if (!this.device || !this.account || this.stopped) return;
+        this.outbox = await this.store!.all<Outgoing>('outbox');
+        for (const entry of this.outbox.filter(item => !item.error)) {
+          try {
+            await this.deliver(entry);
+          } catch (error) {
+            if (unreachable(error) || this.stopped) return;
+            await this.store!.write([], transaction => { transaction.objectStore('outbox').put({ ...entry, error: reason(error) }); });
+          }
+          this.outbox = await this.store!.all<Outgoing>('outbox');
+          this.changed(entry.conversation_id);
+          this.channel?.postMessage('changed');
+        }
+      } while (this.flushAgain);
+    })().finally(() => { this.flushing = null; });
+    return this.flushing;
+  }
+
+  private async deliver(entry: Outgoing) {
+    let stale: string | null = null;
+    for (let attempt = 1; ; attempt++) {
+      try {
+        const conversation = this.server.find(item => item.id === entry.conversation_id) ?? await this.reread(entry.conversation_id);
+        const sealed = entry.sealed && entry.sealed.group_id === conversation.current_group_id && entry.sealed.group_id !== stale
+          ? entry.sealed : await this.encrypt(entry, await this.groupFor(conversation, stale));
+        entry.sealed = sealed;
+        const content: Copy = { message_id: entry.id, conversation_id: entry.conversation_id, sender_user_id: this.me.id, replaces: entry.replaces,
+          created_at: entry.created_at, text: entry.text, reply_to: entry.reply_to, name: this.me.name };
+        const previews = entry.replaces ? [] : await Promise.all((await chatApi.devices(conversation.id))
+          .filter(device => device.user_id !== this.me.id && device.preview)
+          .map(async device => ({ chat_device_id: device.chat_device_id,
+            sealed: toBase64Url(await seal({ publicKey: fromBase64Url(device.preview!.p256dh), auth: fromBase64Url(device.preview!.auth) },
+              encode([...entry.text].slice(0, PREVIEW_CHARS).join('')))) })));
+        const posted = await chatApi.post(conversation.id, { id: entry.id, group_id: sealed.group_id, replaces: entry.replaces, format: FORMAT,
+          ciphertext: sealed.ciphertext, archive: await this.sealCopy(content), previews });
+        await this.store!.write([], transaction => {
+          transaction.objectStore('outbox').delete(entry.order!);
+          transaction.objectStore('messages').put(this.sentRecord(entry, posted));
+        });
+        this.messages.set(entry.id, this.sentRecord(entry, posted));
+        return;
+      } catch (error) {
+        if (!hasCode(error, 'CHAT_GROUP_STALE') || attempt === STALE_ATTEMPTS) throw error;
+        // The chat's devices changed or another device made a group: read again, then use or make the current one.
+        stale = entry.sealed?.group_id ?? null;
+        await this.reread(entry.conversation_id);
+      }
+    }
+  }
+
+  private sentRecord(entry: Outgoing, posted: ChatMessage): Stored {
+    return { id: entry.id, conversation_id: entry.conversation_id, seq: posted.seq, kind: 'message', replaces: entry.replaces,
+      sender_user_id: this.me.id, sender_name: this.me.name, text: entry.text, reply_to: entry.reply_to, deleted: false,
+      unreadable: false, created_at: posted.created_at, archived: true };
+  }
+
+  private async reread(conversationId: string) {
+    await this.setConversations(await chatApi.conversations());
+    const conversation = this.server.find(item => item.id === conversationId);
+    if (!conversation) throw new Error('This chat is gone.');
+    await this.fetchConversation(conversation);
+    return conversation;
+  }
+
+  /** Encrypts at send time, in send order, and stores the ciphertext with the group's new state. */
+  private async encrypt(entry: Outgoing, groupId: string) {
+    const content: Content = { text: entry.text, reply_to: entry.reply_to, name: this.me.name };
+    return this.device!.step(mls => ({ group_id: groupId, ciphertext: toBase64Url(mls.encrypt(encode(groupId), encode(JSON.stringify(content)))) }),
+      (transaction, sealed) => { transaction.objectStore('outbox').put({ ...entry, sealed }); });
+  }
+
+  /** The current group when this device is in it and the server did not just call it stale; else a new one. */
+  private async groupFor(conversation: ChatConversation, stale: string | null) {
+    const current = conversation.current_group_id;
+    // A Welcome to the current group may wait for this device.
+    if (current && current !== stale && !this.cursor(conversation.id).groups.includes(current)) await this.fetchConversation(conversation);
+    if (current && current !== stale && this.cursor(conversation.id).groups.includes(current)) return current;
+    const claimed = await chatApi.claimKeyPackages(conversation.id);
+    if (!claimed.some(item => item.user_id !== this.me.id)) throw new Error(conversation.peer.reason ?? `${conversation.peer.name} cannot be written to yet.`);
+    const groupId = crypto.randomUUID();
+    const before = this.cursor(conversation.id);
+    const made = await this.keep(mls => {
+      const welcome = mls.create_group(encode(groupId), concat(...claimed.map(item => fromBase64Url(item.key_package))));
+      return { welcome, members: mls.members(encode(groupId)) };
+    }, () => [], { ...before, groups: [...before.groups, groupId] });
+    try {
+      await chatApi.createGroup(conversation.id, { group_id: groupId, previous_group_id: current, welcome: toBase64Url(made.welcome),
+        chat_device_ids: [this.device!.id!, ...claimed.map(item => item.chat_device_id)] });
+    } catch (error) {
+      const now = this.cursor(conversation.id);
+      await this.device!.step(mls => mls.delete_group(encode(groupId))).catch(() => undefined);
+      await this.keep(null, () => [], { ...now, groups: now.groups.filter(group => group !== groupId) });
+      throw error;
+    }
+    conversation.current_group_id = groupId;
+    await this.keep(null, () => this.addedDevices(conversation, groupId, made.members, before.members, before.seq, new Date().toISOString()),
+      { ...this.cursor(conversation.id), members: made.members });
+    return groupId;
+  }
+
+  async openConversation(userId: string) {
+    const conversation = await chatApi.start(userId);
+    if (!this.server.some(item => item.id === conversation.id)) await this.setConversations([conversation, ...this.server]);
+    return conversation.id;
+  }
+
+  async delete(messageId: string) {
+    if (this.outbox.some(item => item.id === messageId)) return this.dropOutgoing(item => item.id === messageId || item.replaces === messageId);
+    await chatApi.delete(messageId);
+    const gone = [...this.messages.values()].filter(item => item.id === messageId || item.replaces === messageId);
+    await this.keep(null, () => gone.map(item => ({ ...item, text: null, deleted: true })));
+    await this.dropOutgoing(item => item.replaces === messageId);
+    this.channel?.postMessage('changed');
+    void this.sync().catch(() => undefined);
+  }
+
+  markRead(conversationId: string) {
+    if (document.visibilityState === 'hidden') return;
+    const conversation = this.server.find(item => item.id === conversationId);
+    const seq = this.cursor(conversationId).seq;
+    if (!conversation || seq <= conversation.read_seq) return;
+    this.server = this.server.map(item => item === conversation ? { ...item, read_seq: seq, unread: 0 } : item);
+    this.changed(conversationId);
+    void chatApi.marks(conversationId, { read_seq: seq }).catch(() => undefined);
+  }
+
+  // --- History key and archive -----------------------------------------------------------
+
+  /** Takes the server's account; a new history key (started elsewhere) means sealing everything again. */
+  private async setAccount(account: ChatAccount | null) {
+    const before = this.account;
+    const newKey = !!before && before.history_public !== account?.history_public;
+    const dropKey = !!this.historyKey && toBase64Url(this.historyKey.publicKey) !== account?.history_public;
+    const again = newKey ? [...this.messages.values()].filter(record => record.archived && record.kind === 'message').map(record => ({ ...record, archived: false })) : [];
+    await this.keep(null, () => again, undefined).then(() => this.store!.write([], transaction => {
+      transaction.objectStore('keys').put(account, 'account');
+      if (dropKey) transaction.objectStore('keys').delete('history');
+    }));
+    this.account = account;
+    if (dropKey) this.historyKey = null;
+    if (before?.history_public !== account?.history_public || before === undefined) this.changed();
+  }
+
+  private async keepKey(key: SealKey, account: ChatAccount) {
+    await this.store!.keepHistoryKey(key);
+    this.historyKey = key;
+    await this.setAccount(account);
+    this.channel?.postMessage('changed');
+    void this.sync().catch(() => undefined);
+  }
+
+  private sealCopy(copy: Copy) {
+    return seal({ publicKey: fromBase64Url(this.account!.history_public), auth: new Uint8Array(16) }, encode(JSON.stringify(copy))).then(toBase64Url);
+  }
+
+  /** Uploads the archive copies of what this device holds and the archive lacks. */
+  private async archiveHeld() {
+    if (!this.account) return;
+    const pending = [...this.messages.values()].filter(record => !record.archived && record.kind === 'message' && record.text !== null);
+    for (let start = 0; start < pending.length && !this.stopped; start += ARCHIVE_BATCH) {
+      const batch = pending.slice(start, start + ARCHIVE_BATCH);
+      const copies = await Promise.all(batch.map(async record => ({ message_id: record.id, sealed: await this.sealCopy({
+        message_id: record.id, conversation_id: record.conversation_id, sender_user_id: record.sender_user_id, replaces: record.replaces,
+        created_at: record.created_at, text: record.text!, reply_to: record.reply_to, name: record.sender_name }) })));
+      await chatApi.storeArchive(copies);
+      await this.keep(null, () => batch.map(record => ({ ...(this.messages.get(record.id) ?? record), archived: true })));
+    }
+  }
+
+  /** Reads the person's archive into the store; a copy whose ids are not its entry's is dropped. */
+  private async restore() {
+    this.restoring = { done: 0, total: null };
+    this.changed();
+    try {
+      let cursor: string | null = null;
+      do {
+        const page = await chatApi.archive(cursor);
+        const records: Stored[] = [];
+        for (const entry of page.copies) {
+          try {
+            const copy = JSON.parse(decode(await open(this.historyKey!, fromBase64Url(entry.sealed)))) as Copy;
+            if (copy.message_id !== entry.message_id || copy.conversation_id !== entry.conversation_id || typeof copy.text !== 'string') continue;
+            records.push({ id: entry.message_id, conversation_id: entry.conversation_id, seq: entry.seq, kind: 'message', replaces: copy.replaces ?? null,
+              sender_user_id: copy.sender_user_id ?? null, sender_name: String(copy.name ?? ''), text: copy.text, reply_to: copy.reply_to ?? null,
+              deleted: false, unreadable: false, created_at: String(copy.created_at ?? ''), archived: true });
+          } catch {
+            // A copy this key cannot open (sealed to an older key, or changed) is skipped.
+          }
+        }
+        await this.keep(null, () => records.filter(record => this.messages.get(record.id)?.text == null));
+        this.restoring = { done: this.restoring!.done + page.copies.length, total: page.cursor ? null : this.restoring!.done + page.copies.length };
+        this.changed();
+        cursor = page.cursor;
+      } while (cursor && !this.stopped);
+    } finally {
+      this.restoring = null;
+      this.changed();
+      this.channel?.postMessage('changed');
+    }
+  }
+
+  private async currentAccount() {
+    const account = await chatApi.account();
+    await this.setAccount(account);
+    return account;
+  }
+
+  async choosePassphrase(passphrase: string) {
+    const key = await createHistoryKey();
+    try {
+      await this.keepKey(key, await chatApi.createAccount(toBase64Url(key.publicKey), await wrapHistoryKey(key, passphrase)));
+    } catch (error) {
+      // Chosen on another device meanwhile: this one asks for that passphrase instead.
+      if (hasCode(error, 'CHAT_ACCOUNT_EXISTS')) await this.currentAccount();
+      throw error;
+    }
+  }
+
+  async enterPassphrase(passphrase: string) {
+    const account = await this.currentAccount();
+    if (!account) throw new Error('Choose a chat passphrase first.');
+    await this.keepKey(await unwrapHistoryKey(account, passphrase), account);
+    await this.restore();
+  }
+
+  async changePassphrase(currentPassword: string, passphrase: string) {
+    const key = this.historyKey;
+    if (!key) throw new Error('This device does not hold your chat history key. Enter your chat passphrase first.');
+    await this.keepKey(key, await chatApi.replaceKeyBackup(currentPassword, toBase64Url(key.publicKey), await wrapHistoryKey(key, passphrase)));
+  }
+
+  async startNewKey(currentPassword: string, passphrase: string) {
+    const key = await createHistoryKey();
+    await this.keepKey(key, await chatApi.newKey(currentPassword, toBase64Url(key.publicKey), await wrapHistoryKey(key, passphrase)));
+  }
+}
+
+// --- One engine per page, for the signed-in person --------------------------------------
+
+let current: { engine: Engine; userId: string; users: number } | null = null;
+
+/** A new engine for a person on this page; the app takes the shared one through acquireChatEngine. */
+export function startChatEngine(person: Person) {
+  const engine = new Engine(person);
+  void engine.start();
+  return engine;
+}
+
+/** The engine of a person, started on first use; release it when done (the last release stops it). */
+export function acquireChatEngine(person: Person): { engine: ChatEngine; release: () => void } {
+  if (current?.userId !== person.id) {
+    current?.engine.stop();
+    current = { engine: startChatEngine(person), userId: person.id, users: 0 };
+  }
+  const held = current;
+  held.users++;
+  let released = false;
+  return {
+    engine: held.engine,
+    release: () => {
+      if (released) return;
+      released = true;
+      held.users--;
+      // A page that remounts takes it again before this runs.
+      setTimeout(() => {
+        if (held.users || current !== held) return;
+        held.engine.stop();
+        current = null;
+      });
+    },
+  };
+}
