@@ -131,7 +131,8 @@ const defaultIdb = globalThis.indexedDB;
 Object.defineProperty(globalThis, 'indexedDB', { configurable: true, get: () => context.getStore()?.idb ?? defaultIdb });
 Object.defineProperty(navigator, 'locks', { configurable: true, get: () => context.getStore()?.locks });
 vi.stubGlobal('BroadcastChannel', Channel);
-vi.stubGlobal('window', new EventTarget());
+// The MLS module finds its randomness on `window` before `globalThis`.
+vi.stubGlobal('window', Object.assign(new EventTarget(), { crypto: globalThis.crypto }));
 vi.stubGlobal('document', { visibilityState: 'visible', addEventListener() {}, removeEventListener() {} });
 
 // --- The delivery service -----------------------------------------------------------------

@@ -5,7 +5,7 @@
 // the server will.
 import { concat, fromBase64Url, toBase64Url } from './bytes';
 import { ChatDevice } from './device';
-import { MlsError, type MlsDevice } from './mls';
+import { MlsError } from './mls';
 import { ChatStore } from './store';
 
 const devices = new Map<string, ChatDevice>();
@@ -13,6 +13,8 @@ const encode = (text: string) => new TextEncoder().encode(text);
 const decode = (bytes: Uint8Array) => new TextDecoder().decode(bytes);
 const device = (name: string) => devices.get(name) ?? Promise.reject(new Error(`no device ${name}: enrol first`));
 const store = (name: string) => ChatStore.open(`test-hook-${name}`);
+// The module's glue: its init answers the running instance's exports.
+const [glue] = Object.values(import.meta.glob<{ default(): Promise<{ __wbindgen_malloc(size: number, align: number): number }> }>('./mls-module/chat_mls.js'));
 
 const chatTest = {
   /** A new device named `name`; returns one key package. */
@@ -34,11 +36,15 @@ const chatTest = {
   decrypt: async (name: string, groupId: string, message: string) =>
     decode(await (await device(name)).step(mls => mls.decrypt(encode(groupId), fromBase64Url(message)))),
   /**
-   * Crashes the module for real: a call through a pointer outside its memory
-   * traps. True when the step reported the restart (MlsError `stopped`).
+   * Crashes the module for real, as a panic does: its allocator aborts (the
+   * `unreachable` trap) on an alignment that is not a power of two. True when
+   * the step reported the restart (MlsError `stopped`).
    */
-  trap: async (name: string) => (await device(name)).step(mls => (Object.assign(Object.create(Object.getPrototypeOf(mls)), { __wbg_ptr: 0xfffffff0 }) as MlsDevice)
-    .members(encode('any'))).then(() => false, (error: unknown) => error instanceof MlsError && error.kind === 'stopped'),
+  async trap(name: string) {
+    const exports = await (await glue()).default();
+    return (await device(name)).step(() => { exports.__wbindgen_malloc(8, 3); })
+      .then(() => false, (error: unknown) => error instanceof MlsError && error.kind === 'stopped');
+  },
 };
 
 Object.assign(window, { chatTest });
