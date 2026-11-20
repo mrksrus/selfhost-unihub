@@ -245,6 +245,7 @@ async function pruneRemovedChatDevices(executor: SqlExecutor = db): Promise<numb
 }
 
 export {
+  bytes, object, utcIso, ownChatDevice, notEnrolled,
   parseAccount, getAccount, createAccount, replaceKeyBackup, startNewKey,
   enrolDevice, describeChatDevice, addKeyPackages, validDevices, conversationDevices, claimKeyPackages,
   removeChatDeviceOfSession, pruneRemovedChatDevices,

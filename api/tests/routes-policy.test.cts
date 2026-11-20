@@ -337,6 +337,8 @@ const NOT_DESTRUCTIVE: Readonly<Record<string, string>> = {
   // Shared calendars: a group's or the organisation's calendar is hidden and kept for an administrator's restore.
   'DELETE /api/calendar/shared-calendars/:id': 'hides the calendar; an administrator restores it',
   'DELETE /api/calendar/calendars/:id/hand-over': 'withdraws or declines an offer; no data',
+  // Chat: the copies only the forgotten key opened can never be read again once the key is replaced, in the same transaction.
+  'POST /api/chat/account/new-key': 'drops archive copies nobody can open any more',
 };
 const removesData = (key: string) => {
   const [method, path] = key.split(' ');
@@ -344,6 +346,7 @@ const removesData = (key: string) => {
 };
 const DESTRUCTIVE = [
   'DELETE /api/address-books/:id/contacts/:contactId/photo', 'DELETE /api/backup/jobs/:id', 'DELETE /api/backup/restore-jobs/:id', 'DELETE /api/bin/:id', 'DELETE /api/calendar/accounts/:id',
+  'DELETE /api/chat/messages/:id',
   'DELETE /api/contacts/:id/photo', 'DELETE /api/mail/accounts/:id', 'DELETE /api/mail/folders/:slug', 'DELETE /api/settings/account', 'POST /api/bin/empty',
   'POST /api/mail/emails/bulk-delete',
   'POST /api/settings/clear-calendar', 'POST /api/settings/clear-contacts', 'POST /api/settings/clear-mail-accounts', 'POST /api/settings/clear-recordings',
@@ -371,6 +374,8 @@ test('each destructive route names the policies of what it removes', () => {
     // removed for good, not kept in the bin.
     'DELETE /api/bin/:id': ['bin.delete'], 'POST /api/bin/empty': ['bin.delete'], 'DELETE /api/contacts/:id/photo': ['bin.delete'],
     'DELETE /api/address-books/:id/contacts/:contactId/photo': ['bin.delete'],
+    // A chat message has no bin: deleting it is final.
+    'DELETE /api/chat/messages/:id': ['bin.delete'],
     'DELETE /api/settings/account': ['account.delete'],
     'POST /api/settings/clear-contacts': ['data.clear'], 'POST /api/settings/clear-recordings': ['data.clear'],
     // Clearing calendar or mail removes the module's accounts too.

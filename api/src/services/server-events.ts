@@ -85,6 +85,8 @@ function createServerEvents(options: BusOptions = {}) {
   const throttles = new Map<string, ThrottleState>();
   let heartbeat: NodeJS.Timeout | null = null;
   let closing = false;
+  // Told when a person's first stream opens and their last one closes.
+  let presence: ((userId: string, present: boolean) => void) | null = null;
 
   function startHeartbeat() {
     if (heartbeat || !config.heartbeatMs) return;
@@ -122,7 +124,10 @@ function createServerEvents(options: BusOptions = {}) {
     const own = byUser.get(stream.userId);
     if (own) {
       own.delete(stream);
-      if (!own.size) byUser.delete(stream.userId);
+      if (!own.size) {
+        byUser.delete(stream.userId);
+        if (!closing) presence?.(stream.userId, false);
+      }
     }
     for (const event of ['close', 'error']) stream.res.off?.(event, stream.onClose!);
     try { stream.res.end(); } catch { /* already ended */ }
@@ -172,8 +177,10 @@ function createServerEvents(options: BusOptions = {}) {
     stream.onClose = () => close(stream);
     for (const event of ['close', 'error']) res.on?.(event, stream.onClose);
     streams.add(stream);
-    if (!byUser.has(user)) byUser.set(user, new Set());
+    const first = !byUser.has(user);
+    if (first) byUser.set(user, new Set());
     byUser.get(user)!.add(stream);
+    if (first) presence?.(user, true);
     res.writeHead(200, {
       'Content-Type': 'text/event-stream; charset=utf-8',
       'Cache-Control': 'no-store, no-transform',
@@ -281,6 +288,7 @@ function createServerEvents(options: BusOptions = {}) {
     setUserModules,
     tick,
     hasListeners: (userId: unknown) => byUser.has(String(userId)),
+    onPresence: (listener: typeof presence) => { presence = listener; },
     stats: () => ({ streams: streams.size, users: byUser.size, throttled: throttles.size }),
     config,
   };

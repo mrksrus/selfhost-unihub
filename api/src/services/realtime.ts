@@ -15,6 +15,7 @@ import { OPERATION_STATES } from './mail-engine/operation-states';
 import { JOB_KINDS } from './mail-engine/job-kinds';
 
 type Bus = Pick<typeof serverEvents, 'publish' | 'hasListeners' | 'closeUser' | 'closeToken' | 'closeTokenHash' | 'setUserModules' | 'stats'>;
+type BrowserBus = Bus & Pick<typeof serverEvents, 'onPresence'>;
 interface PublishOptions<T> {
   module?: string | null;
   throttleKey?: string | null;
@@ -38,7 +39,7 @@ interface MailJobHint {
 }
 interface OperationHint { accountId: string | null; operationIds: (string | null)[]; state: string | null }
 
-function createRealtime({ browser, devices }: { browser: Bus; devices: Bus }) {
+function createRealtime({ browser, devices }: { browser: BrowserBus; devices: Bus }) {
   const buses = [browser, devices];
 
   function publishToUser<T>(userId: unknown, type: string, data: T, options: PublishOptions<T> = {}) {
@@ -78,6 +79,15 @@ function createRealtime({ browser, devices }: { browser: Bus; devices: Bus }) {
     return buses.some(bus => bus.hasListeners(userId));
   }
 
+  // Presence: a page of the person holds a browser stream. A phone's
+  // notification stream alone does not count, or every phone would be online.
+  function isPresent(userId: unknown) {
+    return browser.hasListeners(userId);
+  }
+  function onPresence(listener: (userId: string, present: boolean) => void) {
+    browser.onPresence(listener);
+  }
+
   // Module filters belong to browser streams; a device stream's filter is its
   // device id and must not be replaced by the module set.
   function setUserModules(userId: unknown, modules: Iterable<string>) {
@@ -88,7 +98,7 @@ function createRealtime({ browser, devices }: { browser: Bus; devices: Bus }) {
     return { browser: browser.stats(), devices: devices.stats() };
   }
 
-  return { publishToUser, publishToUsers, closeSession, closeSessionKey, closeUser, isOnline, setUserModules, stats };
+  return { publishToUser, publishToUsers, closeSession, closeSessionKey, closeUser, isOnline, isPresent, onPresence, setUserModules, stats };
 }
 
 const realtime = createRealtime({ browser: serverEvents, devices: androidStreams });
@@ -195,6 +205,18 @@ function publishCalendarShares(userIds: Iterable<unknown>, hub: Realtime = realt
   }
 }
 
+// --- Chat --------------------------------------------------------------------
+
+/** A conversation of these people has new entries or marks: refetch it. */
+function publishChatChanged(userIds: Iterable<unknown>, conversationId: string, hub: Realtime = realtime) {
+  hub.publishToUsers(userIds, 'chat.changed', { conversation_id: conversationId }, { module: 'chat', throttleKey: `chat.changed:${conversationId}` });
+}
+
+/** A person someone shares a conversation with opened their first page or closed their last. */
+function publishChatPresence(userId: unknown, subjectId: string, online: boolean, hub: Realtime = realtime) {
+  hub.publishToUser(userId, 'chat.presence', { user_id: subjectId, online }, { module: 'chat' });
+}
+
 export {
   createRealtime,
   realtime,
@@ -204,5 +226,7 @@ export {
   publishCalendarChanged,
   publishBooksChanged,
   publishCalendarShares,
+  publishChatChanged,
+  publishChatPresence,
 };
 export type { Realtime, PublishOptions };

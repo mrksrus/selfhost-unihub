@@ -6,6 +6,7 @@ import type { DeviceLockState } from './devices';
 
 import crypto from 'crypto';
 import { db } from '../state';
+import { CHAT_MANIFEST } from '../modules/chat';
 import { appLockShortfall, currentDevice, deviceLockFor, lockCovers } from './devices';
 import { ApiError, badRequest } from '../http/errors';
 import { isModuleBackgroundEnabled } from './module-settings';
@@ -151,7 +152,7 @@ async function deviceStatus(userId: string, endpoint: unknown) {
 interface Rendering { title: string; body: string }
 type Render<S> = (source: S, payload: NotificationPayload) => Rendering;
 interface SourceKind<S> {
-  module: 'mail' | 'calendar';
+  module: 'mail' | 'calendar' | 'chat';
   /** The source as it is now; null when it is gone or no longer news (read, a draft, done, hidden). */
   load(userId: string, sourceId: string, connection: SqlExecutor, payload: NotificationPayload): Promise<S | null>;
   /** Whether the queued payload still describes the source (a reminder's occurrence and offset). */
@@ -160,6 +161,8 @@ interface SourceKind<S> {
   level(userId: string, source: S, connection: SqlExecutor): Promise<string | null>;
   /** What each level shows; 'none' is also used for a level the kind does not know. */
   render: { none: Render<S> } & Record<string, Render<S>>;
+  /** At the level 'full', what only this device is sent (a chat preview sealed to its key). */
+  deviceContent?(payload: NotificationPayload, deviceId: string, connection: SqlExecutor): Promise<Record<string, unknown>>;
   expiresAt(source: S, payload: NotificationPayload, now: number): Date;
 }
 interface FixedKind {
@@ -281,6 +284,8 @@ const newCalendarItem = (title: string) => defineSourceKind<CalendarSource>({
   expiresAt: (_event, _payload, now) => new Date(now + DAY_MS),
 });
 
+const chat = () => require('./chat') as typeof import('./chat');
+
 const KINDS: Readonly<Record<string, KindSpec>> = Object.freeze({
   mail: defineSourceKind<MailSource>({
     module: 'mail', load: loadMail, level: mailLevel,
@@ -337,6 +342,19 @@ const KINDS: Readonly<Record<string, KindSpec>> = Object.freeze({
     },
     expiresAt: (_notice, _payload, now) => new Date(now + 7 * DAY_MS),
   }),
+  // A chat message (services/chat.ts): the server cannot read it, so the text
+  // is only in the preview the sender sealed to each device.
+  chat: defineSourceKind<import('./chat').ChatNotificationSource>({
+    module: 'chat', load: (userId, messageId, connection) => chat().notificationSource(userId, messageId, connection),
+    level: async (userId, _message, connection) => (await settingValues('user', userId, userId, connection)).chat_notification_detail,
+    render: {
+      full: message => ({ title: message.sender, body: 'New message' }),
+      sender: message => ({ title: message.sender, body: 'New message' }),
+      none: () => ({ title: 'New message', body: '' }),
+    },
+    deviceContent: (payload, deviceId, connection) => chat().previewFor(payload, deviceId, connection),
+    expiresAt: (_message, _payload, now) => new Date(now + DAY_MS),
+  }),
   recording: {
     module: 'recordings',
     // An upload that moved on, finished or was cancelled needs no warning.
@@ -366,6 +384,7 @@ const KINDS: Readonly<Record<string, KindSpec>> = Object.freeze({
   },
   test: { module: null },
 });
+for (const id of CHAT_MANIFEST.notificationKinds) if (KINDS[id]?.module !== CHAT_MANIFEST.module.id) throw new Error(`Notification kind ${id} is not registered`);
 const kindOf = (kind: string): KindSpec | null => Object.prototype.hasOwnProperty.call(KINDS, kind) ? KINDS[kind] : null;
 const clip = ({ title, body }: Rendering): Rendering => ({ title: String(title || 'UniHub').slice(0, 120), body: String(body || '').slice(0, 400) });
 
@@ -378,10 +397,11 @@ async function prepare(kind: SourceKind<unknown>, userId: string, sourceId: stri
   const level = await kind.level(userId, source, connection);
   if (!level) return null;
   const render = Object.prototype.hasOwnProperty.call(kind.render, level) ? kind.render[level] : kind.render.none;
-  return { source, rendering: clip(render(source, payload)) };
+  return { source, level, rendering: clip(render(source, payload)) };
 }
 /** The device a delivery goes to, as the privacy stage reads it: its lock state (undefined without a record), what the person's policies require, and whether their 2FA grace has ended. */
 interface DeliveryDevice {
+  id?: string;
   lock: DeviceLockState | undefined;
   requirement: Pick<AppLockRequiredDetails, 'required' | 'max_background'>;
   twoFactorRefused?: boolean;
@@ -417,7 +437,11 @@ async function currentPayload(row: EventRow, payload: NotificationPayload, conne
   const prepared = await prepare(kind, row.user_id, row.source_id, payload, connection);
   if (!prepared) return null;
   const stored = { ...payload, ...prepared.rendering };
-  return { stored, sent: hidden ? { ...stored, ...clip(kind.render.none(prepared.source, payload)) } : stored };
+  // The previews sealed to each device stay in the stored copy; a device is sent only its own.
+  const { previews: _sealed, ...shared }: NotificationPayload = stored;
+  if (hidden) return { stored, sent: { ...shared, ...clip(kind.render.none(prepared.source, payload)) } };
+  const own = device?.id && prepared.level === 'full' && kind.deviceContent ? await kind.deviceContent(payload, device.id, connection) : {};
+  return { stored, sent: { ...shared, ...own } };
 }
 // The user's devices that can still be reached: subscriptions of live sessions.
 async function subscribedDevices(userId: string, connection: SqlExecutor, endpointHash: string | null = null) {
@@ -663,7 +687,7 @@ async function deliverBatch(connection: SqlExecutor, now: Date, rows: DueDeliver
     // Filtered and rendered again: settings, the device's lock and the
     // policies may have changed since it was queued, also while an earlier
     // send of this batch waited on its transport, so all are read per send.
-    const device = { lock: (await deviceLockFor([row.device_id], connection)).get(row.device_id), requirement: await appLockRequirementFor(row.user_id, connection),
+    const device = { id: row.device_id, lock: (await deviceLockFor([row.device_id], connection)).get(row.device_id), requirement: await appLockRequirementFor(row.user_id, connection),
       twoFactorRefused: !!(await twoFactorRequirement(row.user_id, null, new Date(), connection)).refused };
     const current = await currentPayload(row, queued, connection, device);
     // Recheck after source reads, before changing queued work or starting network IO.

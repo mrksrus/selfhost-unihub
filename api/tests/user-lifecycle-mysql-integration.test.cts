@@ -36,7 +36,7 @@ function response() {
   return { headers, setHeader(key: string, value: FixtureValue) { headers.set(key, value); }, getHeader(key: string) { return headers.get(key); } };
 }
 
-test('deleting a user removes their rows and files under every root, nothing of another user, and never during their restore',
+test('deleting a user removes their rows and files under every root, nothing of another user (their chats stay with the other person), and never during their restore',
   { skip: !process.env.MYSQL_TEST_HOST, timeout: 120000 }, async (t) => {
     const options = { host: process.env.MYSQL_TEST_HOST, port: Number(process.env.MYSQL_TEST_PORT || 3306),
       user: process.env.MYSQL_TEST_USER || 'unihub_test', password: process.env.MYSQL_TEST_PASSWORD || 'test-db-password',
@@ -114,16 +114,30 @@ test('deleting a user removes their rows and files under every root, nothing of 
     };
     const a = await seed('a');
     const b = await seed('b');
+    // A chat between them: each has a chat account and device, A wrote a message, both keep an archive copy.
+    for (const who of [a, b]) {
+      await connection.execute<ResultSetHeader>(`INSERT INTO chat_accounts (user_id, history_public, key_backup, backup_salt, backup_rounds, backup_format)
+        VALUES (?, 'synthetic-public', 'synthetic-wrapped', 'synthetic-salt', 600000, 1)`, [who.user]);
+      await connection.execute<ResultSetHeader>('INSERT INTO chat_devices (id, user_id) VALUES (UUID(), ?)', [who.user]);
+    }
+    const chat = crypto.randomUUID(), chatGroup = crypto.randomUUID(), chatMessage = crypto.randomUUID();
+    await connection.execute<ResultSetHeader>("INSERT INTO chat_conversations (id, kind, direct_key, created_by) VALUES (?, 'direct', ?, ?)", [chat, [a.user, b.user].sort().join(':'), a.user]);
+    await connection.execute<ResultSetHeader>('INSERT INTO chat_groups (id, conversation_id) VALUES (?, ?)', [chatGroup, chat]);
+    await connection.execute<ResultSetHeader>(`INSERT INTO chat_messages (id, conversation_id, seq, group_id, sender_user_id, sender_chat_device_id, ciphertext)
+      SELECT ?, ?, 1, ?, user_id, id, 'synthetic-ciphertext' FROM chat_devices WHERE user_id = ?`, [chatMessage, chat, chatGroup, a.user]);
+    await connection.execute<ResultSetHeader>("INSERT INTO chat_archive (user_id, message_id, sealed) VALUES (?, ?, 'synthetic-copy'), (?, ?, 'synthetic-copy')", [a.user, chatMessage, b.user, chatMessage]);
+    const chatMessageRow = async () => Object.values((await connection.execute<RowDataPacket[]>('SELECT sender_user_id, sender_chat_device_id, ciphertext FROM chat_messages WHERE id = ?', [chatMessage]))[0][0]);
 
     const count = async (table: string, userId: string) => Number((await connection.execute<RowDataPacket[]>(`SELECT COUNT(*) AS n FROM ${table} WHERE user_id = ?`, [userId]))[0][0].n);
     const userExists = async (userId: string) => (await connection.execute<RowDataPacket[]>('SELECT id FROM users WHERE id = ?', [userId]))[0].length === 1;
     const present = (files: readonly string[]) => files.filter(file => fs.existsSync(file));
     const everythingOf = async (who: { user: string; files: string[] }) => ({
       user: await userExists(who.user),
-      rows: [await count('mail_accounts', who.user), await count('emails', who.user), await count('email_attachments', who.user), await count('recordings', who.user), await count('data_export_jobs', who.user)],
+      rows: [await count('mail_accounts', who.user), await count('emails', who.user), await count('email_attachments', who.user), await count('recordings', who.user), await count('data_export_jobs', who.user),
+        await count('chat_accounts', who.user), await count('chat_devices', who.user), await count('chat_archive', who.user)],
       files: present(who.files).length,
     });
-    const intact = { user: true, rows: [1, 2, 2, 1, 1], files: 9 };
+    const intact = { user: true, rows: [1, 2, 2, 1, 1, 1, 1, 1], files: 9 };
     assert.deepEqual(await everythingOf(a), intact);
     assert.deepEqual(await everythingOf(b), intact);
 
@@ -146,7 +160,8 @@ test('deleting a user removes their rows and files under every root, nothing of 
 
     await connection.execute<ResultSetHeader>("UPDATE backup_restore_jobs SET status = 'completed' WHERE id = ?", [restore]);
     assert.deepEqual(await adminDelete(admin, a.user), { message: 'User deleted' });
-    assert.deepEqual(await everythingOf(a), { user: false, rows: [0, 0, 0, 0, 0], files: 0 });
+    assert.deepEqual(await everythingOf(a), { user: false, rows: [0, 0, 0, 0, 0, 0, 0, 0], files: 0 });
+    assert.deepEqual(await chatMessageRow(), [null, null, 'synthetic-ciphertext'], "A's message stays in B's conversation, with the sender empty");
     for (const root of Object.values(ROOTS)) assert.equal(fs.existsSync(path.join(root, a.user)), false, `${root} still has A's directory`);
     assert.deepEqual(await everythingOf(b), intact, 'B keeps every row and file');
 
@@ -162,6 +177,6 @@ test('deleting a user removes their rows and files under every root, nothing of 
     const cookies = (res.headers.get('Set-Cookie') as string[]).join('\n');
     assert.match(cookies, /auth-token=;/);
     assert.match(cookies, /csrf-token=;/);
-    assert.deepEqual(await everythingOf(b), { user: false, rows: [0, 0, 0, 0, 0], files: 0 });
+    assert.deepEqual(await everythingOf(b), { user: false, rows: [0, 0, 0, 0, 0, 0, 0, 0], files: 0 });
     assert.equal(await userExists(admin), true);
   });

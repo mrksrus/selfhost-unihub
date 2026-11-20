@@ -78,7 +78,7 @@ async function startTestApi(t: TestContext) {
         headers: {
           ...(body === undefined || Buffer.isBuffer(body) ? {} : { 'content-type': 'application/json' }),
           ...extraHeaders,
-          ...(cookies.size ? { cookie: [...cookies].map(([name, value]) => `${name}=${value}`).join('; ') } : {}),
+          ...(cookies.size ? { cookie: cookie() } : {}),
           ...(csrfToken && method !== 'GET' ? { 'x-csrf-token': csrfToken } : {}),
         },
         body: body === undefined ? undefined : Buffer.isBuffer(body) ? new Uint8Array(body) : JSON.stringify(body),
@@ -95,7 +95,9 @@ async function startTestApi(t: TestContext) {
       if (typeof parsed?.csrfToken === 'string') csrfToken = parsed.csrfToken;
       return { status: response.status, body: parsed, headers: Object.fromEntries(response.headers), bytes };
     }
-    return { request, get signedIn() { return cookies.has('auth-token'); } };
+    // The cookie header, for a request the client cannot make itself (a live stream).
+    const cookie = () => [...cookies].map(([name, value]) => `${name}=${value}`).join('; ');
+    return { request, cookie, get signedIn() { return cookies.has('auth-token'); } };
   }
   return { origin, client };
 }

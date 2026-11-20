@@ -6,6 +6,25 @@ Read the [upgrade guide](docs/UPGRADING.md) before updating an existing
 installation, and keep a consistent backup of the database, uploads, configuration and
 secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
+## 0.33.0 (unreleased)
+
+### Added
+
+- **Chat messages are end-to-end encrypted.** The server stores and passes
+  on what it cannot read; only the two people in a chat can open it. One
+  chat per pair of people: starting it again opens the same one.
+- **Deleting a chat message** removes it, with its earlier versions, for
+  both people. It is final, so it is refused while the administrator does
+  not allow deleting for good.
+- **Read receipts and presence** ("UniHub is open") show only when both
+  people have them on; an administrator can lock either on or off for a
+  group.
+- **Chat notifications.** At the detail "Full" each device shows the text
+  the sender encrypted for it; "Sender" shows only who wrote, "None" only
+  "New message". A device whose app lock covers Chat, or a person whose time
+  to set up two-factor sign-in has run out, gets "New message" only. A
+  message read or deleted before its notification went out is not sent.
+
 ## 0.32.0
 
 Shared calendars: share your calendars and task lists, calendars for groups

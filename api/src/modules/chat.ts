@@ -1,9 +1,9 @@
 import type { BackupDataClass } from '../contracts/backup';
 
 // The manifest of the Chat module (F11): what the module catalog, the page
-// list and the data inventory read about it. Data only, so every registry
-// can import it without a cycle; the routes are routes/chat-devices.ts with
-// module 'chat' on their specs.
+// list, the data inventory and the notification kinds read about it. Data
+// only, so every registry can import it without a cycle; the routes are
+// routes/chat-devices.ts and routes/chat.ts with module 'chat' on their specs.
 //
 // Chat has no recovery section: no personal backup carries it, because the
 // server cannot write a copy that opens outside UniHub (it cannot read the
@@ -24,6 +24,8 @@ const INSTANCE_ONLY = 'Never in a personal backup; the instance backup carries i
 const CHAT_MANIFEST = Object.freeze({
   module: Object.freeze({ id: 'chat', label: 'Chat', backgroundSupported: false, recoverySection: null }),
   pages: Object.freeze([Object.freeze({ id: 'chat', label: 'Chat', module: 'chat' })]),
+  // Its notification kinds; services/notifications.ts renders them and refuses to start without each.
+  notificationKinds: Object.freeze(['chat']),
   // Upgrade step 31 (chat-migration.ts).
   introducedIn: 31,
   excludedReason: 'Chats are not in a personal backup: the server cannot read them, and they are restored with the chat passphrase. Only the instance backup carries them, as stored.',
