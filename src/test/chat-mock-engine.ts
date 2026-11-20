@@ -24,10 +24,16 @@ export interface MockChatEngine extends ChatEngine {
   listeners(): number;
 }
 
-export const peer = (user_id: string | null, name: string, fields: Partial<ChatPeer> = {}): ChatPeer => ({ user_id, name, can_write: true, reason: null, online: null, ...fields });
+export const peer = (user_id: string | null, name: string, fields: Partial<ChatPeer> = {}): ChatPeer => ({ user_id, name, can_write: true, reason: null, online: null, active: true, ...fields });
+
+/** A direct conversation's summary with the defaults of a chat that keeps its messages and notifies of all. */
+export const direct = (fields: Pick<ChatConversationSummary, 'id' | 'peer' | 'unread' | 'last_activity_at' | 'last_message'>): ChatConversationSummary => ({
+  kind: 'direct', name: fields.peer.name, group: null, mentioned: false, catching_up: false, notify: 'all', retention_days: null, retention_from: null, ...fields,
+});
 
 export const message = (id: string, from_me: boolean, sender_name: string, created_at: string, text: string | null, fields: Partial<ChatThreadMessage> = {}): ChatThreadMessage => ({
   kind: 'message', id, seq: 1, sender_user_id: from_me ? 'user-ada' : `user-${sender_name.split(' ')[0].toLowerCase()}`, sender_name, from_me, text,
+  former_colleague: false, mentions: [], mentions_me: false, read_by: null,
   reply_to: null, edited: false, deleted: false, unreadable: false, created_at, delivery: from_me ? 'read' : null, edit_state: null, error: null, ...fields,
 });
 
@@ -86,6 +92,16 @@ export function createMockChatEngine(options: MockChatOptions = {}): MockChatEng
       conversations = conversations.map(conversation => (conversation.id === conversationId ? { ...conversation, unread: 0 } : conversation));
       publish();
     }),
+    createGroup: record('createGroup', async (_name: string, _people: unknown) => conversations[0]?.id ?? ''),
+    candidates: record('candidates', async (_query: string) => ({ people: [], groups: [], everyone: false })),
+    members: record('members', (_conversationId: string) => null),
+    rename: record('rename', async (_conversationId: string, _name: string) => {}),
+    addMembers: record('addMembers', async (_conversationId: string, _userIds: string[]) => {}),
+    removeMember: record('removeMember', async (_conversationId: string, _userId: string) => {}),
+    unfollow: record('unfollow', async (_conversationId: string) => {}),
+    leave: record('leave', async (_conversationId: string) => {}),
+    setNotify: record('setNotify', async (_conversationId: string, _notify: string) => {}),
+    search: record('search', (_query: string) => []),
     sync: record('sync', async () => {}),
     restart: record('restart', () => {}),
     choosePassphrase: record('choosePassphrase', async (_passphrase: string) => { readiness = { state: 'ready' }; publish(); }),
@@ -105,13 +121,13 @@ const blairs = (id: string, at: string, text: string | null, fields: Partial<Cha
 
 /** Ada's chats on Monday 15 June 2026, 09:30 UTC (the pictures' fixed time). */
 export const CHAT_CONVERSATIONS: ChatConversationSummary[] = [
-  { id: 'chat-blair', peer: BLAIR, unread: 2, last_activity_at: day('15', '09:24'), last_message: { text: 'Room 2 is free until ten.', from_me: false, deleted: false } },
-  { id: 'chat-alex', peer: peer('user-alex', 'Alex Example'), unread: 0, last_activity_at: day('14', '16:12'), last_message: { text: 'I will send the numbers tomorrow.', from_me: true, deleted: false } },
-  { id: 'chat-katherine', peer: peer('user-katherine', KATHERINE, { can_write: false, reason: `${KATHERINE} has not opened UniHub since the update.` }),
-    unread: 0, last_activity_at: day('02', '11:40'), last_message: { text: 'The year-end close is on the shared drive, under Finance, in the folder for this year.', from_me: false, deleted: false } },
-  { id: 'chat-grace', peer: peer('user-grace', 'Grace Hopper', { can_write: false, reason: 'Chat is off for Grace Hopper.' }), unread: 0, last_activity_at: '2026-05-28T08:05:00.000Z', last_message: { text: null, from_me: true, deleted: true } },
-  { id: 'chat-deleted', peer: peer(null, 'Deleted person', { can_write: false, reason: 'This person was deleted.' }), unread: 0, last_activity_at: '2025-11-03T13:30:00.000Z', last_message: { text: 'Thanks, that worked.', from_me: false, deleted: false } },
-  { id: 'chat-drew', peer: peer('user-drew', 'Drew Example', { can_write: false, reason: 'Drew Example is deactivated.' }), unread: 0, last_activity_at: null, last_message: null },
+  direct({ id: 'chat-blair', peer: BLAIR, unread: 2, last_activity_at: day('15', '09:24'), last_message: { text: 'Room 2 is free until ten.', from_me: false, deleted: false } }),
+  direct({ id: 'chat-alex', peer: peer('user-alex', 'Alex Example'), unread: 0, last_activity_at: day('14', '16:12'), last_message: { text: 'I will send the numbers tomorrow.', from_me: true, deleted: false } }),
+  direct({ id: 'chat-katherine', peer: peer('user-katherine', KATHERINE, { can_write: false, reason: `${KATHERINE} has not opened UniHub since the update.` }),
+    unread: 0, last_activity_at: day('02', '11:40'), last_message: { text: 'The year-end close is on the shared drive, under Finance, in the folder for this year.', from_me: false, deleted: false } }),
+  direct({ id: 'chat-grace', peer: peer('user-grace', 'Grace Hopper', { can_write: false, reason: 'Chat is off for Grace Hopper.' }), unread: 0, last_activity_at: '2026-05-28T08:05:00.000Z', last_message: { text: null, from_me: true, deleted: true } }),
+  direct({ id: 'chat-deleted', peer: peer(null, 'Deleted person', { can_write: false, reason: 'This person was deleted.' }), unread: 0, last_activity_at: '2025-11-03T13:30:00.000Z', last_message: { text: 'Thanks, that worked.', from_me: false, deleted: false } }),
+  direct({ id: 'chat-drew', peer: peer('user-drew', 'Drew Example', { can_write: false, reason: 'Drew Example is deactivated.' }), unread: 0, last_activity_at: null, last_message: null }),
 ];
 
 const supplier = mine('m1', day('12', '14:05'), 'Yes. They confirmed Thursday for the first batch.', { edited: true });

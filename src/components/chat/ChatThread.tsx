@@ -132,9 +132,9 @@ export function ChatThread({ engine, conversation, draft, onDraft }: Props) {
                       {(!before || day !== new Date(before.created_at).toDateString()) && (
                         <li className="py-3 text-center text-xs text-muted-foreground">{dayLabel(item.created_at)}</li>
                       )}
-                      {item.kind === 'device-added' ? (
+                      {item.kind !== 'message' ? (
                         <li className="flex items-center justify-center gap-1.5 py-2 text-center text-xs text-muted-foreground">
-                          <MonitorSmartphone aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />{item.user_id && item.user_id === user?.id ? 'You' : item.name} added a device
+                          <MonitorSmartphone aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />{item.user_id && item.user_id === user?.id ? 'You' : item.name} {{ 'device-added': 'added a device', joined: 'joined', left: 'left' }[item.kind]}
                         </li>
                       ) : (
                         <ChatMessage message={item} turn={before?.kind === 'message' && before.from_me !== item.from_me} showDelivery={marked.has(item.id)} canWrite={peer.can_write} deleteLock={deleteLock} quotedOwn={!!item.reply_to && own.has(item.reply_to.id)}

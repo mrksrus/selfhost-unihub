@@ -2,9 +2,11 @@
 // The engine keeps every message on the device and does all encryption; the
 // screens read snapshots and call actions. Snapshots keep their identity
 // until something in them changes, so they can feed useSyncExternalStore.
-import type { ChatPeer } from '../../../api/src/contracts/chat';
+import type {
+  ChatCandidatesResponse, ChatFollow, ChatMember, ChatNotify, ChatPeer, ChatRetentionDays, ChatRole,
+} from '../../../api/src/contracts/chat';
 
-export type { ChatPeer };
+export type { ChatCandidatesResponse, ChatFollow, ChatMember, ChatNotify, ChatPeer, ChatRetentionDays, ChatRole };
 
 /**
  * Whether Chat can be used on this device now:
@@ -26,10 +28,34 @@ export type ChatReadiness =
 /** The history being read from the archive after the passphrase; `total` is unknown until the server said it. */
 export interface ChatRestoreProgress { done: number; total: number | null }
 
+/** What a group chat is beyond its name. */
+export interface ChatGroupSummary {
+  /** null for a chat of chosen people. */
+  follows: ChatFollow | null;
+  role: ChatRole;
+  member_count: number;
+  /** Who added this person ("You were added by …"); null for its creator, in a followed chat, or once that person is gone. */
+  added_by: string | null;
+}
+
 export interface ChatConversationSummary {
   id: string;
+  kind: 'direct' | 'group';
+  /** The chat's name: the other person's in a direct chat. */
+  name: string;
+  /** The other person of a direct chat. In a group chat the chat itself (user_id null, its name), so a screen made for direct chats still shows it. */
   peer: ChatPeer;
+  /** null in a direct chat. */
+  group: ChatGroupSummary | null;
   unread: number;
+  /** An unread message mentions this person (the "@" mark). */
+  mentioned: boolean;
+  /** Several groups or pages are being read after a time away ("catching up"). */
+  catching_up: boolean;
+  notify: ChatNotify;
+  /** Messages older than this many days are deleted, from retention_from on; both null while messages are kept. */
+  retention_days: ChatRetentionDays | null;
+  retention_from: string | null;
   last_activity_at: string | null;
   /** The newest message, for the list's second line; null in a new conversation. */
   last_message: { text: string | null; from_me: boolean; deleted: boolean } | null;
@@ -49,8 +75,14 @@ export interface ChatThreadMessage {
   seq: number | null;
   /** null once the sender was deleted. */
   sender_user_id: string | null;
+  /** The directory's name while the sender is active; afterwards the name the message carries. */
   sender_name: string;
+  /** The sender was deleted or is deactivated. */
+  former_colleague: boolean;
   from_me: boolean;
+  /** The people the message mentions (user ids); their names are in the text as "@name". */
+  mentions: string[];
+  mentions_me: boolean;
   /** null when deleted or unreadable. */
   text: string | null;
   reply_to: { id: string; sender_name: string; text: string | null } | null;
@@ -61,14 +93,24 @@ export interface ChatThreadMessage {
   created_at: string;
   /** Own messages only; null for the other person's. */
   delivery: ChatDeliveryState | null;
+  /**
+   * An own message in a group chat: who read it, of the other people with
+   * read receipts on ("Read by 3 of 7"); null in a direct chat, for others'
+   * messages, while receipts are off for this person, or before members().
+   */
+  read_by: { people: { user_id: string; name: string }[]; of: number } | null;
   /** An own edit still in the outbox (`sending`) or refused (`failed`, with `error`; `retry()` sends it again); the text shown is already the new one. */
   edit_state: 'sending' | 'failed' | null;
   error: string | null;
 }
 
-/** "<name> added a device": a device of someone in the chat joined it. */
+/**
+ * A line between messages, worked out from the people of two groups:
+ * `device-added` ("<name> added a device"), `joined`, or `left` (left or was
+ * removed: the device cannot tell which).
+ */
 export interface ChatThreadNotice {
-  kind: 'device-added';
+  kind: 'device-added' | 'joined' | 'left';
   id: string;
   user_id: string | null;
   name: string;
@@ -76,6 +118,19 @@ export interface ChatThreadNotice {
 }
 
 export type ChatThreadItem = ChatThreadMessage | ChatThreadNotice;
+
+/** A search hit on this device: a chat by its name (`message_id` null), or a message to open the thread at. */
+export interface ChatSearchResult {
+  conversation_id: string;
+  chat_name: string;
+  message_id: string | null;
+  sender_name: string | null;
+  created_at: string | null;
+  /** The chat's name or the message's text. */
+  line: string;
+  /** Where the query is in `line`, as [start, end). */
+  match: [number, number];
+}
 
 export interface ChatEngineSnapshot {
   readiness: ChatReadiness;
@@ -95,8 +150,26 @@ export interface ChatEngine {
 
   /** Finds or makes the direct conversation with a person and returns its id. */
   openConversation(userId: string): Promise<string>;
-  /** Puts a message in the outbox and returns at once; its delivery state follows. Up to 8,000 characters. */
-  send(conversationId: string, text: string, replyTo?: string | null): void;
+  /** Makes a group chat of chosen people or following one organisation group (or everyone) and returns its id; rejects with the server's refusal. */
+  createGroup(name: string, people: { user_ids: string[] } | { follow: { kind: 'group'; id: string } | { kind: 'everyone' } }): Promise<string>;
+  /** People and organisation groups within reach for a new group chat or for adding to one. */
+  candidates(query: string): Promise<ChatCandidatesResponse>;
+  /** A chat's people with roles, reasons and marks, managers first; null until fetched (this call starts it), then kept current at each sync. */
+  members(conversationId: string): ChatMember[] | null;
+  /** A manager's changes; each rejects with the server's refusal. */
+  rename(conversationId: string, name: string): Promise<void>;
+  addMembers(conversationId: string, userIds: string[]): Promise<void>;
+  removeMember(conversationId: string, userId: string): Promise<void>;
+  /** A followed chat becomes a chat of the people it has now. */
+  unfollow(conversationId: string): Promise<void>;
+  /** Leaves a group chat; it goes from this device's list and store. */
+  leave(conversationId: string): Promise<void>;
+  /** What the chat notifies this person of. */
+  setNotify(conversationId: string, notify: ChatNotify): Promise<void>;
+  /** Chats by name and messages by text on this device, chats first, then the newest messages. */
+  search(query: string): ChatSearchResult[];
+  /** Puts a message in the outbox and returns at once; its delivery state follows. Up to 8,000 characters; `mentions`: up to 20 people of a group chat. */
+  send(conversationId: string, text: string, replyTo?: string | null, mentions?: string[]): void;
   /** A new text for one's own message. */
   edit(messageId: string, text: string): void;
   /** Deletes one's own message for both sides; rejects with the server's refusal (POLICY_FORBIDS). A message still in the outbox is discarded instead. */

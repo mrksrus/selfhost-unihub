@@ -32,17 +32,33 @@ async function contentKey(shared: ArrayBuffer, to: SealTo, senderPublic: Uint8Ar
   return { key, iv: await hkdf(salt, ikm, text('Content-Encoding: nonce\0'), 12) };
 }
 
+/** A given sender key pair's public half and its shared secret with each receiver, kept in memory while the pair lives. */
+const agreed = new WeakMap<CryptoKeyPair, { senderPublic: Promise<Uint8Array>; shared: Map<string, Promise<ArrayBuffer>> }>();
+
+async function agree(sender: CryptoKeyPair, to: SealTo) {
+  const receiver = await crypto.subtle.importKey('raw', to.publicKey, P256, false, []);
+  return crypto.subtle.deriveBits({ name: 'ECDH', public: receiver }, sender.privateKey, 256);
+}
+
 /**
  * Seals `plaintext` to a receiver as one aes128gcm record. The sender's key
- * pair is a new one each time unless `from` is given.
+ * pair is a new one each time unless `from` is given; with `from`, the key
+ * agreement with each receiver is done once.
  */
 export async function seal(to: SealTo, plaintext: Uint8Array, from?: CryptoKeyPair): Promise<Uint8Array<ArrayBuffer>> {
   const sender = from ?? await crypto.subtle.generateKey(P256, false, ['deriveBits']);
-  const senderPublic = new Uint8Array(await crypto.subtle.exportKey('raw', sender.publicKey));
-  const receiver = await crypto.subtle.importKey('raw', to.publicKey, P256, false, []);
-  const shared = await crypto.subtle.deriveBits({ name: 'ECDH', public: receiver }, sender.privateKey, 256);
+  let kept = agreed.get(sender);
+  if (!kept) agreed.set(sender, kept = { senderPublic: crypto.subtle.exportKey('raw', sender.publicKey).then(raw => new Uint8Array(raw)), shared: new Map() });
+  const secrets = kept.shared;
+  const receiverId = String.fromCharCode(...to.publicKey);
+  let shared = secrets.get(receiverId);
+  if (!shared) {
+    secrets.set(receiverId, shared = agree(sender, to));
+    shared.catch(() => secrets.delete(receiverId));
+  }
+  const senderPublic = await kept.senderPublic;
   const salt = crypto.getRandomValues(new Uint8Array(16));
-  const { key, iv } = await contentKey(shared, to, senderPublic, salt);
+  const { key, iv } = await contentKey(await shared, to, senderPublic, salt);
   // The delimiter 2 ends the last (here the only) record.
   const record = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, concat(plaintext, Uint8Array.of(2))));
   const header = new Uint8Array(21);

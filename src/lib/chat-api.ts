@@ -4,9 +4,10 @@
 import { api, type ApiResponse } from '@/lib/api';
 import { ApiError, unwrap } from '@/lib/api-error';
 import type {
-  ChatAccount, ChatAccountResponse, ChatArchiveCopy, ChatArchiveResponse, ChatConversationResponse, ChatConversationsResponse, ChatDirectConversation,
+  ChatAccount, ChatAccountResponse, ChatArchiveCopy, ChatArchiveResponse, ChatConversation, ChatConversationResponse, ChatConversationsResponse,
   ChatDevicesResponse, ChatGroupCreateRequest, ChatKeyBackup, ChatKeyPackageClaimResponse, ChatMarksRequest, ChatMarksResponse, ChatMessage,
-  ChatMessageCreateRequest, ChatMessageDeletedResponse, ChatMessageResponse, ChatMessagesResponse,
+  ChatMessageCreateRequest, ChatMessageDeletedResponse, ChatMessageResponse, ChatMessagesResponse, ChatCandidatesResponse, ChatConversationUpdatedResponse,
+  ChatGroupChatCreateRequest, ChatMembersResponse, ChatNotify, ChatNotifyResponse,
 } from '../../api/src/contracts/chat';
 
 const data = async <T>(response: Promise<ApiResponse<T>>) => unwrap(await response)!;
@@ -21,10 +22,18 @@ export const chatApi = {
   newKey: async (current_password: string, history_public: string, key_backup: ChatKeyBackup) =>
     (await data(api.post<ChatAccountResponse>('/chat/account/new-key', { current_password, history_public, key_backup }))).account!,
 
-  // Direct chats only until the pages show group chats.
-  conversations: async (): Promise<ChatDirectConversation[]> => (await data(api.get<ChatConversationsResponse>('/chat/conversations'))).conversations
-    .filter((item): item is ChatDirectConversation => item.kind === 'direct'),
-  start: async (user_id: string) => (await data(api.post<ChatConversationResponse>('/chat/conversations', { user_id }))).conversation as ChatDirectConversation,
+  conversations: async (): Promise<ChatConversation[]> => (await data(api.get<ChatConversationsResponse>('/chat/conversations'))).conversations,
+  start: async (user_id: string) => (await data(api.post<ChatConversationResponse>('/chat/conversations', { user_id }))).conversation,
+  startGroup: async (body: ChatGroupChatCreateRequest) => (await data(api.post<ChatConversationResponse>('/chat/conversations', body))).conversation,
+  candidates: (query: string) => data(api.get<ChatCandidatesResponse>(`/chat/candidates?q=${encodeURIComponent(query)}`)),
+  // The contract says PATCH, which the route table and this client do not have.
+  rename: (id: string, name: string) => data(api.put<ChatConversationUpdatedResponse>(conversation(id), { name })),
+  unfollow: (id: string) => data(api.post<ChatConversationUpdatedResponse>(`${conversation(id)}/unfollow`)),
+  members: async (id: string) => (await data(api.get<ChatMembersResponse>(`${conversation(id)}/members`))).members,
+  addMembers: async (id: string, user_ids: string[]) => (await data(api.post<ChatMembersResponse>(`${conversation(id)}/members`, { user_ids }))).members,
+  removeMember: async (id: string, userId: string) => (await data(api.delete<ChatMembersResponse>(`${conversation(id)}/members/${encodeURIComponent(userId)}`))).members,
+  leave: (id: string) => data(api.post(`${conversation(id)}/leave`)),
+  notify: (id: string, notify: ChatNotify) => data(api.put<ChatNotifyResponse>(`${conversation(id)}/notify`, { notify })),
   devices: async (id: string) => (await data(api.get<ChatDevicesResponse>(`${conversation(id)}/devices`))).devices,
   claimKeyPackages: async (id: string) => (await data(api.post<ChatKeyPackageClaimResponse>(`${conversation(id)}/key-packages`))).key_packages,
   createGroup: (id: string, body: ChatGroupCreateRequest) => data(api.post(`${conversation(id)}/groups`, body)),
