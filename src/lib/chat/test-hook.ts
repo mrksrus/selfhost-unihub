@@ -12,7 +12,8 @@ const devices = new Map<string, ChatDevice>();
 const encode = (text: string) => new TextEncoder().encode(text);
 const decode = (bytes: Uint8Array) => new TextDecoder().decode(bytes);
 const device = (name: string) => devices.get(name) ?? Promise.reject(new Error(`no device ${name}: enrol first`));
-const store = (name: string) => ChatStore.open(`test-hook-${name}`);
+// Not a person's store: signing in wipes those of everyone but the person signed in.
+const store = (name: string) => ChatStore.open(name, `unihub-chat-test:${name}`);
 
 const chatTest = {
   /** A new device named `name`; returns one key package. */

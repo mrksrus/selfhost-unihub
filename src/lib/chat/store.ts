@@ -27,10 +27,11 @@ function done<T>(request: IDBRequest<T>) {
 export class ChatStore {
   private constructor(private readonly db: IDBDatabase) {}
 
-  static open(userId: string): Promise<ChatStore> {
+  /** A person's store; `name` is another database for a store no person owns (the test hook's), which the wipes leave. */
+  static open(userId: string, name = databaseName(userId)): Promise<ChatStore> {
     return new Promise((resolve, reject) => {
       if (typeof indexedDB === 'undefined') { reject(new Error('Chat needs browser storage, which is not available here.')); return; }
-      const opening = indexedDB.open(databaseName(userId), 1);
+      const opening = indexedDB.open(name, 1);
       opening.onupgradeneeded = () => {
         const db = opening.result;
         db.createObjectStore('state');
