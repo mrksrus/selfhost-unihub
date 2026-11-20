@@ -4,6 +4,11 @@
 //! it: `changes()` hands out the entries an operation wrote or deleted, and a
 //! fresh `Device` gets them back with `put()`. A group never changes after it
 //! is made, so there are no commits to send or merge.
+//!
+//! Errors reach the page as thrown strings "<kind>: <detail>" (src/lib/chat/mls.ts):
+//! `refused` for a message, Welcome or key package from elsewhere that is
+//! malformed or fails its checks, `unknown-group`, `no-identity`, and `failed`
+//! for anything else.
 
 use std::collections::HashMap;
 
@@ -18,11 +23,18 @@ const SUITE: Ciphersuite = Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed2
 // Our own entry beside OpenMLS's: the signature public key, then the credential identity.
 const IDENTITY: &[u8] = b"unihub/identity";
 
-// Errors reach the page as thrown strings: a JsError cannot be made outside the browser, where the tests run.
+// Every message is padded to a multiple of this, so its length says little about the text.
+const PADDING: usize = 256;
+
+// Strings, not JsError: a JsError cannot be made outside the browser, where the tests run.
 type Result<T> = std::result::Result<T, String>;
 
+fn refused(error: impl std::fmt::Display) -> String {
+    format!("refused: {error}")
+}
+
 fn fail(error: impl std::fmt::Display) -> String {
-    error.to_string()
+    format!("failed: {error}")
 }
 
 /// One storage entry an operation changed; no value means it was deleted.
@@ -77,10 +89,18 @@ impl Device {
         changed
     }
 
-    /// A new key package (TLS-encoded), for someone to put this device into a group.
-    pub fn key_package(&mut self) -> Result<Vec<u8>> {
+    /// A new key package (TLS-encoded), for someone to put this device into a
+    /// group. A last-resort package stays usable after a group used it.
+    pub fn key_package(&mut self, last_resort: bool) -> Result<Vec<u8>> {
         let (signer, credential) = self.identity()?;
-        let bundle = KeyPackage::builder().build(SUITE, &self.provider, &signer, credential).map_err(fail)?;
+        // The server's device list decides which devices are valid; an expiry would only
+        // make a device that was away for months, or whose clock is off, impossible to add.
+        let mut builder = KeyPackage::builder().key_package_lifetime(Lifetime::init(0, u64::MAX));
+        if last_resort {
+            let capabilities = Capabilities::new(None, None, Some(&[ExtensionType::LastResort]), None, None);
+            builder = builder.mark_as_last_resort().leaf_node_capabilities(capabilities);
+        }
+        let bundle = builder.build(SUITE, &self.provider, &signer, credential).map_err(fail)?;
         bundle.key_package().tls_serialize_detached().map_err(fail)
     }
 
@@ -91,13 +111,14 @@ impl Device {
         let mut members = Vec::new();
         let mut rest = key_packages;
         while !rest.is_empty() {
-            let package = KeyPackageIn::tls_deserialize(&mut rest).map_err(fail)?;
-            members.push(package.validate(self.provider.crypto(), ProtocolVersion::Mls10).map_err(fail)?);
+            let package = KeyPackageIn::tls_deserialize(&mut rest).map_err(refused)?;
+            members.push(package.validate(self.provider.crypto(), ProtocolVersion::Mls10).map_err(refused)?);
         }
         let mut group = MlsGroup::builder()
             .ciphersuite(SUITE)
             .with_group_id(GroupId::from_slice(group_id))
             .use_ratchet_tree_extension(true)
+            .padding_size(PADDING)
             .build(&self.provider, &signer, credential)
             .map_err(fail)?;
         let (_commit, welcome, _info) = group.add_members(&self.provider, &signer, &members).map_err(fail)?;
@@ -107,13 +128,16 @@ impl Device {
 
     /// Joins the group of a Welcome and returns its group id.
     pub fn join(&mut self, welcome: &[u8]) -> Result<Vec<u8>> {
-        let welcome = match MlsMessageIn::tls_deserialize_exact(welcome).map_err(fail)?.extract() {
+        let welcome = match MlsMessageIn::tls_deserialize_exact(welcome).map_err(refused)?.extract() {
             MlsMessageBodyIn::Welcome(welcome) => welcome,
-            _ => return Err("not a Welcome".into()),
+            _ => return Err(refused("not a Welcome")),
         };
-        let group = StagedWelcome::new_from_welcome(&self.provider, &MlsGroupJoinConfig::default(), welcome, None)
+        let config = MlsGroupJoinConfig::builder().use_ratchet_tree_extension(true).padding_size(PADDING).build();
+        // Lifetimes are not checked: a group never changes, and a device may join one made long ago.
+        let group = StagedWelcome::build_from_welcome(&self.provider, &config, welcome)
+            .and_then(|builder| builder.skip_lifetime_validation().build())
             .and_then(|staged| staged.into_group(&self.provider))
-            .map_err(fail)?;
+            .map_err(refused)?;
         Ok(group.group_id().as_slice().to_vec())
     }
 
@@ -128,12 +152,23 @@ impl Device {
     /// Decrypts an application message of another member of the group.
     pub fn decrypt(&mut self, group_id: &[u8], message: &[u8]) -> Result<Vec<u8>> {
         let mut group = self.group(group_id)?;
-        let message = MlsMessageIn::tls_deserialize_exact(message).map_err(fail)?;
-        let message = message.try_into_protocol_message().map_err(fail)?;
-        match group.process_message(&self.provider, message).map_err(fail)?.into_content() {
+        let message = MlsMessageIn::tls_deserialize_exact(message).map_err(refused)?;
+        let message = message.try_into_protocol_message().map_err(refused)?;
+        match group.process_message(&self.provider, message).map_err(refused)?.into_content() {
             ProcessedMessageContent::ApplicationMessage(text) => Ok(text.into_bytes()),
-            _ => Err("not an application message".into()),
+            _ => Err(refused("not an application message")),
         }
+    }
+
+    /// The credential names of the group's members, this device included.
+    pub fn members(&self, group_id: &[u8]) -> Result<Vec<String>> {
+        let group = self.group(group_id)?;
+        Ok(group.members().map(|member| String::from_utf8_lossy(member.credential.serialized_content()).into_owned()).collect())
+    }
+
+    /// Forgets a group: its state entries are handed out as deleted by `changes()`.
+    pub fn delete_group(&mut self, group_id: &[u8]) -> Result<()> {
+        self.group(group_id)?.delete(self.provider.storage()).map_err(fail)
     }
 }
 
@@ -149,10 +184,10 @@ impl Device {
     }
 
     fn identity(&self) -> Result<(SignatureKeyPair, CredentialWithKey)> {
-        let stored = self.values().get(IDENTITY).cloned().ok_or("no device identity")?;
+        let stored = self.values().get(IDENTITY).cloned().ok_or("no-identity: no device identity")?;
         let (public, name) = stored.split_at(32);
         let signer = SignatureKeyPair::read(self.provider.storage(), public, SUITE.signature_algorithm())
-            .ok_or("no signature key")?;
+            .ok_or("no-identity: no signature key")?;
         let credential = CredentialWithKey {
             credential: BasicCredential::new(name.to_vec()).into(),
             signature_key: public.into(),
@@ -163,7 +198,7 @@ impl Device {
     fn group(&self, group_id: &[u8]) -> Result<MlsGroup> {
         MlsGroup::load(self.provider.storage(), &GroupId::from_slice(group_id))
             .map_err(fail)?
-            .ok_or_else(|| "unknown group".into())
+            .ok_or_else(|| "unknown-group: unknown group".into())
     }
 }
 
@@ -191,7 +226,7 @@ mod tests {
         let mut alex = Device::create(b"alex-1").unwrap();
         let mut blair = Device::create(b"blair-1").unwrap();
         let mut blair2 = Device::create(b"blair-2").unwrap();
-        let packages = [blair.key_package().unwrap(), blair2.key_package().unwrap()].concat();
+        let packages = [blair.key_package(false).unwrap(), blair2.key_package(false).unwrap()].concat();
         let welcome = alex.create_group(b"group-1", &packages).unwrap();
         assert_eq!(blair.join(&welcome).unwrap(), b"group-1");
         assert_eq!(blair2.join(&welcome).unwrap(), b"group-1");
@@ -218,7 +253,7 @@ mod tests {
         let mut alex = Device::create(b"alex-1").unwrap();
         let mut blair = Device::create(b"blair-1").unwrap();
         let mut casey = Device::create(b"casey-1").unwrap();
-        let welcome = alex.create_group(b"group-2", &blair.key_package().unwrap()).unwrap();
+        let welcome = alex.create_group(b"group-2", &blair.key_package(false).unwrap()).unwrap();
         blair.join(&welcome).unwrap();
         assert!(casey.join(&welcome).is_err());
         let secret = alex.encrypt(b"group-2", b"only for blair").unwrap();
@@ -230,12 +265,62 @@ mod tests {
     fn changes_report_deleted_entries() {
         let mut alex = Device::create(b"alex-1").unwrap();
         let mut blair = Device::create(b"blair-1").unwrap();
-        blair.key_package().unwrap();
+        blair.key_package(false).unwrap();
         blair.changes();
         // Joining consumes the key package: its private part is deleted.
-        let welcome = alex.create_group(b"group-3", &blair.key_package().unwrap()).unwrap();
+        let welcome = alex.create_group(b"group-3", &blair.key_package(false).unwrap()).unwrap();
         blair.changes();
         blair.join(&welcome).unwrap();
         assert!(blair.changes().iter().any(|entry| entry.value.is_none()));
+    }
+
+    #[test]
+    fn a_last_resort_package_serves_two_groups() {
+        let mut alex = Device::create(b"alex-1").unwrap();
+        let mut blair = Device::create(b"blair-1").unwrap();
+        let last = blair.key_package(true).unwrap();
+        for group in [b"group-4", b"group-5"] {
+            let welcome = alex.create_group(group, &last).unwrap();
+            blair.join(&welcome).unwrap();
+            assert_eq!(blair.decrypt(group, &alex.encrypt(group, b"hi").unwrap()).unwrap(), b"hi");
+        }
+        // An ordinary package is used up by its group.
+        let once = blair.key_package(false).unwrap();
+        blair.join(&alex.create_group(b"group-6", &once).unwrap()).unwrap();
+        assert!(blair.join(&alex.create_group(b"group-7", &once).unwrap()).unwrap_err().starts_with("refused: "));
+    }
+
+    #[test]
+    fn members_are_listed_and_a_deleted_group_is_gone() {
+        let mut alex = Device::create(b"alex-1").unwrap();
+        let mut blair = Device::create(b"blair-1").unwrap();
+        let welcome = alex.create_group(b"group-8", &blair.key_package(false).unwrap()).unwrap();
+        blair.join(&welcome).unwrap();
+        let mut members = blair.members(b"group-8").unwrap();
+        members.sort();
+        assert_eq!(members, ["alex-1", "blair-1"]);
+
+        blair.changes();
+        blair.delete_group(b"group-8").unwrap();
+        assert!(blair.changes().iter().all(|entry| entry.value.is_none()));
+        assert!(blair.members(b"group-8").unwrap_err().starts_with("unknown-group: "));
+        assert!(blair.decrypt(b"group-8", &alex.encrypt(b"group-8", b"gone").unwrap()).unwrap_err().starts_with("unknown-group: "));
+    }
+
+    #[test]
+    fn messages_are_padded_and_a_bad_one_is_refused() {
+        let mut alex = Device::create(b"alex-1").unwrap();
+        let mut blair = Device::create(b"blair-1").unwrap();
+        let package = blair.key_package(false).unwrap();
+        blair.join(&alex.create_group(b"group-9", &package).unwrap()).unwrap();
+        let short = alex.encrypt(b"group-9", b"a").unwrap();
+        assert_eq!(short.len(), alex.encrypt(b"group-9", &[b'a'; 100]).unwrap().len());
+
+        let mut tampered = short.clone();
+        let last = tampered.len() - 1;
+        tampered[last] ^= 1;
+        assert!(blair.decrypt(b"group-9", &tampered).unwrap_err().starts_with("refused: "));
+        assert!(blair.decrypt(b"group-9", b"not a message").unwrap_err().starts_with("refused: "));
+        assert!(Device::new().key_package(false).unwrap_err().starts_with("no-identity: "));
     }
 }

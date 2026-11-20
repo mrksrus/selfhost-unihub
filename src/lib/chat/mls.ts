@@ -11,11 +11,14 @@ export interface MlsEntry {
 export interface MlsDevice {
   put(key: Uint8Array, value: Uint8Array): void;
   changes(): MlsEntry[];
-  key_package(): Uint8Array;
+  key_package(lastResort: boolean): Uint8Array;
   create_group(groupId: Uint8Array, keyPackages: Uint8Array): Uint8Array;
   join(welcome: Uint8Array): Uint8Array;
   encrypt(groupId: Uint8Array, text: Uint8Array): Uint8Array;
   decrypt(groupId: Uint8Array, message: Uint8Array): Uint8Array;
+  /** The credential names of the group's members, this device's included. */
+  members(groupId: Uint8Array): string[];
+  delete_group(groupId: Uint8Array): void;
   free(): void;
 }
 
@@ -38,6 +41,23 @@ export class MlsUnavailableError extends Error {
   }
 }
 
+/**
+ * Why a call failed: `refused` for a message, Welcome or key package from
+ * elsewhere that is malformed or fails its checks; `unknown-group`;
+ * `no-identity` for a device without its keys; `stopped` when the module
+ * trapped and started again; `failed` for anything else.
+ */
+export type MlsErrorKind = 'refused' | 'unknown-group' | 'no-identity' | 'stopped' | 'failed';
+
+export class MlsError extends Error {
+  constructor(readonly kind: MlsErrorKind, message: string) {
+    super(message);
+    this.name = 'MlsError';
+  }
+}
+
+const KINDS: readonly string[] = ['refused', 'unknown-group', 'no-identity', 'failed'];
+
 let loading: Promise<Generated> | null = null;
 
 /** Fetches and starts the module once. Tests pass its bytes; the page fetches it. */
@@ -59,15 +79,21 @@ export function loadMls(bytes?: BufferSource): Promise<MlsModule> {
 /**
  * Runs one call on the module. A trap (a panic inside it, for example on a
  * bad message) leaves its memory unusable: the module starts again empty and
- * the error is thrown on, so the caller loads its devices again from what it
- * stored and loses only that one call.
+ * MlsError `stopped` is thrown, so the caller loads its devices again from
+ * what it stored and loses only that one call. The module's own errors
+ * ("<kind>: <detail>" strings) are thrown as MlsError too.
  */
 export async function withMls<T>(call: (mls: MlsModule) => T): Promise<T> {
   const mls = await loadMls() as Generated;
   try {
     return call(mls);
   } catch (error) {
-    if (error instanceof WebAssembly.RuntimeError) mls.__wbg_reset_state();
-    throw error;
+    if (error instanceof WebAssembly.RuntimeError) {
+      mls.__wbg_reset_state();
+      throw new MlsError('stopped', error.message);
+    }
+    if (typeof error !== 'string') throw error;
+    const [, kind, detail] = /^([a-z-]+): ([\s\S]*)$/.exec(error) ?? [];
+    throw KINDS.includes(kind) ? new MlsError(kind as MlsErrorKind, detail) : new MlsError('failed', error);
   }
 }

@@ -55,4 +55,7 @@ onAppEvent('unihub:apply-update', () => {
 // The area above the on-screen keyboard, for full-screen views on phones.
 trackVisibleArea();
 
+// The tests' hook into Chat's device store (a hash: the service worker answers an unknown query with this page anyway).
+if (location.hash === '#chat-test') void import('./lib/chat/test-hook');
+
 createRoot(document.getElementById("root")!).render(<App />);
