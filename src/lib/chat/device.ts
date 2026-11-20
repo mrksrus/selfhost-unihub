@@ -43,6 +43,10 @@ export class ChatDevice {
     await device.step(() => undefined, transaction => {
       transaction.objectStore('state').clear();
       transaction.objectStore('keys').put(record, 'device');
+      // The groups went with the state, so no conversation may still count on one.
+      const cursors = transaction.objectStore('cursors');
+      const held = cursors.getAll();
+      held.onsuccess = () => { for (const cursor of held.result) cursors.put({ ...cursor, groups: [], members: null }); };
     });
     return device;
   }

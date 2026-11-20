@@ -83,7 +83,7 @@ const reason = (error: unknown) => error instanceof Error && error.message ? err
 
 function parseContent(bytes: Uint8Array): Content {
   const value = JSON.parse(decode(bytes)) as Partial<Content>;
-  if (typeof value.text !== 'string' || typeof value.name !== 'string') throw new SyntaxError('Not a chat message.');
+  if (typeof value.text !== 'string' || value.text.length > MAX_TEXT || typeof value.name !== 'string') throw new SyntaxError('Not a chat message.');
   return { text: value.text, reply_to: typeof value.reply_to === 'string' ? value.reply_to : null, name: value.name };
 }
 
@@ -173,6 +173,8 @@ class Engine implements ChatEngine {
     try {
       this.device = await startDevice(this.store!, this.me.id);
       if (this.stopped) return this.device.free();
+      // A device enrolled again holds no group any more, and its cursors say so.
+      this.cursors = new Map((await this.store!.all<Cursor>('cursors')).map(cursor => [cursor.conversation_id, cursor]));
       this.changed();
       await this.sync();
     } catch (error) {
@@ -342,7 +344,8 @@ class Engine implements ChatEngine {
     const before = new Map(this.server.map(item => [item.id, JSON.stringify(item)]));
     this.server = conversations;
     for (const item of conversations) if (before.get(item.id) !== JSON.stringify(item)) this.changed(item.id);
-    this.changed(null);
+    // A snapshot keeps its identity while nothing changed.
+    if (before.size !== conversations.length) this.changed(null);
   }
 
   private cursor(conversationId: string): Cursor {
@@ -591,6 +594,8 @@ class Engine implements ChatEngine {
       await chatApi.createGroup(conversation.id, { group_id: groupId, previous_group_id: current, welcome: toBase64Url(made.welcome),
         chat_device_ids: [this.device!.id!, ...claimed.map(item => item.chat_device_id)] });
     } catch (error) {
+      // The server may have taken the group although its answer never came: it stays, and the next send asks.
+      if (unreachable(error)) throw error;
       const now = this.cursor(conversation.id);
       await this.device!.step(mls => mls.delete_group(encode(groupId))).catch(() => undefined);
       await this.keep(null, () => [], { ...now, groups: now.groups.filter(group => group !== groupId) });

@@ -150,7 +150,7 @@ function deliveryService() {
   const groups = new Map<string, Group>();
   const messages: (ChatMessage & { conversation_id: string })[] = [];
   const archive = new Map<string, { user: string; message: string; sealed: string }>();
-  const state = { forbidDelete: false, refusedOffline: () => {}, groupGate: null as null | { waiting: number; size: number; open: () => void; opened: Promise<void> } };
+  const state = { forbidDelete: false, loseGroupAnswer: false, refusedOffline: () => {}, groupGate: null as null | { waiting: number; size: number; open: () => void; opened: Promise<void> } };
 
   const ok = (data: unknown) => ({ data });
   const refuse = (status: number, code: string, details?: unknown) => ({ error: code, status, code, details });
@@ -236,6 +236,8 @@ function deliveryService() {
         if (conversation!.current !== body.previous_group_id || !same(ids, valid(conversation!.people).map(device => device.id))) return stale(conversation!);
         groups.set(body.group_id as string, { conversation: conversation!.id, welcome: body.welcome as string, devices: new Map(ids.map(id => [id, id === mine!.id])) });
         conversation!.current = body.group_id as string;
+        // The group is made, but its answer never reaches the device, which is offline from here on.
+        if (state.loseGroupAnswer) { state.loseGroupAnswer = false; browser.offline = true; state.refusedOffline(); return { error: 'You are offline.' }; }
         return ok({ group_id: body.group_id, current: true });
       }
       case 'POST /chat/groups/:id/joined': {
@@ -476,6 +478,33 @@ describe('the chat engine', { timeout: 60_000 }, () => {
     await alex.as(engine => engine.sync());
     expect(texts(alex, conversation).slice(-3)).toEqual(['one', 'two', 'three']);
     expect(server.messages.slice(-3).map(item => item.seq)).toEqual([3, 4, 5]);
+  });
+
+  it('a group whose answer was lost is still read, and a device enrolled again writes first', async () => {
+    const { alex, blair, conversation } = await pair();
+    const lost = new Promise<void>(resolve => { server.state.refusedOffline = resolve; });
+    server.state.loseGroupAnswer = true;
+    alex.as(engine => engine.send(conversation, 'alex first'));
+    await lost;
+    await blair.as(engine => engine.sync());
+    await send(blair, conversation, 'blair answers');
+    alex.browser.offline = false;
+    await alex.as(engine => engine.sync());
+    await until(alex, () => message(alex, conversation, 'alex first')?.delivery === 'sent');
+    await blair.as(engine => engine.sync());
+    expect(texts(alex, conversation).sort()).toEqual(['alex first', 'blair answers']);
+    expect(texts(blair, conversation).sort()).toEqual(['alex first', 'blair answers']);
+    expect(server.groups.size).toBe(1);
+
+    // Alex's device is removed (Settings › Devices, a restore); the same browser opens Chat again and writes first.
+    alex.engine.stop();
+    [...server.devices.values()].find(device => device.device === `${ALEX}:a1`)!.device = null;
+    const again = tab(alex.browser);
+    await settled(again);
+    await send(again, conversation, 'from the device enrolled again');
+    await blair.as(engine => engine.sync());
+    expect(texts(blair, conversation).at(-1)).toBe('from the device enrolled again');
+    expect(texts(again, conversation)).toEqual(expect.arrayContaining(['alex first', 'blair answers', 'from the device enrolled again']));
   });
 
   it('two tabs share one device without corrupting it, and sign-out leaves no store and no key', async () => {
