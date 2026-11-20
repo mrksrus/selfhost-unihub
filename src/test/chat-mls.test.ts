@@ -13,11 +13,11 @@ const group = text('group-1');
 describe.skipIf(!existsSync(built) && !process.env.CI)('Chat\'s MLS module, built to WebAssembly', () => {
   beforeAll(() => loadMls(readFileSync(built)));
 
-  /** Every entry a device handed out so far, as the page stores them. */
+  /** Every entry a device handed out so far, copied out of the module as the page stores them. */
   function stored(device: MlsDevice, store = new Map<string, MlsEntry>()) {
-    for (const entry of device.changes()) {
-      if (entry.value) store.set(entry.key.join(), entry);
-      else store.delete(entry.key.join());
+    for (const { key, value } of device.changes()) {
+      if (value) store.set(key.join(), { key, value });
+      else store.delete(key.join());
     }
     return store;
   }

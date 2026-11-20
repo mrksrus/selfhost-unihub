@@ -11,3 +11,6 @@ RUSTFLAGS="--remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}=/cargo --remap-path-p
 # --experimental-reset-state-function: a module that trapped starts again with fresh memory (src/lib/chat/mls.ts).
 wasm-bindgen --target web --experimental-reset-state-function --out-dir "$root/src/lib/chat/mls-module" \
   "${CARGO_TARGET_DIR:-target}/wasm32-unknown-unknown/release/chat_mls.wasm"
+if grep -aqF -e "$root/crypto" -e "${CARGO_HOME:-$HOME/.cargo}/registry" "$root/src/lib/chat/mls-module/chat_mls_bg.wasm"; then
+  echo "The module holds a path of this machine, so other machines would build another file." >&2; exit 1
+fi

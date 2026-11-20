@@ -24,3 +24,5 @@ getrandom_02 = { package = "getrandom", version = "=0.2.17", features = ["js"] }
 opt-level = "s"
 lto = true
 codegen-units = 1
+# No symbol names in the module: they only add size.
+strip = true
