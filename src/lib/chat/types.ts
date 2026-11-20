@@ -99,7 +99,7 @@ export interface ChatEngine {
   send(conversationId: string, text: string, replyTo?: string | null): void;
   /** A new text for one's own message. */
   edit(messageId: string, text: string): void;
-  /** Deletes one's own message for both sides; rejects with the server's refusal (POLICY_FORBIDS). */
+  /** Deletes one's own message for both sides; rejects with the server's refusal (POLICY_FORBIDS). A message still in the outbox is discarded instead. */
   delete(messageId: string): Promise<void>;
   /** Sends a failed message again. */
   retry(messageId: string): void;

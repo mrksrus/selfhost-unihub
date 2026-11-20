@@ -14,7 +14,7 @@ import { ADMIN_REASON } from '@/components/settings/setting-policy';
 import { PinDialog } from '@/components/app-lock/PinDialog';
 import { UnlockDialog } from '@/components/app-lock/UnlockDialog';
 import { useTurnOnAppLock } from '@/components/app-lock/use-turn-on-app-lock';
-import { areaLabel, LOCKABLE_MODULES, RELOCK_LABELS, RELOCK_ORDER, relockAllowed } from '@/components/app-lock/area-names';
+import { areaLabel, LOCKABLE_MODULES, RELOCK_LABELS, RELOCK_ORDER, relockAllowed, UPDATE_APP_TO_LOCK_CHAT } from '@/components/app-lock/area-names';
 
 // Settings → App lock (0.29, F5/F8). Everything here applies to this device:
 // the server keeps the choice with the device record so it can enforce the
@@ -132,6 +132,7 @@ export default function AppLockSettings() {
                       <label htmlFor={`${id}-${moduleId}`} className="min-w-0 text-sm">
                         {areaLabel(moduleId, modules)}
                         {moduleId === 'contacts' && <span className="block text-xs text-muted-foreground">Contacts synced to the phone stay in its Contacts app.</span>}
+                        {moduleId === 'chat' && lock.method.appUpdateForChat && <span className="block text-xs text-muted-foreground">{UPDATE_APP_TO_LOCK_CHAT}</span>}
                         {required && <span className="block text-xs text-muted-foreground">Required</span>}
                       </label>
                     </li>

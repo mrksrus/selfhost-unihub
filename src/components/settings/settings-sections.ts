@@ -1,8 +1,8 @@
-import { Archive, ArchiveRestore, Bell, BookUser, CalendarDays, CloudOff, HardDriveDownload, LayoutGrid, ListFilter, Lock, Mail, Palette, Server, Shield, ShieldCheck, SlidersHorizontal, Trash2, UserRound, Users, UsersRound } from 'lucide-react';
+import { Archive, ArchiveRestore, Bell, BookUser, CalendarDays, CloudOff, HardDriveDownload, LayoutGrid, ListFilter, Lock, Mail, MessageCircle, Palette, Server, Shield, ShieldCheck, SlidersHorizontal, Trash2, UserRound, Users, UsersRound } from 'lucide-react';
 import type { ModuleId } from '@/lib/modules';
 import type { Permission } from '@/lib/permissions';
 
-export type SettingsSectionId = 'general' | 'appearance' | 'account' | 'security' | 'app-lock' | 'notifications' | 'offline' | 'pages' | 'mail' | 'mail-rules' | 'backup' | 'bin' | 'delete';
+export type SettingsSectionId = 'general' | 'appearance' | 'account' | 'security' | 'app-lock' | 'notifications' | 'offline' | 'pages' | 'mail' | 'mail-rules' | 'chat' | 'backup' | 'bin' | 'delete';
 
 export const SETTINGS_SECTIONS: { id: SettingsSectionId; label: string; icon: typeof Bell; module?: ModuleId }[] = [
   { id: 'general', label: 'General', icon: SlidersHorizontal },
@@ -15,6 +15,7 @@ export const SETTINGS_SECTIONS: { id: SettingsSectionId; label: string; icon: ty
   { id: 'pages', label: 'Pages and modules', icon: LayoutGrid },
   { id: 'mail', label: 'Mail', icon: Mail, module: 'mail' },
   { id: 'mail-rules', label: 'Mail rules', icon: ListFilter, module: 'mail' },
+  { id: 'chat', label: 'Chat', icon: MessageCircle, module: 'chat' },
   { id: 'backup', label: 'Backup and restore', icon: Archive },
   { id: 'bin', label: 'Bin', icon: ArchiveRestore },
   { id: 'delete', label: 'Delete data', icon: Trash2 },

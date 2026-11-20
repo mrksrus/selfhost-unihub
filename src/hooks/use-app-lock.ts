@@ -58,6 +58,8 @@ export interface AppLockMethodState {
   pinUnavailable: string | null;
   /** In an Android app older than the fingerprint unlock: say "Update the UniHub app to unlock with your fingerprint". */
   appUpdateForBiometrics: boolean;
+  /** In an Android app from before Chat, with Chat among the locked areas: the app locks the others, and the server refuses Chat on this device. */
+  appUpdateForChat: boolean;
 }
 
 /** What this device can do beyond the lock itself; a control it cannot do is greyed with the reason. */
@@ -165,7 +167,7 @@ export const NO_APP_LOCK: AppLockValue = {
   scope: [],
   settings: defaultsResolved(DEFAULT_DEVICE_SETTINGS),
   settingsLoaded: false,
-  method: { method: 'pin', biometric: 'none', deviceSecure: false, pinSet: false, pinUnavailable: null, appUpdateForBiometrics: false },
+  method: { method: 'pin', biometric: 'none', deviceSecure: false, pinSet: false, pinUnavailable: null, appUpdateForBiometrics: false, appUpdateForChat: false },
   capabilities: { deviceLockSignal: false, deviceLockReason: null, secureWindow: false },
   pin: NO_PIN,
   requirement: null,

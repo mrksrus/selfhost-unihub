@@ -44,10 +44,44 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
   tapping one opens the conversation. While Chat is open the app refuses
   screenshots and screen recording and shows blank in recent apps. Apps
   before 0.33 show "New message" and do not block Chat.
-- **Reference pictures.** Eight new pictures of Chat with fixed synthetic
-  data: the chats beside an open one at its newest and at its first
-  messages (Wide), the list and an open chat (Phone). No existing picture
-  changed.
+- **The chat passphrase.** Chat asks you to choose one when you first open
+  it: at least 12 characters, with a hint at its strength. It brings your
+  earlier messages to a new phone or browser. Without the passphrase and
+  without another signed-in device, a lost device means lost history:
+  nobody else can restore it, not your organisation and not an
+  administrator. It is not your sign-in password and never leaves your
+  devices.
+- **Chat on a new device.** New messages arrive at once. "Enter your chat
+  passphrase" brings the earlier ones, and the list says how far they are;
+  "Not now" opens the chats without them. A forgotten passphrase is replaced
+  on a device that still shows your chats; if none does, "Start a new key"
+  says what is lost before it starts.
+- **Settings › Chat.** Whether others see that you have UniHub open,
+  whether they see that you read their message, and what a chat
+  notification shows, each greyed out with the reason where your
+  administrator fixed it. "Set a new passphrase" asks for your account
+  password, not the old passphrase. The page says what the encryption
+  protects, and that a browser cannot block screenshots while the Android
+  app does in Chat.
+- **Chat for administrators.** Server › Policies has Chat among the modules
+  and a Chat group that leaves presence and read receipts to each person or
+  keeps them always on or always off. Chat can be one of the modules the app
+  lock covers or must cover; an Android app from before 0.33 locks the other
+  modules and says "Update the UniHub app to lock Chat."
+- **Which devices hold chat keys.** Settings › Security › Devices marks
+  them "Chat"; signing such a device out also takes it out of your chats.
+- **Smaller things in Chat.** On a phone, More carries the unread count of
+  the pages it holds. A message that was not sent can be discarded from its
+  menu. Your own name reads "You" in a quote and in "You added a device".
+  A message of a person who cannot be written to has no empty menu.
+- **Reference pictures.** Twenty new pictures with fixed synthetic data:
+  Chat beside an open chat at its newest and at its first messages (Wide),
+  the list and an open chat (Phone), and the chat passphrase where it is
+  chosen and where it is entered and Settings › Chat (Wide and Phone).
+  Changed with these screens: the chat pictures (a quote of your own
+  message says "You", and a failed message's reason follows a full stop),
+  Settings › Security › Devices (the "Chat" mark) and the Policies page at
+  its App lock group (Chat among the modules).
 
 ## 0.32.0
 

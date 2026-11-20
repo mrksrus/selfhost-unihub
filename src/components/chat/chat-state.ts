@@ -2,6 +2,7 @@
 import { useCallback, useSyncExternalStore } from 'react';
 import { format, isThisYear, isToday, isYesterday } from 'date-fns';
 import type { ChatConversationSummary, ChatEngine, ChatEngineSnapshot, ChatThreadItem } from '@/lib/chat/types';
+import { MIN_PASSPHRASE_LENGTH } from '@/lib/chat/key-backup';
 
 const never = () => () => {};
 
@@ -57,4 +58,22 @@ const LINK = /(https?:\/\/[^\s<>"]+[^\s<>".,:;!?)\]}'])/g;
 export function textParts(text: string): { text: string; href?: string }[] {
   // split() with one capture group puts the addresses at the odd places.
   return text.split(LINK).map((part, index) => (index % 2 ? { text: part, href: part } : { text: part })).filter(part => part.text);
+}
+
+/** A passphrase's characters as the engine counts them. */
+export const passphraseLength = (passphrase: string) => [...passphrase.normalize('NFC')].length;
+
+/**
+ * A rough hint, not a measure: 0 while too short, then weak, fair or strong.
+ * Length counts most; one repeated character or one kind of character keeps
+ * a short passphrase weak.
+ */
+export function passphraseStrength(passphrase: string): { level: 0 | 1 | 2 | 3; hint: string } {
+  const length = passphraseLength(passphrase);
+  const missing = MIN_PASSPHRASE_LENGTH - length;
+  if (missing > 0) return { level: 0, hint: length ? `${missing} more character${missing === 1 ? '' : 's'}` : `At least ${MIN_PASSPHRASE_LENGTH} characters` };
+  const kinds = [/\p{Ll}/u, /\p{Lu}/u, /\d/, /[^\p{L}\d]/u].filter(kind => kind.test(passphrase)).length;
+  if (new Set(passphrase.toLowerCase()).size < 6 || (length < 16 && kinds < 2)) return { level: 1, hint: 'Weak. Make it longer, or use several unrelated words.' };
+  if (length >= 20 && kinds >= 2) return { level: 3, hint: 'Strong.' };
+  return { level: 2, hint: 'Fair. Longer is stronger: four or more unrelated words work well.' };
 }

@@ -18,8 +18,11 @@ interface Props {
   canWrite: boolean;
   /** Why deleting is not allowed, in the server's words. */
   deleteLock?: string;
+  /** The message it answers is one's own: the quote says "You". */
+  quotedOwn: boolean;
   onReply: () => void;
   onEdit: () => void;
+  /** Deletes a stored message (the thread asks first) or discards one that was never sent. */
   onDelete: () => void;
   onRetry: () => void;
   /** Where the focus goes when the menu closes; the thread sends it to the composer after Reply and Edit. */
@@ -27,13 +30,15 @@ interface Props {
 }
 
 /** One message: its bubble, what happened to it on the way, and its menu. */
-export function ChatMessage({ message, turn, showDelivery, canWrite, deleteLock, onReply, onEdit, onDelete, onRetry, onMenuCloseAutoFocus }: Props) {
+export function ChatMessage({ message, turn, showDelivery, canWrite, deleteLock, quotedOwn, onReply, onEdit, onDelete, onRetry, onMenuCloseAutoFocus }: Props) {
   const mine = message.from_me;
   const gone = message.deleted || message.text === null;
   const time = messageTime(message.created_at);
   // Still in the outbox: the server does not know the message yet, so nothing can be done with it but sending it again.
   const stored = message.seq !== null;
   const failed = message.delivery === 'failed' || message.edit_state === 'failed';
+  // Nothing to choose from is no menu: not sent yet and still trying, or the other person's message while they cannot be written to.
+  const menu = !gone && (stored ? mine || canWrite : message.delivery === 'failed');
   const status = message.delivery === 'failed' ? 'Not sent'
     : message.edit_state === 'failed' ? 'The change was not saved'
     : message.delivery === 'sending' ? 'Sending…'
@@ -48,7 +53,7 @@ export function ChatMessage({ message, turn, showDelivery, canWrite, deleteLock,
           {gone ? <p>{message.deleted ? 'Message deleted' : 'This message could not be read.'}</p> : <>
             {message.reply_to && (
               <p className="mb-1.5 border-l-2 border-accent pl-2 text-xs">
-                <span className="block font-medium">{message.reply_to.sender_name}</span>
+                <span className="block font-medium">{quotedOwn ? 'You' : message.reply_to.sender_name}</span>
                 <span className="block truncate text-muted-foreground">{message.reply_to.text ?? 'Message deleted'}</span>
               </p>
             )}
@@ -62,7 +67,7 @@ export function ChatMessage({ message, turn, showDelivery, canWrite, deleteLock,
             {message.edited && !gone && 'edited '}<time dateTime={message.created_at}>{time}</time>
           </p>
         </div>
-        {!gone && stored && (
+        {menu && (
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button variant="ghost" size="icon-sm" aria-label={`Actions for ${mine ? 'your message' : `the message from ${message.sender_name}`} at ${time}`}
@@ -71,16 +76,18 @@ export function ChatMessage({ message, turn, showDelivery, canWrite, deleteLock,
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align={mine ? 'end' : 'start'} onCloseAutoFocus={onMenuCloseAutoFocus}>
-              <DropdownMenuItem disabled={!canWrite} onClick={onReply}>Reply</DropdownMenuItem>
-              {mine && <DropdownMenuItem disabled={!canWrite} onClick={onEdit}>Edit</DropdownMenuItem>}
-              {mine && <PolicyMenuItem lock={deleteLock} className="text-destructive focus:text-destructive" onClick={onDelete}>Delete</PolicyMenuItem>}
+              {!stored ? <DropdownMenuItem className="text-destructive focus:text-destructive" onClick={onDelete}>Discard</DropdownMenuItem> : <>
+                <DropdownMenuItem disabled={!canWrite} onClick={onReply}>Reply</DropdownMenuItem>
+                {mine && <DropdownMenuItem disabled={!canWrite} onClick={onEdit}>Edit</DropdownMenuItem>}
+                {mine && <PolicyMenuItem lock={deleteLock} className="text-destructive focus:text-destructive" onClick={onDelete}>Delete</PolicyMenuItem>}
+              </>}
             </DropdownMenuContent>
           </DropdownMenu>
         )}
       </div>
       {status && (
         <p className={cn('mt-1 flex flex-wrap items-center justify-end gap-x-2 gap-y-1 px-1 text-xs', failed ? 'text-destructive' : 'text-muted-foreground')}>
-          <span>{status}{failed && message.error ? `: ${message.error}` : ''}</span>
+          <span>{status}{failed && message.error ? `${/[.!?]$/.test(message.error) ? '.' : ':'} ${message.error}` : ''}</span>
           {failed && <Button variant="outline" size="sm" className="text-foreground" onClick={onRetry}>Try again</Button>}
         </p>
       )}

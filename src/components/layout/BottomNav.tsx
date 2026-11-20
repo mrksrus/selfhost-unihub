@@ -20,7 +20,10 @@ const BottomNav = () => {
   const countOf = (pageId: string) => { const module = pages.find(page => page.id === pageId)?.module; return module && lock.locked(module) ? 0 : counts[pageId as keyof typeof counts] ?? 0; };
   // The first pages in the user's order; the rest are listed on More, which
   // is also marked for hidden pages opened by link and for Settings.
-  const shown = navigationPages(pages, canNavigate).slice(0, BOTTOM_NAV_PAGES);
+  const all = navigationPages(pages, canNavigate);
+  const shown = all.slice(0, BOTTOM_NAV_PAGES);
+  // More stands for the pages it lists: their counts add up on it.
+  const moreCount = all.slice(BOTTOM_NAV_PAGES).reduce((sum, page) => sum + countOf(page.id), 0);
   const navItems = [...shown, { id: 'more' as const, name: 'More', href: '/more', icon: MoreHorizontal }];
   const moreHrefs = [...MORE_PATHS, ...pages.map((page) => pageLink(page.id).href).filter((href) => !shown.some((page) => page.href === href))];
 
@@ -35,13 +38,15 @@ const BottomNav = () => {
           item.href === '/more'
             ? moreHrefs.some((path) => location.pathname.startsWith(path))
             : location.pathname.startsWith(item.href);
-        const count = item.id === 'more' ? 0 : countOf(item.id);
-        const dot = item.id === 'more' && attention.length > 0;
+        const count = item.id === 'more' ? moreCount : countOf(item.id);
+        // The count takes the dot's place while there is one; the label says both.
+        const needs = item.id === 'more' && attention.length > 0 ? `${attention.length} ${attention.length === 1 ? 'item needs' : 'items need'} attention` : '';
+        const dot = !!needs && !count;
         return (
           <NavLink
             key={item.id}
             to={item.href}
-            aria-label={dot ? `${item.name}, ${attention.length} ${attention.length === 1 ? 'item needs' : 'items need'} attention` : count ? `${item.name}, ${count} unread` : undefined}
+            aria-label={count || needs ? [item.name, count ? `${count} unread` : '', needs].filter(Boolean).join(', ') : undefined}
             className={cn(
               'relative flex min-w-0 flex-col items-center justify-center gap-1 px-1 pb-2 pt-2.5 text-[11px] font-medium touch:gap-0.5 transition-colors',
               'text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',

@@ -52,7 +52,7 @@ describe('the "required by your administrator" prompt', () => {
     const confirm = vi.fn(async () => ({ ok: true as const }));
     const saveSettings = vi.fn(async () => { throw new Error('Your administrator allows at most 5 minutes in the background before UniHub locks again.'); });
     const lock = fakeAppLock({ status: 'setup', scope: [], requirement: { ...requirement, required: ['app'] }, confirm, saveSettings, settingsLoaded: true,
-      method: { method: 'biometric', biometric: 'available', deviceSecure: true, pinSet: false, pinUnavailable: null, appUpdateForBiometrics: false } });
+      method: { method: 'biometric', biometric: 'available', deviceSecure: true, pinSet: false, pinUnavailable: null, appUpdateForBiometrics: false, appUpdateForChat: false } });
     mountSignedIn(<AppLockContext.Provider value={lock}><AppLockRequiredPrompt area="app" variant="page" /></AppLockContext.Provider>);
     expect(screen.getByText('The whole app; UniHub locks after 5 minutes in the background at most.')).toBeInTheDocument();
     expect(screen.getByText('You unlock with your fingerprint, face or the phone\'s PIN.')).toBeInTheDocument();

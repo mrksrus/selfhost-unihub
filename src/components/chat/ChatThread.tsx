@@ -1,7 +1,8 @@
-import { Fragment, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { Fragment, useContext, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { ArrowLeft, MonitorSmartphone } from 'lucide-react';
 import type { ChatConversationSummary, ChatEngine, ChatThreadMessage } from '@/lib/chat/types';
+import { AuthContext } from '@/contexts/auth-context';
 import { useIsMobile } from '@/hooks/use-mobile';
 import { usePolicy } from '@/hooks/use-policies';
 import { useToast } from '@/hooks/use-toast';
@@ -36,6 +37,8 @@ export function ChatThread({ engine, conversation, draft, onDraft }: Props) {
   const { peer } = conversation;
   const items = useChatThread(engine, conversation.id);
   const phone = useIsMobile();
+  // The session where one is mounted; a thread rendered on its own has none.
+  const user = useContext(AuthContext)?.user;
   const deleteLock = usePolicy('bin.delete').lock;
   const scope = useSessionScope();
   const { toast } = useToast();
@@ -69,8 +72,13 @@ export function ChatThread({ engine, conversation, draft, onDraft }: Props) {
 
   const choose = (next: ComposerMode) => { setMode(next); focusField.current = true; };
   const send = (text: string) => {
-    if (mode?.kind === 'edit') engine.edit(mode.message.id, text);
-    else engine.send(conversation.id, text, mode?.message.id ?? null);
+    try {
+      if (mode?.kind === 'edit') engine.edit(mode.message.id, text);
+      else engine.send(conversation.id, text, mode?.message.id ?? null);
+    } catch (error) {
+      // The message was deleted meanwhile, on another device or by the time the change was typed.
+      toast({ title: mode?.kind === 'edit' ? 'The change was not saved' : 'The message was not sent', description: error instanceof Error ? error.message : undefined, variant: 'destructive' });
+    }
     setMode(null);
     atEnd.current = true;
   };
@@ -90,6 +98,8 @@ export function ChatThread({ engine, conversation, draft, onDraft }: Props) {
   };
 
   const visible = items?.slice(-shown) ?? [];
+  // A quote names its writer; one's own messages read "You".
+  const own = new Set(items?.filter(item => item.kind === 'message' && item.from_me).map(item => item.id));
   // Read, delivered and sent each reach up to one message: only the last of each says so.
   const left = visible.filter((item): item is ChatThreadMessage => item.kind === 'message' && !item.deleted && (item.delivery === 'sent' || item.delivery === 'delivered' || item.delivery === 'read'));
   const marked = new Set(left.filter((item, index) => item.delivery !== left[index + 1]?.delivery).map(item => item.id));
@@ -124,12 +134,12 @@ export function ChatThread({ engine, conversation, draft, onDraft }: Props) {
                       )}
                       {item.kind === 'device-added' ? (
                         <li className="flex items-center justify-center gap-1.5 py-2 text-center text-xs text-muted-foreground">
-                          <MonitorSmartphone aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />{item.name} added a device
+                          <MonitorSmartphone aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />{item.user_id && item.user_id === user?.id ? 'You' : item.name} added a device
                         </li>
                       ) : (
-                        <ChatMessage message={item} turn={before?.kind === 'message' && before.from_me !== item.from_me} showDelivery={marked.has(item.id)} canWrite={peer.can_write} deleteLock={deleteLock}
+                        <ChatMessage message={item} turn={before?.kind === 'message' && before.from_me !== item.from_me} showDelivery={marked.has(item.id)} canWrite={peer.can_write} deleteLock={deleteLock} quotedOwn={!!item.reply_to && own.has(item.reply_to.id)}
                           onReply={() => choose({ kind: 'reply', message: item })} onEdit={() => choose({ kind: 'edit', message: item })}
-                          onDelete={() => setDeleting(item)} onRetry={() => engine.retry(item.id)} onMenuCloseAutoFocus={focusAfterClose} />
+                          onDelete={() => (item.seq === null ? void remove(item) : setDeleting(item))} onRetry={() => engine.retry(item.id)} onMenuCloseAutoFocus={focusAfterClose} />
                       )}
                     </Fragment>
                   );

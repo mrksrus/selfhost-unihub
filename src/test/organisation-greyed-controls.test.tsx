@@ -4,6 +4,7 @@ import { api } from '@/lib/api';
 import ModuleSettings from '@/components/settings/ModuleSettings';
 import SecuritySettings from '@/components/settings/SecuritySettings';
 import OfflineSettings from '@/components/offline/OfflineSettings';
+import ChatSettings from '@/components/settings/ChatSettings';
 import ModuleGuard from '@/components/modules/ModuleGuard';
 import { SettingsPanel } from '@/components/settings/SettingsPanel';
 import { PageShell } from '@/components/layout/PageShell';
@@ -135,6 +136,23 @@ describe('navigation follows permissions', () => {
     expect(await screen.findByRole('link', { name: 'People' })).toHaveAttribute('href', '/admin/users');
     expect(screen.getByRole('link', { name: 'Groups' })).toHaveAttribute('href', '/admin/groups');
     expect(screen.queryByRole('link', { name: 'Policies' })).not.toBeInTheDocument();
+  });
+
+  it('Settings › Chat: a locked switch is greyed with the server\'s reason, and a notification cannot show more than the administrator allows', { timeout: 20_000 }, async () => {
+    const PRESENCE_OFF = 'Your administrator turned presence off.';
+    const setting = (value: unknown, more: object = {}) => ({ value, source: 'default', locked: false, ...more });
+    answer(policiesAnswer({ 'chat.presence': { value: 'off', allowed: true, reason: PRESENCE_OFF } }), { '/settings/values': { settings: {
+      chat_presence: setting(false, { source: 'policy', locked: true }), chat_read_receipts: setting(true), chat_notification_detail: setting('sender', { floor: 'sender' }),
+    } } });
+    mountSignedIn(<ChatSettings />);
+    const presence = await screen.findByRole('switch', { name: 'Show when I have UniHub open' });
+    await waitFor(() => expect(presence).toBeDisabled());
+    expect(presence).not.toBeChecked();
+    expect(screen.getByText(PRESENCE_OFF)).toBeInTheDocument();
+    expect(screen.getByRole('switch', { name: 'Read receipts' })).toBeEnabled();
+    fireEvent.click(screen.getByRole('combobox', { name: 'What a notification shows' }));
+    expect(await screen.findByRole('option', { name: 'Sender and message' })).toHaveAttribute('aria-disabled', 'true');
+    expect(screen.getByRole('option', { name: 'Nothing, just “New message”' })).not.toHaveAttribute('aria-disabled', 'true');
   });
 
   it('the phone\'s More page lists the same pages by the same permissions', { timeout: 20_000 }, async () => {

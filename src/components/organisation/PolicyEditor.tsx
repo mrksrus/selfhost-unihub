@@ -52,6 +52,7 @@ const GROUPS: { title: string; description?: string; rows: Row[] }[] = [
       { key: 'modules.calendar', label: 'Calendar and ToDo', description: '' },
       { key: 'modules.contacts', label: 'Contacts', description: '' },
       { key: 'modules.recordings', label: 'Recordings and Music', description: '' },
+      { key: 'modules.chat', label: 'Chat', description: '' },
       { key: 'pages.music', label: 'Music page', description: 'The page alone, without turning Recordings off.' },
     ],
   },
@@ -59,6 +60,14 @@ const GROUPS: { title: string; description?: string; rows: Row[] }[] = [
     title: 'Notifications',
     rows: [
       { key: 'notifications.detail', label: 'Notifications show at most', description: 'People may show less, never more. A reminder has no sender: it keeps its content unless nothing may show.' },
+    ],
+  },
+  {
+    title: 'Chat',
+    description: 'What people may switch themselves under Settings › Chat. Messages are always encrypted between the two people; no rule changes that.',
+    rows: [
+      { key: 'chat.presence', label: 'Presence', description: 'Whether people who chat with each other see that the other has UniHub open.' },
+      { key: 'chat.read_receipts', label: 'Read receipts', description: 'Whether the sender sees that a message was read.' },
     ],
   },
   {
@@ -130,6 +139,8 @@ const VALUE_LABELS_BY_KEY: Partial<Record<RowKey, Record<string, string>>> = {
   'auth.password_min_length': { '12': '12 characters', '14': '14 characters', '16': '16 characters', '20': '20 characters' },
   'auth.session_max_days': { none: 'No limit', '30': '30 days', '14': '14 days', '7': '7 days', '1': '1 day' },
   'notifications.detail': { full: 'Everything', sender: 'The sender only', none: 'No details' },
+  'chat.presence': { on: 'Always on', off: 'Always off' },
+  'chat.read_receipts': { on: 'Always on', off: 'Always off' },
 };
 const NONE = 'none';
 const valueKey = (value: unknown) => value === null ? NONE : String(value);

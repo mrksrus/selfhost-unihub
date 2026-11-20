@@ -19,6 +19,7 @@ import OfflineSettings from '@/components/offline/OfflineSettings';
 import ModuleSettings from '@/components/settings/ModuleSettings';
 import MailSettings from '@/components/settings/MailSettings';
 import MailRuleSettings from '@/components/settings/MailRuleSettings';
+import ChatSettings from '@/components/settings/ChatSettings';
 import DeleteDataSettings from '@/components/settings/DeleteDataSettings';
 import BinSettings from '@/components/settings/BinSettings';
 
@@ -43,6 +44,7 @@ const SECTION_VIEWS = {
   pages: ModuleSettings,
   mail: MailSettings,
   'mail-rules': MailRuleSettings,
+  chat: ChatSettings,
   bin: BinSettings,
   delete: DeleteDataSettings,
 } as const;

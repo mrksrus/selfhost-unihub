@@ -38,8 +38,9 @@ export function createMockChatEngine(options: MockChatOptions = {}): MockChatEng
   const calls: MockChatEngine['calls'] = [];
   let snapshot: ChatEngineSnapshot;
   let sent = 0;
+  let readiness = options.readiness ?? { state: 'ready' as const };
   const publish = () => {
-    snapshot = { readiness: options.readiness ?? { state: 'ready' }, conversations, holds_history_key: true, restore: options.restore ?? null };
+    snapshot = { readiness, conversations, holds_history_key: readiness.state === 'ready', restore: options.restore ?? null };
     for (const subscriber of [...subscribers]) subscriber();
   };
   publish();
@@ -87,10 +88,10 @@ export function createMockChatEngine(options: MockChatOptions = {}): MockChatEng
     }),
     sync: record('sync', async () => {}),
     restart: record('restart', () => {}),
-    choosePassphrase: record('choosePassphrase', async () => {}),
-    enterPassphrase: record('enterPassphrase', async () => {}),
-    changePassphrase: record('changePassphrase', async () => {}),
-    startNewKey: record('startNewKey', async () => {}),
+    choosePassphrase: record('choosePassphrase', async (_passphrase: string) => { readiness = { state: 'ready' }; publish(); }),
+    enterPassphrase: record('enterPassphrase', async (_passphrase: string) => { readiness = { state: 'ready' }; publish(); }),
+    changePassphrase: record('changePassphrase', async (_password: string, _passphrase: string) => {}),
+    startNewKey: record('startNewKey', async (_password: string, _passphrase: string) => { readiness = { state: 'ready' }; publish(); }),
   };
 }
 
@@ -127,7 +128,7 @@ export const CHAT_THREADS: Record<string, ChatThreadItem[]> = {
     plan,
     mine('m3', day('14', '19:10'), 'Got it, thanks.', { reply_to: { id: plan.id, sender_name: plan.sender_name, text: plan.text } }),
     mine('m4', day('15', '08:55'), 'I moved the stand-up to 09:45.', { edited: true, edit_state: 'sending' }),
-    mine('m5', day('15', '09:01'), 'The room is booked until eleven.', { edited: true, edit_state: 'failed', error: 'The server did not take the change.' }),
+    mine('m5', day('15', '09:01'), 'The room is booked until eleven.', { edited: true, edit_state: 'failed', error: 'Could not reach the UniHub API. The browser is online, but the server did not respond.' }),
     mine('m6', day('15', '09:05'), 'Agenda: rota, supplier, holidays.'),
     mine('m7', day('15', '09:12'), 'I will bring the printouts.', { delivery: 'delivered' }),
     mine('m8', day('15', '09:14'), 'Back in two minutes.', { delivery: 'sent' }),

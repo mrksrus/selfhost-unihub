@@ -5,7 +5,7 @@ import { useModules } from '@/hooks/use-modules';
 import { Button } from '@/components/ui/button';
 import { UniHubMark } from '@/components/app-lock/UniHubMark';
 import { useTurnOnAppLock } from '@/components/app-lock/use-turn-on-app-lock';
-import { areaLabel, describeRequirement, scopeMeeting, shorterRelock } from '@/components/app-lock/area-names';
+import { areaLabel, describeRequirement, scopeMeeting, shorterRelock, UPDATE_APP_TO_LOCK_CHAT } from '@/components/app-lock/area-names';
 import { cn } from '@/lib/utils';
 
 interface AppLockRequiredPromptProps {
@@ -63,6 +63,7 @@ export function AppLockRequiredPrompt({ area, variant }: AppLockRequiredPromptPr
         <p className="text-sm text-muted-foreground">{text}</p>
         {detail && <p className="text-sm">{detail}</p>}
         <p className="text-sm text-muted-foreground">{lock.method.pinUnavailable ?? method}</p>
+        {lock.method.appUpdateForChat && <p className="text-sm text-muted-foreground">{UPDATE_APP_TO_LOCK_CHAT}</p>}
       </div>
       <div className="flex w-full flex-col gap-2">
         <Button onClick={() => void start()} disabled={busy || !!lock.method.pinUnavailable} className="w-full">

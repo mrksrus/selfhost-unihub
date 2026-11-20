@@ -168,6 +168,7 @@ export class AppLockController {
       pinSet: this.pinSet,
       pinUnavailable: support.reason,
       appUpdateForBiometrics: appLacksNativeLock(),
+      appUpdateForChat: this.chatRefused,
     };
     const capabilities: AppLockCapabilities = {
       deviceLockSignal: this.lock.capabilities.deviceLockSignal,
@@ -372,13 +373,14 @@ export class AppLockController {
     };
     // An app from before Chat refuses a lock that names it and keeps what it
     // had: it gets the other areas, and only those are reported as locked.
-    this.chatRefused = false;
+    let chatRefused = false;
     await this.lock.configure(config).catch(async () => {
       if (!this.scope.includes('chat')) return;
-      this.chatRefused = true;
+      chatRefused = true;
       await this.lock.configure({ ...config, scope: this.scope.filter(area => area !== 'chat') }).catch(() => {});
     });
     if (this.ended) return;
+    if (chatRefused !== this.chatRefused) { this.chatRefused = chatRefused; this.emit(); }
     await writeTimelineConfig(this.userId, {
       ...this.config,
       blockScreenshots: this.screenshotsForbidden,

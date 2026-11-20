@@ -3,7 +3,8 @@ import { MemoryRouter, useLocation } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SessionQueryProvider } from '@/components/SessionQueryProvider';
 import { Toaster } from '@/components/ui/toaster';
-import { textParts } from '@/components/chat/chat-state';
+import { passphraseStrength, textParts } from '@/components/chat/chat-state';
+import { WrongPassphraseError } from '@/lib/chat/key-backup';
 import { useStartChat } from '@/components/chat/use-start-chat';
 import type { ChatEngine } from '@/lib/chat/types';
 import ChatPage from '@/pages/ChatPage';
@@ -155,6 +156,94 @@ describe('Chat composer and message menu', () => {
     fireEvent.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Delete' }));
     expect(await screen.findByText(reason)).toBeInTheDocument();
     expect(screen.getByText('Kept by the rule')).toBeInTheDocument();
+  });
+});
+
+describe('Chat small print of a message', () => {
+  it('discards a message that was never sent without asking, names oneself "You" in a quote, and leaves an edit the engine refuses', async () => {
+    const engine = createFixtureChatEngine();
+    engine.edit = () => { throw new Error('Only your own messages can be edited.'); };
+    state.engine = engine;
+    render(<App user="A" at="/chat?c=chat-blair" />);
+    // Blair's answer quotes Ada's message; Ada reads "You", Blair's name stays in Ada's own quote of Blair.
+    const quote = (text: string) => screen.getByText(text, { selector: 'span' }).previousElementSibling;
+    expect(quote('Yes. They confirmed Thursday for the first batch.')).toHaveTextContent(/^You$/);
+    expect(quote('Sorry, new phone. The plan is here: https://intranet.example.com/rota/june')).toHaveTextContent('Blair Example');
+    // Still on its way: nothing to do with it. Failed: it can be thrown away.
+    expect(screen.queryByRole('button', { name: /your message at 09:27/ })).not.toBeInTheDocument();
+    expect(screen.getByText('Not sent. No connection to the server.')).toBeInTheDocument();
+    openMenu(/your message at 09:28/);
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Discard' }));
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
+    await waitFor(() => expect(engine.calls).toContainEqual(['delete', 'm10']));
+
+    openMenu(/your message at 09:05/);
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Edit' }));
+    const input = field('Blair Example');
+    fireEvent.change(input, { target: { value: 'Agenda: rota and holidays.' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(await screen.findByText('Only your own messages can be edited.')).toBeInTheDocument();
+    expect(screen.queryByText('Editing your message')).not.toBeInTheDocument();
+  });
+
+  it('gives a message of a person who cannot be written to no menu', () => {
+    state.engine = createFixtureChatEngine();
+    render(<App user="A" at="/chat?c=chat-katherine" />);
+    expect(screen.getByText(/year-end close/, { selector: 'li p' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Actions for/ })).not.toBeInTheDocument();
+  });
+});
+
+describe('the chat passphrase', () => {
+  const blair = [{ id: 'chat-blair', peer: peer('user-blair', 'Blair Example'), unread: 1, last_activity_at: null, last_message: null }];
+  const passphraseField = () => screen.getByLabelText('Chat passphrase');
+
+  it('keeps a wrong passphrase on the prompt, opens the chats with "Not now" and brings the prompt back from their line', async () => {
+    const engine = createMockChatEngine({ readiness: { state: 'enter-passphrase' }, conversations: blair, threads: { 'chat-blair': [] } });
+    const real = engine.enterPassphrase;
+    engine.enterPassphrase = passphrase => passphrase === 'four unrelated words here' ? real(passphrase) : Promise.reject(new WrongPassphraseError());
+    state.engine = engine;
+    render(<App user="A" at="/chat" />);
+    fireEvent.change(passphraseField(), { target: { value: 'not the passphrase' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Get my earlier messages' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('This is not your chat passphrase.');
+    expect(screen.queryByRole('list', { name: 'Chats' })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Not now' }));
+    expect(screen.getByRole('link', { name: /Blair Example/ })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Enter passphrase' }));
+    fireEvent.change(passphraseField(), { target: { value: 'four unrelated words here' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Get my earlier messages' }));
+    expect(await screen.findByRole('link', { name: /Blair Example/ })).toBeInTheDocument();
+    expect(screen.queryByText('Your earlier messages are not on this device yet.')).not.toBeInTheDocument();
+  });
+
+  it('starts a new key with the account password and the new passphrase, and never sends the one typed behind the dialog', async () => {
+    const engine = createMockChatEngine({ readiness: { state: 'enter-passphrase' }, conversations: blair, threads: { 'chat-blair': [] } });
+    state.engine = engine;
+    render(<App user="A" at="/chat" />);
+    fireEvent.change(passphraseField(), { target: { value: 'half remembered' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Start a new key…' }));
+    const dialog = within(await screen.findByRole('dialog', { name: 'Start a new key?' }));
+    expect(dialog.getByText(/cannot be read again/)).toBeInTheDocument();
+    const start = dialog.getByRole('button', { name: 'Start a new key' });
+    fireEvent.change(dialog.getByLabelText('Chat passphrase'), { target: { value: 'a brand new passphrase' } });
+    fireEvent.change(dialog.getByLabelText('Your password'), { target: { value: 'account-password' } });
+    // The repeat is missing: nothing can be started yet.
+    expect(start).toBeDisabled();
+    fireEvent.change(dialog.getByLabelText('Repeat the passphrase'), { target: { value: 'a brand new passphrase' } });
+    fireEvent.click(start);
+    await waitFor(() => expect(engine.calls).toEqual([['startNewKey', 'account-password', 'a brand new passphrase']]));
+    expect(await screen.findByRole('link', { name: /Blair Example/ })).toBeInTheDocument();
+  });
+
+  it('hints at the strength without calling a short or repetitive passphrase good', () => {
+    expect(passphraseStrength('')).toEqual({ level: 0, hint: 'At least 12 characters' });
+    expect(passphraseStrength('elevenchars')).toEqual({ level: 0, hint: '1 more character' });
+    expect(passphraseStrength('aaaaaaaaaaaaaaaaaaaaaaaa').level).toBe(1);
+    expect(passphraseStrength('lowercaseonly').level).toBe(1);
+    expect(passphraseStrength('correct horse battery').level).toBe(3);
+    expect(passphraseStrength('Tuesday-rota42').level).toBe(2);
   });
 });
 

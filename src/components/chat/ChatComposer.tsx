@@ -85,7 +85,11 @@ export function ChatComposer({ peerName, mode, draft, onDraft, onSend, onCancel,
         </Button>
       </div>
       {text.length >= MAX_MESSAGE_LENGTH - 500 && (
-        <p aria-live="polite" className="mt-1 text-right text-xs tabular-nums text-muted-foreground">{text.length.toLocaleString('en')} of {MAX_MESSAGE_LENGTH.toLocaleString('en')} characters</p>
+        <p className="mt-1 text-right text-xs tabular-nums text-muted-foreground">
+          {text.length.toLocaleString('en')} of {MAX_MESSAGE_LENGTH.toLocaleString('en')} characters
+          {/* Announced once, at the limit, not at every keystroke. */}
+          <span role="status" className="sr-only">{text.length >= MAX_MESSAGE_LENGTH ? 'The message cannot get longer.' : ''}</span>
+        </p>
       )}
       </div>
     </form>

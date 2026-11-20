@@ -127,7 +127,7 @@ describe('Settings → App lock', () => {
   });
 
   it('turning "Also when the phone is locked" off asks for the unlock first; turning it on saves at once', { timeout: 20_000 }, async () => {
-    const phone = { method: 'biometric' as const, biometric: 'available' as const, deviceSecure: true, pinSet: false, pinUnavailable: null, appUpdateForBiometrics: false };
+    const phone = { method: 'biometric' as const, biometric: 'available' as const, deviceSecure: true, pinSet: false, pinUnavailable: null, appUpdateForBiometrics: false, appUpdateForChat: false };
     const signal = { deviceLockSignal: true, deviceLockReason: null, secureWindow: true };
     const saveSettings = vi.fn(async () => settingsWith({ scope: ['app'], deviceLock: false }));
     mount({ settings: settingsWith({ scope: ['app'], deviceLock: true }), method: phone, capabilities: signal, saveSettings });
@@ -145,7 +145,7 @@ describe('Settings → App lock', () => {
 
   it('in the Android app the method row follows the phone, and the device-lock switch works there only', () => {
     mount({ settings: settingsWith({ scope: ['app'] }),
-      method: { method: 'biometric', biometric: 'available', deviceSecure: true, pinSet: false, pinUnavailable: null, appUpdateForBiometrics: false },
+      method: { method: 'biometric', biometric: 'available', deviceSecure: true, pinSet: false, pinUnavailable: null, appUpdateForBiometrics: false, appUpdateForChat: false },
       capabilities: { deviceLockSignal: true, deviceLockReason: null, secureWindow: true } });
     expect(screen.getByText('Fingerprint, face or the phone\'s PIN')).toBeInTheDocument();
     expect(screen.getByText('Set up on this phone.')).toBeInTheDocument();
@@ -154,7 +154,7 @@ describe('Settings → App lock', () => {
     cleanup();
 
     mount({ settings: settingsWith({ scope: ['app'] }),
-      method: { method: 'device_credential', biometric: 'not_enrolled', deviceSecure: true, pinSet: false, pinUnavailable: null, appUpdateForBiometrics: false },
+      method: { method: 'device_credential', biometric: 'not_enrolled', deviceSecure: true, pinSet: false, pinUnavailable: null, appUpdateForBiometrics: false, appUpdateForChat: false },
       capabilities: { deviceLockSignal: true, deviceLockReason: null, secureWindow: true }, screenshotsForbidden: true });
     expect(screen.getByText('No fingerprint or face is set up on this phone: its PIN is used.')).toBeInTheDocument();
     expect(screen.getByText('Screenshots')).toBeInTheDocument();
