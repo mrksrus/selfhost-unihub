@@ -1136,6 +1136,12 @@ jobs:
           path: ~/.cache/unihub-e2e/greenmail
           key: greenmail-${{ env.GREENMAIL_VERSION }}
 
+      - name: Cache MariaDB
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/unihub-e2e/mariadb
+          key: mariadb-${{ env.MARIADB_VERSION }}-linux-systemd-x86_64
+
       - name: Install the synthetic providers
         run: |
           bash scripts/install-test-providers.sh
@@ -1160,11 +1166,16 @@ jobs:
           docker rm "$container" >/dev/null
           docker image rm unihub:ci >/dev/null
           tarball="mariadb-$MARIADB_VERSION-linux-systemd-x86_64.tar.gz"
-          curl --fail --silent --show-error --location --retry 5 --retry-all-errors --continue-at - --speed-limit 102400 --speed-time 60 -o "$RUNNER_TEMP/$tarball" "https://downloads.mariadb.org/rest-api/mariadb/$MARIADB_VERSION/$tarball"
-          echo "$MARIADB_SHA256  $RUNNER_TEMP/$tarball" | sha256sum --check
+          kept="$HOME/.cache/unihub-e2e/mariadb/$tarball"
+          mkdir -p "$(dirname "$kept")"
+          # The mirror stalls at times: a copy from an earlier run is used while it matches its checksum.
+          if ! echo "$MARIADB_SHA256  $kept" | sha256sum --check --status 2>/dev/null; then
+            rm -f -- "$kept"
+            curl --fail --silent --show-error --location --retry 5 --retry-all-errors --continue-at - --speed-limit 102400 --speed-time 60 -o "$kept" "https://downloads.mariadb.org/rest-api/mariadb/$MARIADB_VERSION/$tarball"
+          fi
+          echo "$MARIADB_SHA256  $kept" | sha256sum --check
           mkdir -p "$RUNNER_TEMP/mariadb"
-          tar -xzf "$RUNNER_TEMP/$tarball" -C "$RUNNER_TEMP/mariadb" --strip-components=1
-          rm -f -- "$RUNNER_TEMP/$tarball"
+          tar -xzf "$kept" -C "$RUNNER_TEMP/mariadb" --strip-components=1
           {
             echo "UNIHUB_E2E_NGINX=/usr/sbin/nginx"
             echo "UNIHUB_E2E_MIME_TYPES=$RUNNER_TEMP/mime.types"
