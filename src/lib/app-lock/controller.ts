@@ -92,6 +92,7 @@ export class AppLockController {
   private pin: AppLockPinState = NO_PIN;
   private requirement: AppLockRequirement | null = null;
   private screenshotsForbidden = false;
+  private chatRefused = false;
   /** The method that applied the lock here before (this browser's timeline or the server's record); a lost PIN needs a sign-in. */
   private appliedMethod: LockMethod | null = null;
   /** The person turned the lock on in this page (Settings or the required prompt). */
@@ -338,10 +339,11 @@ export class AppLockController {
 
   /** What the device enforces now, for PUT /api/devices/current/lock. */
   private applied(): AppLockApplied | null {
-    if (!this.scope.length || !this.hasMethod) return null;
+    const scope = this.chatRefused ? this.scope.filter(area => area !== 'chat') : this.scope;
+    if (!scope.length || !this.hasMethod) return null;
     const relock = String(this.config.relockAfterMs / 1000) as RelockAfter;
     return {
-      scope: this.scope,
+      scope,
       relock_after: relock,
       on_device_lock: this.config.onDeviceLock && this.lock.capabilities.deviceLockSignal,
       method: this.methodName,
@@ -361,13 +363,21 @@ export class AppLockController {
   private async apply() {
     if (this.ended) return;
     const lost = this.status() === 'setup' || this.pinLost;
-    await this.lock.configure({
+    const config = {
       userId: this.userId,
       scope: this.scope,
       relockAfterMs: this.config.relockAfterMs,
       onDeviceLock: this.config.onDeviceLock,
       blockScreenshots: this.screenshotsForbidden,
-    }).catch(() => {});
+    };
+    // An app from before Chat refuses a lock that names it and keeps what it
+    // had: it gets the other areas, and only those are reported as locked.
+    this.chatRefused = false;
+    await this.lock.configure(config).catch(async () => {
+      if (!this.scope.includes('chat')) return;
+      this.chatRefused = true;
+      await this.lock.configure({ ...config, scope: this.scope.filter(area => area !== 'chat') }).catch(() => {});
+    });
     if (this.ended) return;
     await writeTimelineConfig(this.userId, {
       ...this.config,

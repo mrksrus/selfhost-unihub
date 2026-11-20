@@ -342,7 +342,7 @@ class MainActivity : Activity() {
             // Also after signing in, which changes the page without loading one.
             override fun doUpdateVisitedHistory(view: WebView, url: String?, isReload: Boolean) {
                 ContactsSync.pageShown(this@MainActivity, url)
-                val chat = ServerAddress.sameOrigin(server, url) && Uri.parse(url).path.let { it == "/chat" || it?.startsWith("/chat/") == true }
+                val chat = ServerAddress.sameOrigin(server, url) && Uri.parse(url).path?.lowercase().let { it == "/chat" || it?.startsWith("/chat/") == true }
                 if (chat != inChat) {
                     inChat = chat
                     applyLockWindow()

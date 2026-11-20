@@ -453,6 +453,18 @@ describe('in the Android app (bridge level 3)', () => {
     }));
   });
 
+  it('an app from before Chat locks the other areas and claims no Chat lock', async () => {
+    const fake = server({ app_lock_scope: ['mail', 'chat'] });
+    fake.state.lock = { scope: ['mail'], relock_after: '60', on_device_lock: true, method: 'biometric' };
+    const lock = nativeLock({ due: false });
+    lock.configure.mockImplementation(async config => { if (config.scope.includes('chat')) throw new Error('Unknown lock area'); });
+    const page = appTab(fake, lock);
+    await page.started;
+    await until(() => fake.reportDeviceLock.mock.calls.length > 0, 'the lock is reported');
+    expect(lock.configure).toHaveBeenLastCalledWith(expect.objectContaining({ scope: ['mail'], blockScreenshots: false }));
+    expect(fake.reportDeviceLock).toHaveBeenLastCalledWith(expect.objectContaining({ applied: expect.objectContaining({ scope: ['mail'] }) }));
+  });
+
   it('a phone short of a required lock is asked to turn it on, even with a fingerprint, and claims the lock only then', async () => {
     // The administrator's floor is already in the device's settings; this device never turned a lock on.
     const fake = server({ app_lock_scope: ['app'] }, { meets: false, required: ['app'], max_background: null, reason: null });

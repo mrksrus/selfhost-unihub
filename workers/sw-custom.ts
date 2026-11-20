@@ -158,6 +158,7 @@ async function openPreview(key: PreviewKey, sealed: Uint8Array<ArrayBuffer>) {
   const shared = await crypto.subtle.deriveBits({ name: 'ECDH', public: sender }, key.privateKey, 256);
   const ikm = await hkdf(key.auth, shared, new Uint8Array([...utf8('WebPush: info\0'), ...key.publicKey, ...senderPublic]), 32);
   const contentKey = await crypto.subtle.importKey('raw', await hkdf(salt, ikm, utf8('Content-Encoding: aes128gcm\0'), 16), 'AES-GCM', false, ['decrypt']);
+  if (sealed.length - 86 > new DataView(sealed.buffer).getUint32(16)) throw new Error('A sealed message has one record.');
   const padded = new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: await hkdf(salt, ikm, utf8('Content-Encoding: nonce\0'), 12) }, contentKey, sealed.slice(86)));
   let end = padded.length - 1;
   while (end >= 0 && padded[end] === 0) end--;
@@ -230,7 +231,7 @@ async function deliverNotification(payload: Payload | null | undefined) {
     icon: '/icons/icon-192x192.png', badge: '/icons/icon-72x72.png',
     // A payload tag groups notices that replace each other, such as reminders
     // about one recording upload. Each new chat message in a conversation alerts again.
-    tag: typeof payload.tag === 'string' && payload.tag.length <= 128 ? payload.tag : payload.dedupeKey, renotify: payload.kind === 'chat',
+    tag: typeof payload.tag === 'string' && payload.tag && payload.tag.length <= 128 ? payload.tag : payload.dedupeKey, renotify: payload.kind === 'chat',
     data: { url: notificationTargetUrl(payload), userId: activeUser, eventId: payload.eventId, emailId: payload.emailId },
   });
   // Suppression and failures never acknowledge delivery. Shared worker storage deduplicates tabs and transports.
