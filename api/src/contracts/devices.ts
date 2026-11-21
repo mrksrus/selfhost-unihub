@@ -64,6 +64,8 @@ export interface DeviceSummary {
   notifications: boolean;
   /** The device is enrolled for chat: it holds chat keys. */
   chat: boolean;
+  /** Enrolled but not joined yet ("Waiting for Chat"): it is in no chat until the passphrase or an approval. */
+  chat_waiting: boolean;
 }
 
 /** GET /api/devices: the person's devices with a live session, the current one first. */
