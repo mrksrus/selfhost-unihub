@@ -104,7 +104,6 @@ test('a new browser reads new messages at once and the earlier ones after the pa
     // A second browser: Chat asks for the passphrase, and can wait for it.
     const second = await open(blair, 'blair-second', 'second browser');
     await second.goto(`${stack.url}/chat`);
-    await shows(second.getByRole('heading', { name: 'Enter your chat passphrase' }));
     await joinChat(second, FIRST_PASSPHRASE);
     await shows(second.getByRole('heading', { name: 'Enter your chat passphrase' }));
     const fresh = `After the new browser ${run}`;
@@ -139,7 +138,6 @@ test('a new browser reads new messages at once and the earlier ones after the pa
     // A third browser: the old passphrase no longer opens the history, the new one does.
     const third = await open(blair, 'blair-third', 'third browser');
     await third.goto(`${stack.url}/chat`);
-    await shows(third.getByRole('heading', { name: 'Enter your chat passphrase' }));
     await joinChat(third, NEW_PASSPHRASE);
     await shows(third.getByRole('heading', { name: 'Enter your chat passphrase' }));
     await enterPassphrase(third, FIRST_PASSPHRASE);

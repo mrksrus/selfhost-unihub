@@ -70,6 +70,7 @@ export async function chatBrowser(person: Person, args: string[] = []) {
  * browsers whose screens do not join a waiting device yet.
  */
 export async function joinChat(page: Evaluates, passphrase: string) {
+  await expect.poll(async () => (await pageApi<{ account: unknown }>(page, 'GET', '/api/chat/account')).data?.account ?? null, { timeout: 60_000 }).not.toBeNull();
   await expect.poll(async () => (await pageApi(page, 'GET', '/api/chat/devices/current')).status, { timeout: 60_000 }).toBe(200);
   if (ok(await pageApi<{ state: string }>(page, 'GET', '/api/chat/devices/current'), 'the chat device').state === 'waiting') await prove(page, passphrase);
   await page.evaluate(() => { (window as unknown as { reloading?: true }).reloading = true; setTimeout(() => location.reload()); }, null);
