@@ -68,6 +68,31 @@ export interface ChatConversationSummary {
  */
 export type ChatDeliveryState = 'sending' | 'failed' | 'sent' | 'delivered' | 'read';
 
+/** A file to send: a picked file, a pasted picture or a voice message (with its length). */
+export interface ChatFileToSend { blob: Blob; name: string; voice_seconds?: number }
+
+/** A file of a message; openFile() fetches and decrypts it. */
+export interface ChatThreadFile {
+  id: string;
+  name: string;
+  /** Its type as the sender's browser named it; '' when unknown. */
+  type: string;
+  /** In bytes. */
+  size: number;
+  /** A picture with a preview (picturePreview()): the picture's size in pixels. null for other files. */
+  picture: { width: number; height: number } | null;
+  /** A voice message's length in seconds; null for other files. */
+  voice_seconds: number | null;
+  /**
+   * An own file on its way: `waiting`, `uploading` (with `progress` from 0 to
+   * 1), `failed` (`error` says why, e.g. "Files in a chat can be at most 50
+   * MB."; retry() sends the message again), then `sent`. Received files are `sent`.
+   */
+  state: 'waiting' | 'uploading' | 'failed' | 'sent';
+  progress: number | null;
+  error: string | null;
+}
+
 export interface ChatThreadMessage {
   kind: 'message';
   id: string;
@@ -83,8 +108,10 @@ export interface ChatThreadMessage {
   /** The people the message mentions (user ids); their names are in the text as "@name". */
   mentions: string[];
   mentions_me: boolean;
-  /** null when deleted or unreadable. */
+  /** null when deleted or unreadable; '' for a message of files only. */
   text: string | null;
+  /** Up to 10; none when deleted. */
+  files: ChatThreadFile[];
   reply_to: { id: string; sender_name: string; text: string | null } | null;
   edited: boolean;
   deleted: boolean;
@@ -168,13 +195,22 @@ export interface ChatEngine {
   setNotify(conversationId: string, notify: ChatNotify): Promise<void>;
   /** Chats by name and messages by text on this device, chats first, then the newest messages. */
   search(query: string): ChatSearchResult[];
-  /** Puts a message in the outbox and returns at once; its delivery state follows. Up to 8,000 characters; `mentions`: up to 20 people of a group chat. */
-  send(conversationId: string, text: string, replyTo?: string | null, mentions?: string[]): void;
+  /**
+   * Puts a message in the outbox and returns at once; its delivery state
+   * follows. Up to 8,000 characters (none when it has files); `mentions`: up
+   * to 20 people of a group chat; `files`: up to 10 of any type, uploaded
+   * before the message is posted.
+   */
+  send(conversationId: string, text: string, replyTo?: string | null, mentions?: string[], files?: ChatFileToSend[]): void;
+  /** A file of a message, decrypted, as a Blob of its type (fetched again each time); `onProgress` gets 0 to 1. Rejects when it is gone or damaged. */
+  openFile(messageId: string, fileId: string, options?: { onProgress?: (part: number) => void; signal?: AbortSignal }): Promise<Blob>;
+  /** A picture's preview (JPEG), kept on this device once fetched; null for a file without one. */
+  picturePreview(messageId: string, fileId: string): Promise<Blob | null>;
   /** A new text for one's own message. */
   edit(messageId: string, text: string): void;
-  /** Deletes one's own message for both sides; rejects with the server's refusal (POLICY_FORBIDS). A message still in the outbox is discarded instead. */
+  /** Deletes one's own message for both sides; rejects with the server's refusal (POLICY_FORBIDS). A message still in the outbox is discarded instead, its uploads cancelled ("Cancel"). */
   delete(messageId: string): Promise<void>;
-  /** Sends a failed message again. */
+  /** Sends a failed message again, with the files not uploaded yet. */
   retry(messageId: string): void;
   /** Moves the read mark to the newest message; call while the conversation is open and visible. */
   markRead(conversationId: string): void;

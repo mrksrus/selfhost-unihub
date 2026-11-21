@@ -158,8 +158,10 @@ function deliveryService() {
   const messages: (ChatMessage & { conversation_id: string })[] = [];
   const archive = new Map<string, { user: string; message: string; sealed: string }>();
   /** The mentions and previews posted with each message. */
-  const posts = new Map<string, { mentions: string[] | undefined; previews: { chat_device_id: string; sealed: string }[] }>();
-  const state = { ageDays: 0, forbidDelete: false, loseGroupAnswer: false, failArchive: false, refusedOffline: () => {}, groupGate: null as null | { waiting: number; size: number; open: () => void; opened: Promise<void> } };
+  const posts = new Map<string, { mentions: string[] | undefined; previews: { chat_device_id: string; sealed: string }[]; attachments: string[] | undefined }>();
+  /** Uploaded ciphertext by id; `message` once a post names it. */
+  const attachments = new Map<string, { conversation: string; uploader: string; blob: Blob; message: string | null }>();
+  const state = { fileLimitMb: 50, uploads: 0, downloads: 0, holdUploads: false, onHold: () => {}, onUpload: (() => {}) as (id: string) => void, ageDays: 0, forbidDelete: false, loseGroupAnswer: false, failArchive: false, refusedOffline: () => {}, groupGate: null as null | { waiting: number; size: number; open: () => void; opened: Promise<void> } };
 
   const ok = (data: unknown) => ({ data });
   const refuse = (status: number, code: string, details?: unknown) => ({ error: code, status, code, details });
@@ -213,7 +215,7 @@ function deliveryService() {
     const [, conversationId, rest] = /^\/chat\/conversations\/([^/]+)(\/.*)?$/.exec(route) ?? [];
     const conversation = conversationId ? conversations.get(conversationId) : undefined;
     if (conversationId && !conversation?.people.includes(me)) return refuse(404, 'CONVERSATION_NOT_FOUND');
-    const key = `${method} ${conversationId ? `/chat/conversations/:id${rest?.replace(/^\/members\/.+/, '/members/:userId') ?? ''}` : route.replace(/\/chat\/(groups|messages)\/[^/]+/, '/chat/$1/:id')}`;
+    const key = `${method} ${conversationId ? `/chat/conversations/:id${rest?.replace(/^\/members\/.+/, '/members/:userId') ?? ''}` : route.replace(/\/chat\/(groups|messages|attachments)\/[^/]+/, '/chat/$1/:id')}`;
     const target = route.split('/')[3];
     switch (key) {
       case 'GET /chat/account': return ok({ account: accounts.get(me) ?? null });
@@ -304,11 +306,17 @@ function deliveryService() {
         if (body.replaces && !messages.some(item => item.id === body.replaces && item.sender_user_id === me && item.ciphertext)) return refuse(404, 'CHAT_MESSAGE_NOT_FOUND');
         const mentions = body.mentions as string[] | undefined;
         if (mentions && (conversation!.name === undefined || mentions.length > 20 || mentions.some(person => person === me || !conversation!.people.includes(person)))) return refuse(400, 'CHAT_MENTION_INVALID');
-        posts.set(body.id as string, { mentions, previews: body.previews as { chat_device_id: string; sealed: string }[] });
+        const attached = body.attachments as string[] | undefined;
+        if (attached?.length && (body.replaces || attached.length > 10 || attached.some(id => {
+          const file = attachments.get(id);
+          return !file || file.uploader !== me || file.conversation !== conversation!.id || file.message;
+        }))) return refuse(400, 'CHAT_ATTACHMENT_INVALID');
+        posts.set(body.id as string, { mentions, previews: body.previews as { chat_device_id: string; sealed: string }[], attachments: attached });
         const message = { id: body.id as string, conversation_id: conversation!.id, seq: ++conversation!.last_seq, group_id: body.group_id as string,
           sender_user_id: me, sender_chat_device_id: mine!.id, kind: 'message' as const, replaces: body.replaces as string | null,
           format: body.format as number, ciphertext: body.ciphertext as string, created_at: new Date(Date.now() - state.ageDays * 86_400_000).toISOString() };
         messages.push(message);
+        attached?.forEach(id => { attachments.get(id)!.message = message.id; });
         archive.set(`${me}:${message.id}`, { user: me, message: message.id, sealed: body.archive as string });
         return ok({ message });
       }
@@ -325,6 +333,7 @@ function deliveryService() {
         const message = messages.find(item => item.id === target && item.sender_user_id === me && !item.replaces);
         if (!message) return refuse(404, 'CHAT_MESSAGE_NOT_FOUND');
         const at = conversations.get(message.conversation_id)!;
+        for (const [id, file] of attachments) if (file.message === target) attachments.delete(id);
         for (const item of messages.filter(entry => entry.id === target || entry.replaces === target)) {
           item.ciphertext = null;
           for (const [id, copy] of archive) if (copy.message === item.id) archive.delete(id);
@@ -338,6 +347,31 @@ function deliveryService() {
         marks.delivered = Math.max(marks.delivered, marks.read, Number(body.delivered_seq ?? 0));
         conversation!.marks.set(me, marks);
         return ok({ read_seq: marks.read, delivered_seq: marks.delivered });
+      }
+      case 'POST /chat/conversations/:id/attachments': {
+        const id = params.get('id')!;
+        const { blob, onProgress, signal } = body as { blob: Blob; onProgress?: (sent: number) => void; signal?: AbortSignal };
+        const found = attachments.get(id);
+        if (found) return found.uploader === me && found.conversation === conversation!.id ? ok({ attachment: { id } }) : refuse(409, 'CHAT_ATTACHMENT_EXISTS');
+        if (state.holdUploads) state.onHold();
+        if (state.holdUploads) await new Promise((_, reject) => signal?.addEventListener('abort', () => reject(new DOMException('cancelled', 'AbortError'))));
+        if (blob.size > state.fileLimitMb * 1024 * 1024) {
+          const reason = `Files in a chat can be at most ${state.fileLimitMb} MB.`;
+          return { error: reason, status: 413, code: 'CHAT_FILE_TOO_LARGE', details: { limit_mb: state.fileLimitMb, reason } };
+        }
+        onProgress?.(blob.size);
+        attachments.set(id, { conversation: conversation!.id, uploader: me, blob, message: null });
+        state.uploads++;
+        state.onUpload(id);
+        return ok({ attachment: { id } });
+      }
+      case 'GET /chat/attachments/:id': {
+        const file = attachments.get(target);
+        const at = file && conversations.get(file.conversation);
+        const sent = file?.message ? messages.find(item => item.id === file.message) : undefined;
+        if (!file || !at?.people.includes(me) || (sent ? !sent.ciphertext || sent.seq <= (at.joined.get(me) ?? 0) : file.uploader !== me)) return refuse(404, 'CHAT_ATTACHMENT_NOT_FOUND');
+        state.downloads++;
+        return ok(file.blob);
       }
       case 'POST /chat/archive':
         for (const copy of body.copies as { message_id: string; sealed: string }[]) {
@@ -355,7 +389,9 @@ function deliveryService() {
     }
     throw new Error(`no route ${key}`);
   }
-  return { names, devices, conversations, groups, messages, archive, posts, state, handle };
+  /** A day passes: the server deletes the uploads no message names. */
+  const sweepUnsent = () => { for (const [id, file] of attachments) if (!file.message) attachments.delete(id); };
+  return { names, devices, conversations, groups, messages, archive, posts, attachments, state, handle, sweepUnsent };
 }
 
 export let server = deliveryService();
@@ -365,6 +401,12 @@ vi.mock('@/lib/api', () => ({
     post: (url: string, body?: Record<string, unknown>) => server.handle('POST', url, body),
     put: (url: string, body?: Record<string, unknown>) => server.handle('PUT', url, body),
     delete: (url: string) => server.handle('DELETE', url),
+    uploadBlob: (url: string, blob: Blob, _type: string, _method: string, options: object) => server.handle('POST', url, { blob, ...options }),
+    getStream: async (url: string) => {
+      const answer = await server.handle('GET', url) as { data?: Blob; error?: string };
+      if (!answer.data) throw new Error(answer.error);
+      return answer.data.stream();
+    },
   },
 }));
 

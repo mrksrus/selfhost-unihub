@@ -16,9 +16,12 @@ import { startDevice, type ChatDevice } from './device';
 import { createHistoryKey, unwrapHistoryKey, wrapHistoryKey } from './key-backup';
 import { MlsError, MlsUnavailableError, type MlsDevice } from './mls';
 import { open, seal, type SealKey } from './seal';
+import { MAX_FILES, downloadFile, fileRef, outgoingFiles, parseFiles, renewed, uploadExpired, uploadFile, type ChatFileRef, type OutgoingFile } from './files';
 import { searchChats } from './search';
 import { ChatStore } from './store';
-import type { ChatDeliveryState, ChatEngine, ChatEngineSnapshot, ChatReadiness, ChatThreadItem, ChatThreadMessage, ChatThreadNotice } from './types';
+import type {
+  ChatDeliveryState, ChatEngine, ChatEngineSnapshot, ChatFileToSend, ChatReadiness, ChatThreadFile, ChatThreadItem, ChatThreadMessage, ChatThreadNotice,
+} from './types';
 
 export const MAX_TEXT = 8000;
 const PREVIEW_CHARS = 160;
@@ -45,6 +48,7 @@ interface Stored {
   reply_to: string | null;
   /** Absent in what was stored before mentions. */
   mentions?: string[];
+  files?: ChatFileRef[];
   deleted: boolean;
   unreadable: boolean;
   created_at: string;
@@ -60,6 +64,7 @@ interface Outgoing {
   text: string;
   reply_to: string | null;
   mentions?: string[];
+  files?: OutgoingFile[];
   replaces: string | null;
   created_at: string;
   error: string | null;
@@ -78,7 +83,7 @@ interface Cursor {
 }
 
 /** Inside the MLS ciphertext; unknown fields are ignored. */
-interface Content { text: string; reply_to: string | null; name: string; mentions?: string[] }
+interface Content { text: string; reply_to: string | null; name: string; mentions?: string[]; files?: ChatFileRef[] }
 /** Inside an archive copy: the ids are checked on restore, so a copy stored under another message is dropped. */
 interface Copy extends Content { message_id: string; conversation_id: string; sender_user_id: string | null; replaces: string | null; created_at: string }
 
@@ -94,12 +99,17 @@ function parseContent(bytes: Uint8Array): Content {
   // Nothing in a message is longer than a person could have typed: its archive copy must fit too.
   if (typeof value.text !== 'string' || value.text.length > MAX_TEXT || typeof value.name !== 'string' || value.name.length > 255
     || (typeof value.reply_to === 'string' && value.reply_to.length > 64)) throw new SyntaxError('Not a chat message.');
-  return { text: value.text, reply_to: typeof value.reply_to === 'string' ? value.reply_to : null, name: value.name, mentions: ids(value.mentions) };
+  return { text: value.text, reply_to: typeof value.reply_to === 'string' ? value.reply_to : null, name: value.name, mentions: ids(value.mentions), files: parseFiles(value.files) };
 }
+
+/** A deleted or dropped message's previews go from the device too. */
+const dropPreviews = (transaction: IDBTransaction, records: Stored[]) =>
+  records.forEach(record => record.files?.forEach(file => file.preview && transaction.objectStore('previews').delete(file.preview.id)));
 
 /** Puts a record unless the store holds a readable one and this one is not (a restore or another tab came first). */
 function putRecord(transaction: IDBTransaction, record: Stored) {
   const messages = transaction.objectStore('messages');
+  if (record.deleted) dropPreviews(transaction, [record]);
   if (record.text !== null || record.deleted) { messages.put(record); return; }
   const existing = messages.get(record.id);
   existing.onsuccess = () => { if ((existing.result as Stored | undefined)?.text == null) messages.put(record); };
@@ -143,6 +153,10 @@ class Engine implements ChatEngine {
   private readonly started = new Set<string>();
   /** One sender key pair for this page's previews, so each recipient device costs one key agreement. */
   private previewFrom: Promise<CryptoKeyPair> | null = null;
+  /** The running uploads by message, to cancel; each file's progress while it uploads. */
+  private readonly uploads = new Map<string, AbortController>();
+  private readonly progress = new Map<string, number>();
+  private readonly previewLoads = new Map<string, Promise<Blob>>();
 
   constructor(private readonly me: Person) {}
 
@@ -185,6 +199,7 @@ class Engine implements ChatEngine {
   stop() {
     this.stopped = true;
     this.lock.abort();
+    this.uploads.forEach(upload => upload.abort());
     this.stops.forEach(stop => stop());
     this.channel?.close();
     this.device?.free();
@@ -335,7 +350,8 @@ class Engine implements ChatEngine {
         sender_name: fromMe ? this.me.name : known?.active ? known.name : (record as Stored).sender_name,
         // A deleted person's messages on this device still name them; in the chat with them the peer says they are gone.
         former_colleague: !fromMe && (!sender || known?.active === false || (conversation?.kind === 'direct' && conversation.peer.user_id === null)), from_me: fromMe, mentions, mentions_me: !fromMe && mentions.includes(this.me.id),
-        text: record.text, reply_to: null, edited: false, deleted: 'deleted' in record && record.deleted,
+        text: record.text, files: 'deleted' in record && record.deleted ? [] : this.fileStates(record.files, sending),
+        reply_to: null, edited: false, deleted: 'deleted' in record && record.deleted,
         unreadable: 'unreadable' in record && record.unreadable, created_at: record.created_at,
         delivery: !fromMe ? null : sending ? (sending.error ? 'failed' : 'sending') : this.delivery(conversation, seq!),
         read_by: fromMe && seq !== null ? this.readBy(conversation, seq) : null, edit_state: null, error: sending?.error ?? null,
@@ -365,6 +381,15 @@ class Engine implements ChatEngine {
       item.reply_to = { id, sender_name: original?.sender_name ?? '', text: original && !original.deleted ? original.text : null };
     }
     return items;
+  }
+
+  private fileStates(files: (ChatFileRef | OutgoingFile)[] = [], sending: Outgoing | null): ChatThreadFile[] {
+    return files.map(file => {
+      const progress = this.progress.get(file.id);
+      const state = !sending || (file as OutgoingFile).uploaded_at ? 'sent' : progress !== undefined ? 'uploading' : sending.error ? 'failed' : 'waiting';
+      return { id: file.id, name: file.name, type: file.type, size: file.size, picture: file.preview ? { width: file.preview.width, height: file.preview.height } : null,
+        voice_seconds: file.voice_seconds ?? null, state, progress: state === 'uploading' ? progress! : null, error: state === 'failed' ? sending!.error : null };
+    });
   }
 
   // --- Reading ---------------------------------------------------------------------------
@@ -420,6 +445,7 @@ class Engine implements ChatEngine {
     const records = [...this.messages.values()].filter(record => gone.has(record.conversation_id));
     const outgoing = this.outbox.filter(entry => gone.has(entry.conversation_id));
     await this.device!.step(mls => groups.forEach(group => { try { mls.delete_group(encode(group)); } catch { /* not held */ } }), transaction => {
+      dropPreviews(transaction, records);
       records.forEach(record => transaction.objectStore('messages').delete(record.id));
       outgoing.forEach(entry => transaction.objectStore('outbox').delete(entry.order!));
       gone.forEach(id => transaction.objectStore('cursors').delete(id));
@@ -435,7 +461,10 @@ class Engine implements ChatEngine {
     if (!days || !from || Date.parse(from) > Date.now()) return;
     const old = [...this.messages.values()].filter(record => record.conversation_id === id && Date.parse(record.created_at) < Date.now() - days * DAY);
     if (!old.length) return;
-    await this.store!.write([], transaction => old.forEach(record => transaction.objectStore('messages').delete(record.id)));
+    await this.store!.write([], transaction => {
+      dropPreviews(transaction, old);
+      old.forEach(record => transaction.objectStore('messages').delete(record.id));
+    });
     old.forEach(record => this.messages.delete(record.id));
     this.changed(id);
   }
@@ -574,7 +603,7 @@ class Engine implements ChatEngine {
     try {
       await this.keep(mls => mls.decrypt(encode(message.group_id), fromBase64Url(message.ciphertext!)), plain => {
         const content = parseContent(plain);
-        return [{ ...record, text: content.text, reply_to: content.reply_to, sender_name: content.name, mentions: content.mentions }];
+        return [{ ...record, text: content.text, reply_to: content.reply_to, sender_name: content.name, mentions: content.mentions, files: content.files }];
       }, next);
     } catch (error) {
       // Not in its group, tampered with, or the module stopped on it: it costs only itself.
@@ -585,10 +614,12 @@ class Engine implements ChatEngine {
 
   // --- Sending ---------------------------------------------------------------------------
 
-  send(conversationId: string, text: string, replyTo: string | null = null, mentions: string[] = []) {
+  send(conversationId: string, text: string, replyTo: string | null = null, mentions: string[] = [], files: ChatFileToSend[] = []) {
     if (mentions.length > MAX_MENTIONS) throw new Error(`A message mentions at most ${MAX_MENTIONS} people.`);
-    void this.enqueue({ id: crypto.randomUUID(), conversation_id: conversationId, text: this.checked(text), reply_to: replyTo, replaces: null,
-      ...mentions.length ? { mentions } : {} }).catch(error => this.fail(error));
+    if (files.length > MAX_FILES) throw new Error(`A message has at most ${MAX_FILES} files.`);
+    const checked = this.checked(text, files.length);
+    void (async () => this.enqueue({ id: crypto.randomUUID(), conversation_id: conversationId, text: checked, reply_to: replyTo, replaces: null,
+      ...mentions.length ? { mentions } : {}, ...files.length ? { files: await outgoingFiles(files) } : {} }))().catch(error => this.fail(error));
   }
 
   edit(messageId: string, text: string) {
@@ -598,8 +629,8 @@ class Engine implements ChatEngine {
       .catch(error => this.fail(error));
   }
 
-  private checked(text: string) {
-    if (!text.trim() || text.length > MAX_TEXT) throw new Error(`A message has 1 to ${MAX_TEXT.toLocaleString('en')} characters.`);
+  private checked(text: string, files = 0) {
+    if ((!text.trim() && !files) || text.length > MAX_TEXT) throw new Error(`A message has 1 to ${MAX_TEXT.toLocaleString('en')} characters.`);
     return text;
   }
 
@@ -644,7 +675,7 @@ class Engine implements ChatEngine {
             await this.deliver(entry);
           } catch (error) {
             if (unreachable(error) || this.stopped) return;
-            await this.store!.write([], transaction => { transaction.objectStore('outbox').put({ ...entry, error: reason(error) }); });
+            await this.saveOutgoing({ ...entry, error: reason(error) });
           }
           this.outbox = await this.store!.all<Outgoing>('outbox');
           this.changed(entry.conversation_id);
@@ -655,7 +686,57 @@ class Engine implements ChatEngine {
     return this.flushing;
   }
 
+  /** Stores an outbox entry again unless it was discarded meanwhile; false then. */
+  private async saveOutgoing(entry: Outgoing) {
+    let kept = false;
+    await this.store!.write([], transaction => {
+      const outbox = transaction.objectStore('outbox');
+      const found = outbox.get(entry.order!);
+      found.onsuccess = () => { if (found.result) { kept = true; outbox.put(entry); } };
+    });
+    return kept;
+  }
+
+  private setProgress(entry: Outgoing, fileId: string, part: number) {
+    const rounded = Math.floor(part * 100) / 100;
+    if (this.progress.get(fileId) === rounded) return;
+    this.progress.set(fileId, rounded);
+    this.changed(entry.conversation_id);
+  }
+
+  /** Uploads the files of a message that are not uploaded yet, in order; false when it was cancelled meanwhile. */
+  private async uploadFiles(entry: Outgoing) {
+    if (entry.files!.some(uploadExpired)) {
+      entry.files = entry.files!.map(file => uploadExpired(file) ? renewed(file) : file);
+      entry.sealed = null;
+    }
+    const cancel = new AbortController();
+    this.uploads.set(entry.id, cancel);
+    try {
+      for (const file of entry.files!.filter(item => item.uploaded_at === null)) {
+        this.setProgress(entry, file.id, 0);
+        try {
+          await uploadFile(entry.conversation_id, file, part => this.setProgress(entry, file.id, part), cancel.signal);
+        } finally {
+          this.progress.delete(file.id);
+          this.changed(entry.conversation_id);
+        }
+        file.uploaded_at = Date.now();
+        if (!await this.saveOutgoing(entry)) return false;
+        this.changed(entry.conversation_id);
+      }
+      // Discarded in another tab: not posted.
+      return await this.saveOutgoing(entry);
+    } catch (error) {
+      if (cancel.signal.aborted) return false;
+      throw error;
+    } finally {
+      this.uploads.delete(entry.id);
+    }
+  }
+
   private async deliver(entry: Outgoing) {
+    if (entry.files?.length && !await this.uploadFiles(entry)) return;
     let stale: string | null = null;
     for (let attempt = 1; ; attempt++) {
       try {
@@ -664,23 +745,28 @@ class Engine implements ChatEngine {
           ? entry.sealed : await this.encrypt(entry, await this.groupFor(conversation, stale));
         entry.sealed = sealed;
         const content: Copy = { message_id: entry.id, conversation_id: entry.conversation_id, sender_user_id: this.me.id, replaces: entry.replaces,
-          created_at: entry.created_at, text: entry.text, reply_to: entry.reply_to, name: this.me.name, mentions: entry.mentions };
+          created_at: entry.created_at, text: entry.text, reply_to: entry.reply_to, name: this.me.name, mentions: entry.mentions, files: entry.files?.map(fileRef) };
         const from = await (this.previewFrom ??= crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, false, ['deriveBits']));
         const previews = entry.replaces ? [] : await Promise.all((await chatApi.devices(conversation.id))
           .filter(device => device.user_id !== this.me.id && device.preview)
           .map(async device => ({ chat_device_id: device.chat_device_id,
             sealed: toBase64Url(await seal({ publicKey: fromBase64Url(device.preview!.p256dh), auth: fromBase64Url(device.preview!.auth) },
-              encode([...entry.text].slice(0, PREVIEW_CHARS).join('')), from)) })));
-        // The place for files: each is uploaded before this post, which names their ids.
+              encode([...entry.text || entry.files?.map(file => file.name).join(', ') || ''].slice(0, PREVIEW_CHARS).join('')), from)) })));
+        // Every file was uploaded before this post, which names their ids.
+        const attachments = entry.files?.flatMap(file => file.preview ? [file.id, file.preview.id] : [file.id]);
         const posted = await chatApi.post(conversation.id, { id: entry.id, group_id: sealed.group_id, replaces: entry.replaces, format: FORMAT,
-          ciphertext: sealed.ciphertext, archive: await this.sealCopy(content), previews, ...entry.mentions && !entry.replaces ? { mentions: entry.mentions } : {} });
+          ciphertext: sealed.ciphertext, archive: await this.sealCopy(content), previews, ...entry.mentions && !entry.replaces ? { mentions: entry.mentions } : {},
+          ...attachments ? { attachments } : {} });
         await this.store!.write([], transaction => {
           transaction.objectStore('outbox').delete(entry.order!);
           transaction.objectStore('messages').put(this.sentRecord(entry, posted));
+          entry.files?.forEach(file => file.preview && transaction.objectStore('previews').put(file.preview_blob, file.preview.id));
         });
         this.messages.set(entry.id, this.sentRecord(entry, posted));
         return;
       } catch (error) {
+        // The server deleted an upload that waited too long: the next try uploads the files again.
+        if (hasCode(error, 'CHAT_ATTACHMENT_INVALID') && entry.files) Object.assign(entry, { files: entry.files.map(renewed), sealed: null });
         if (!hasCode(error, 'CHAT_GROUP_STALE') || attempt === STALE_ATTEMPTS) throw error;
         // The chat's devices changed or another device made a group: read again, then use or make the current one.
         stale = entry.sealed?.group_id ?? null;
@@ -691,7 +777,7 @@ class Engine implements ChatEngine {
 
   private sentRecord(entry: Outgoing, posted: ChatMessage): Stored {
     return { id: entry.id, conversation_id: entry.conversation_id, seq: posted.seq, kind: 'message', replaces: entry.replaces,
-      sender_user_id: this.me.id, sender_name: this.me.name, text: entry.text, reply_to: entry.reply_to, mentions: entry.mentions, deleted: false,
+      sender_user_id: this.me.id, sender_name: this.me.name, text: entry.text, reply_to: entry.reply_to, mentions: entry.mentions, files: entry.files?.map(fileRef), deleted: false,
       unreadable: false, created_at: posted.created_at, archived: true };
   }
 
@@ -705,7 +791,7 @@ class Engine implements ChatEngine {
 
   /** Encrypts at send time, in send order, and stores the ciphertext with the group's new state. */
   private async encrypt(entry: Outgoing, groupId: string) {
-    const content: Content = { text: entry.text, reply_to: entry.reply_to, name: this.me.name, mentions: entry.mentions };
+    const content: Content = { text: entry.text, reply_to: entry.reply_to, name: this.me.name, mentions: entry.mentions, files: entry.files?.map(fileRef) };
     return this.device!.step(mls => ({ group_id: groupId, ciphertext: toBase64Url(mls.encrypt(encode(groupId), encode(JSON.stringify(content)))) }),
       (transaction, sealed) => { transaction.objectStore('outbox').put({ ...entry, sealed }); });
   }
@@ -809,13 +895,53 @@ class Engine implements ChatEngine {
   }
 
   async delete(messageId: string) {
-    if (this.outbox.some(item => item.id === messageId)) return this.dropOutgoing(item => item.id === messageId || item.replaces === messageId);
+    if (this.outbox.some(item => item.id === messageId)) {
+      this.uploads.get(messageId)?.abort();
+      return this.dropOutgoing(item => item.id === messageId || item.replaces === messageId);
+    }
     await chatApi.delete(messageId);
     const gone = [...this.messages.values()].filter(item => item.id === messageId || item.replaces === messageId);
     await this.keep(null, () => gone.map(item => ({ ...item, text: null, deleted: true })));
     await this.dropOutgoing(item => item.replaces === messageId);
     this.channel?.postMessage('changed');
     void this.sync().catch(() => undefined);
+  }
+
+  private fileOf(messageId: string, fileId: string): ChatFileRef | OutgoingFile {
+    const record = this.messages.get(messageId);
+    const files: (ChatFileRef | OutgoingFile)[] | undefined = record ? (record.deleted ? [] : record.files) : this.outbox.find(entry => entry.id === messageId)?.files;
+    const file = files?.find(item => item.id === fileId);
+    if (!file) throw new Error('This file is gone.');
+    return file;
+  }
+
+  async openFile(messageId: string, fileId: string, { onProgress, signal }: { onProgress?: (part: number) => void; signal?: AbortSignal } = {}) {
+    const file = this.fileOf(messageId, fileId);
+    if ('blob' in file) return file.blob;
+    const blob = await downloadFile(file, onProgress, signal);
+    if (this.stopped) throw new Error('Chat was closed.');
+    return blob;
+  }
+
+  async picturePreview(messageId: string, fileId: string) {
+    const file = this.fileOf(messageId, fileId);
+    if ('blob' in file) return file.preview_blob ?? null;
+    if (!file.preview) return null;
+    const { id, key } = file.preview;
+    let loading = this.previewLoads.get(id);
+    if (!loading) {
+      this.previewLoads.set(id, loading = (async () => {
+        const kept = await this.store!.get<Blob>('previews', id);
+        if (kept) return kept;
+        const blob = await downloadFile({ id, key, type: 'image/jpeg', size: 0 });
+        if (this.stopped) throw new Error('Chat was closed.');
+        await this.store!.write([], transaction => { transaction.objectStore('previews').put(blob, id); });
+        return blob;
+      })());
+      // Only calls at the same time share a fetch; the store keeps the result.
+      void loading.catch(() => undefined).then(() => this.previewLoads.delete(id));
+    }
+    return loading;
   }
 
   markRead(conversationId: string) {
@@ -865,7 +991,7 @@ class Engine implements ChatEngine {
       const batch = pending.slice(start, start + ARCHIVE_BATCH);
       const copies = await Promise.all(batch.map(async record => ({ message_id: record.id, sealed: await this.sealCopy({
         message_id: record.id, conversation_id: record.conversation_id, sender_user_id: record.sender_user_id, replaces: record.replaces,
-        created_at: record.created_at, text: record.text!, reply_to: record.reply_to, name: record.sender_name, mentions: record.mentions }) })));
+        created_at: record.created_at, text: record.text!, reply_to: record.reply_to, name: record.sender_name, mentions: record.mentions, files: record.files }) })));
       await chatApi.storeArchive(copies);
       await this.keep(null, () => batch.map(record => ({ ...(this.messages.get(record.id) ?? record), archived: true })));
     }
@@ -886,6 +1012,7 @@ class Engine implements ChatEngine {
             if (copy.message_id !== entry.message_id || copy.conversation_id !== entry.conversation_id || typeof copy.text !== 'string') continue;
             records.push({ id: entry.message_id, conversation_id: entry.conversation_id, seq: entry.seq, kind: 'message', replaces: copy.replaces ?? null,
               sender_user_id: copy.sender_user_id ?? null, sender_name: String(copy.name ?? ''), text: copy.text, reply_to: copy.reply_to ?? null, mentions: ids(copy.mentions),
+              files: parseFiles(copy.files),
               deleted: false, unreadable: false, created_at: String(copy.created_at ?? ''), archived: true });
           } catch {
             // A copy this key cannot open (sealed to an older key, or changed) is skipped.

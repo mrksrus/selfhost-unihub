@@ -7,7 +7,7 @@ import type {
   ChatAccount, ChatAccountResponse, ChatArchiveCopy, ChatArchiveResponse, ChatConversation, ChatConversationResponse, ChatConversationsResponse,
   ChatDevicesResponse, ChatGroupCreateRequest, ChatKeyBackup, ChatKeyPackageClaimResponse, ChatMarksRequest, ChatMarksResponse, ChatMessage,
   ChatMessageCreateRequest, ChatMessageDeletedResponse, ChatMessageResponse, ChatMessagesResponse, ChatCandidatesResponse, ChatConversationUpdatedResponse,
-  ChatGroupChatCreateRequest, ChatMembersResponse, ChatNotify, ChatNotifyResponse,
+  ChatGroupChatCreateRequest, ChatMembersResponse, ChatNotify, ChatNotifyResponse, ChatAttachmentResponse,
 } from '../../api/src/contracts/chat';
 
 const data = async <T>(response: Promise<ApiResponse<T>>) => unwrap(await response)!;
@@ -43,6 +43,9 @@ export const chatApi = {
   delete: (messageId: string) => data(api.delete<ChatMessageDeletedResponse>(`/chat/messages/${encodeURIComponent(messageId)}`)),
   marks: (id: string, body: ChatMarksRequest) => data(api.put<ChatMarksResponse>(`${conversation(id)}/marks`, body)),
   storeArchive: (copies: ChatArchiveCopy[]) => data(api.post('/chat/archive', { copies })),
+  upload: async (id: string, fileId: string, ciphertext: Blob, onProgress: (sent: number) => void, signal: AbortSignal) =>
+    (await data(api.uploadBlob<ChatAttachmentResponse>(`${conversation(id)}/attachments?id=${encodeURIComponent(fileId)}`, ciphertext, 'application/octet-stream', 'POST', { onProgress, signal }))).attachment,
+  download: (fileId: string, signal?: AbortSignal) => api.getStream(`/chat/attachments/${encodeURIComponent(fileId)}`, { signal }),
   archive: (cursor: string | null) => data(api.get<ChatArchiveResponse>(`/chat/archive?limit=500${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`)),
 };
 

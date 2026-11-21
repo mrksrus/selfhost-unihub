@@ -1,14 +1,14 @@
 // Chat's state on this device: one IndexedDB database per person. It holds the
 // device's record and preview key, the MLS module's state entries, the
-// decrypted messages, the outbox, the per-conversation cursors and the
-// history key. Every step of the engine writes in one transaction, so the
+// decrypted messages, the outbox (with the files waiting to be uploaded),
+// the per-conversation cursors, the history key and picture previews. Every step of the engine writes in one transaction, so the
 // module's state and the data of the step it belongs to are stored together
 // or not at all.
 import { fromBase64Url, toBase64Url } from './bytes';
 import type { MlsEntry } from './mls';
 import type { SealKey } from './seal';
 
-const STORES = ['state', 'keys', 'messages', 'outbox', 'cursors'] as const;
+const STORES = ['state', 'keys', 'messages', 'outbox', 'cursors', 'previews'] as const;
 export type ChatStoreName = typeof STORES[number];
 
 /** The record under `keys`/`device`: the MLS identity's name and the server's id for it (null until enrolled). */
@@ -31,14 +31,18 @@ export class ChatStore {
   static open(userId: string, name = databaseName(userId)): Promise<ChatStore> {
     return new Promise((resolve, reject) => {
       if (typeof indexedDB === 'undefined') { reject(new Error('Chat needs browser storage, which is not available here.')); return; }
-      const opening = indexedDB.open(name, 1);
-      opening.onupgradeneeded = () => {
+      const opening = indexedDB.open(name, 2);
+      opening.onupgradeneeded = ({ oldVersion }) => {
         const db = opening.result;
-        db.createObjectStore('state');
-        db.createObjectStore('keys');
-        db.createObjectStore('messages', { keyPath: 'id' }).createIndex('conversation', ['conversation_id', 'seq']);
-        db.createObjectStore('outbox', { keyPath: 'order', autoIncrement: true });
-        db.createObjectStore('cursors', { keyPath: 'conversation_id' });
+        if (oldVersion < 1) {
+          db.createObjectStore('state');
+          db.createObjectStore('keys');
+          db.createObjectStore('messages', { keyPath: 'id' }).createIndex('conversation', ['conversation_id', 'seq']);
+          db.createObjectStore('outbox', { keyPath: 'order', autoIncrement: true });
+          db.createObjectStore('cursors', { keyPath: 'conversation_id' });
+        }
+        // Picture previews by their upload's id; files themselves are fetched again when opened.
+        db.createObjectStore('previews');
       };
       opening.onsuccess = () => {
         // A wipe from another tab waits for this one to let go.

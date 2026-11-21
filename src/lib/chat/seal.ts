@@ -20,7 +20,7 @@ export async function createSealKey(extractable: boolean, auth = crypto.getRando
   return { privateKey: pair.privateKey, publicKey: new Uint8Array(await crypto.subtle.exportKey('raw', pair.publicKey)), auth };
 }
 
-async function hkdf(salt: Uint8Array<ArrayBuffer>, secret: BufferSource, info: Uint8Array<ArrayBuffer>, length: number) {
+export async function hkdf(salt: Uint8Array<ArrayBuffer>, secret: BufferSource, info: Uint8Array<ArrayBuffer>, length: number) {
   const key = await crypto.subtle.importKey('raw', secret, 'HKDF', false, ['deriveBits']);
   return new Uint8Array(await crypto.subtle.deriveBits({ name: 'HKDF', hash: 'SHA-256', salt, info }, key, length * 8));
 }

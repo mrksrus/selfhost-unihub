@@ -48,7 +48,7 @@ export const member = (user_id: string, name: string, fields: Partial<ChatMember
 
 export const message = (id: string, from_me: boolean, sender_name: string, created_at: string, text: string | null, fields: Partial<ChatThreadMessage> = {}): ChatThreadMessage => ({
   kind: 'message', id, seq: 1, sender_user_id: from_me ? 'user-ada' : `user-${sender_name.split(' ')[0].toLowerCase()}`, sender_name, from_me, text,
-  former_colleague: false, mentions: [], mentions_me: false, read_by: null,
+  former_colleague: false, mentions: [], mentions_me: false, read_by: null, files: [],
   reply_to: null, edited: false, deleted: false, unreadable: false, created_at, delivery: from_me ? 'read' : null, edit_state: null, error: null, ...fields,
 });
 
@@ -137,6 +137,8 @@ export function createMockChatEngine(options: MockChatOptions = {}): MockChatEng
     leave: record('leave', async (conversationId: string) => { conversations = conversations.filter(item => item.id !== conversationId); publish(); }),
     setNotify: record('setNotify', async (conversationId: string, notify: ChatNotify) => update(conversationId, { notify })),
     search: record('search', (_query: string) => []),
+    openFile: record('openFile', async (_messageId: string, _fileId: string) => new Blob()),
+    picturePreview: record('picturePreview', async (_messageId: string, _fileId: string) => null),
     sync: record('sync', async () => {}),
     restart: record('restart', () => {}),
     choosePassphrase: record('choosePassphrase', async (_passphrase: string) => { readiness = { state: 'ready' }; publish(); }),

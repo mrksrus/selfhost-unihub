@@ -87,6 +87,26 @@ function noticeComplianceRefusal(status: number, body: Record<string, unknown>) 
   if (body.code === TWO_FACTOR_REQUIRED) emitAppEvent('unihub:two-factor-required', twoFactorRequiredDetails(body.details));
 }
 
+interface UploadOptions { signal?: AbortSignal; onProgress?: (sent: number) => void }
+
+function sendWithProgress(url: string, method: string, headers: Record<string, string>, body: Blob, onProgress: (sent: number) => void, signal?: AbortSignal) {
+  return new Promise<Response>((resolve, reject) => {
+    signal?.throwIfAborted();
+    const request = new XMLHttpRequest();
+    request.open(method, url);
+    request.withCredentials = true;
+    request.responseType = 'blob';
+    Object.entries(headers).forEach(([name, value]) => request.setRequestHeader(name, value));
+    request.upload.onprogress = event => onProgress(event.loaded);
+    request.onload = () => resolve(new Response(request.response as Blob, { status: request.status, statusText: request.statusText,
+      headers: { 'content-type': request.getResponseHeader('content-type') ?? '' } }));
+    request.onerror = () => reject(new TypeError('Failed to fetch'));
+    request.onabort = () => reject(new DOMException('The upload was cancelled.', 'AbortError'));
+    signal?.addEventListener('abort', () => request.abort(), { once: true });
+    request.send(body);
+  });
+}
+
 // Headers are a plain object so the client can merge the CSRF token into them.
 type ApiRequestInit = Omit<RequestInit, 'headers'> & { headers?: Record<string, string> };
 
@@ -241,7 +261,12 @@ class ApiClient {
     return this.requestBlob(endpoint, { method: 'POST', body: JSON.stringify(body) });
   }
 
-  private async requestBlob(endpoint: string, options: Pick<RequestInit, 'signal' | 'body'> & { method: 'GET' | 'POST' }): Promise<BlobResponse> {
+  /** A download read as it arrives (a chat file's ciphertext). Rejects like getBlob. */
+  async getStream(endpoint: string, options: Pick<RequestInit, 'signal'> = {}): Promise<ReadableStream<Uint8Array>> {
+    return (await this.fetchOk(endpoint, { ...options, method: 'GET' })).body ?? new Blob().stream();
+  }
+
+  private async fetchOk(endpoint: string, options: Pick<RequestInit, 'signal' | 'body'> & { method: 'GET' | 'POST' }): Promise<Response> {
     const url = this.resolveUrl(endpoint);
     const headers: Record<string, string> = {};
     if (options.method === 'POST') {
@@ -278,7 +303,11 @@ class ApiClient {
       err.status = response.status;
       throw err;
     }
+    return response;
+  }
 
+  private async requestBlob(endpoint: string, options: Pick<RequestInit, 'signal' | 'body'> & { method: 'GET' | 'POST' }): Promise<BlobResponse> {
+    const response = await this.fetchOk(endpoint, options);
     const blob = await response.blob();
     const contentDisposition = response.headers.get('content-disposition') || '';
     let filename: string | undefined;
@@ -302,7 +331,8 @@ class ApiClient {
     };
   }
 
-  async uploadBlob<T>(endpoint: string, blob: Blob, contentType = 'application/octet-stream', method: 'POST' | 'PUT' = 'POST'): Promise<ApiResponse<T>> {
+  /** `onProgress` (bytes sent) sends through XMLHttpRequest, the one browser API that reports an upload's progress; `signal` rejects with its AbortError. */
+  async uploadBlob<T>(endpoint: string, blob: Blob, contentType = 'application/octet-stream', method: 'POST' | 'PUT' = 'POST', options: UploadOptions = {}): Promise<ApiResponse<T>> {
     if (isOfflineMode() || isBrowserOffline()) {
       this.probeConnection();
       return { error: 'Offline mode is read-only. Reconnect and sign in before uploading.' };
@@ -316,17 +346,18 @@ class ApiClient {
       };
     }
 
-    const headers: HeadersInit = {
+    const headers: Record<string, string> = {
       'Content-Type': contentType,
     };
     if (this.csrfToken) headers['X-CSRF-Token'] = this.csrfToken;
 
     try {
-      const response = await fetch(url, {
+      const response = options.onProgress ? await sendWithProgress(url, method, headers, blob, options.onProgress, options.signal) : await fetch(url, {
         method,
         headers,
         body: blob,
         credentials: 'include',
+        signal: options.signal,
       });
       const contentTypeHeader = response.headers.get('content-type') || '';
       if (!contentTypeHeader.includes('application/json')) {
@@ -346,6 +377,7 @@ class ApiClient {
       }
       return { data };
     } catch (error) {
+      if (options.signal?.aborted) throw error;
       return {
         error: getNetworkErrorMessage(error),
       };
