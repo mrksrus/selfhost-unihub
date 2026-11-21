@@ -56,7 +56,7 @@ export function RetentionWarning({ days, preview, typed, onTyped }: { days: numb
  * time saved in this visit: only then the page knows the earlier value and
  * offers Undo. The owner alone may end the wait.
  */
-export function RetentionPending({ pending, saved, onUndo }: { pending?: RetentionPreview; saved: { days: number; at: number } | null; onUndo: () => void }) {
+export function RetentionPending({ pending, saved, onUndo, onApplied }: { pending?: RetentionPreview; saved: { days: number; at: number } | null; onUndo: () => void; onApplied: () => void }) {
   const { user } = useAuth();
   const { toast } = useToast();
   const client = useQueryClient();
@@ -65,6 +65,8 @@ export function RetentionPending({ pending, saved, onUndo }: { pending?: Retenti
     mutationFn: (password: string) => applyRetentionNow(password),
     onSuccess: answer => {
       setApplying(false);
+      // Deleting has begun: the save of this visit can no longer be undone without loss.
+      onApplied();
       void client.invalidateQueries({ queryKey: retentionPreviewQueryKey() });
       const chats = answer?.conversations ?? 0;
       toast({ title: 'Deleting starts now', description: chats ? `Old messages in ${count(chats, 'chat')} are deleted within the hour.` : 'No chat was waiting.' });

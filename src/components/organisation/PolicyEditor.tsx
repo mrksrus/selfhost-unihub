@@ -371,7 +371,7 @@ export function PolicyEditor({ scope, groupName }: { scope?: PolicyScope; groupN
                 description={lines.length || policy.conflict ? <>
                   {lines.map(line => <span key={line} className="block">{line}</span>)}
                   {policy.conflict && <span className="block text-warning">Some people are in groups that disagree here. For them, this value applies.</span>}
-                  {row.key === RETENTION_KEY && <RetentionPending pending={waits.data} saved={shortened} onUndo={() => setUndoing(true)} />}
+                  {row.key === RETENTION_KEY && <RetentionPending pending={waits.data} saved={shortened} onUndo={() => setUndoing(true)} onApplied={() => setShortened(null)} />}
                 </> : undefined}>
                 {row.key === 'app_lock.required'
                   ? <AppLockRequiredControl id={id} value={Array.isArray(value) ? value as AppLockArea[] : []} floor={group && Array.isArray(policy.default) ? policy.default as AppLockArea[] : []} onChange={next => change(row.key, next)} disabled={!!lock} />

@@ -84,7 +84,7 @@ describe('Server › Policies: a shorter chat retention', () => {
     fireEvent.click(save);
     await waitFor(() => expect(api.put).toHaveBeenCalledWith('/admin/policies', { values: { 'chat.retention_days': 30 }, current_password: 'admin-own-password' }));
 
-    // The wait has not started on the server yet; the page knows what it saved and what was there before.
+    // The page knows what it saved and what was there before.
     const waits = await screen.findByTestId('retention-pending');
     expect(waits.textContent).toMatch(/^From about .+, messages older than 30 days are deleted\. Nothing is deleted before then\./);
     fireEvent.click(within(waits).getByRole('button', { name: 'Undo' }));
@@ -93,6 +93,26 @@ describe('Server › Policies: a shorter chat retention', () => {
     fireEvent.click(within(undo).getByRole('button', { name: 'Undo' }));
     await waitFor(() => expect(api.put).toHaveBeenLastCalledWith('/admin/policies', { values: { 'chat.retention_days': null }, current_password: 'admin-own-password' }));
     await waitFor(() => expect(screen.queryByTestId('retention-pending')).toBeNull());
+  });
+
+  it('after "Apply now" the page no longer says nothing is deleted, and no longer offers Undo', { timeout: 40_000 }, async () => {
+    mount();
+    await choose('30 days');
+    const dialog = await openSave();
+    await waitFor(() => expect(counts['30']).toBeTruthy());
+    counts['30']({ ...NONE, messages: 1, conversations: 1 });
+    await within(dialog).findByText(/will be deleted\.$/);
+    type(dialog, /^Type DELETE/, 'DELETE');
+    type(dialog, 'Your password', 'admin-own-password');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save changes' }));
+    const waits = await screen.findByTestId('retention-pending');
+    vi.mocked(api.post).mockResolvedValue({ data: { conversations: 1 } });
+    fireEvent.click(within(waits).getByRole('button', { name: 'Apply now…' }));
+    const apply = await screen.findByRole('dialog', { name: 'Start deleting now?' });
+    type(apply, 'Your password', 'admin-own-password');
+    fireEvent.click(within(apply).getByRole('button', { name: 'Apply now' }));
+    await waitFor(() => expect(screen.queryByTestId('retention-pending')).toBeNull());
+    expect(screen.queryByRole('button', { name: 'Undo' })).toBeNull();
   });
 
   it('a count that arrives late for an earlier choice is not shown for the next one', { timeout: 40_000 }, async () => {

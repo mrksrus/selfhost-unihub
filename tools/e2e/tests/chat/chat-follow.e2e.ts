@@ -46,7 +46,8 @@ test('a chat follows an organisation group: started from the group\'s page, it s
     await shows(panel.getByText(/nobody is added or removed here, and nobody leaves\./));
     await shows(panel.getByRole('button', { name: 'Stop following', exact: true }));
     expect(await panel.getByRole('button', { name: /^(Remove .*|Add people|Leave chat)$/ }).count(), 'no adding, removing or leaving').toBe(0);
-    await a.keyboard.press('Escape');
+    // By its button: Escape goes to a notice first when one happens to show.
+    await panel.getByRole('button', { name: 'Close', exact: true }).click();
     await panel.waitFor({ state: 'hidden' });
 
     // The administrator adds Casey to the group: the chat comes to Casey, who reads from then on.

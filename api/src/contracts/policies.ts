@@ -216,7 +216,8 @@ export interface AdminPoliciesResponse {
  * password; the answer is AdminPoliciesResponse as now set. One transaction
  * with an activity-log entry per changed key (admin.policy_changed with
  * key, from, to); the revision goes up when the rules people see change.
- * Changing a policy deletes nothing. A value equal to the default removes
+ * Changing a policy deletes nothing, except a shorter chat.retention_days,
+ * which deletes after its 24 hours. A value equal to the default removes
  * the policy. Refused with 400:
  * - POLICY_UNKNOWN: a key the server does not know
  * - POLICY_INVALID: a value the key cannot take

@@ -87,7 +87,7 @@ const GroupPage = ({ admin = false }: { admin?: boolean }) => {
           </div>
           {query.data.can_manage && <Button variant="outline" onClick={() => setRenaming(true)}>Rename</Button>}
         </div>
-        {view === 'rules' ? <PolicyEditor scope={{ groupId: id }} groupName={group.name} /> : (
+        {view === 'rules' ? <PolicyEditor key={id} scope={{ groupId: id }} groupName={group.name} /> : (
           <>
             <GroupMembers groupId={id} data={query.data} personHref={admin && can(user, 'users.read') ? userId => `/admin/users/${encodeURIComponent(userId)}` : undefined} />
             {calendarsOn && (
