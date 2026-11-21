@@ -218,6 +218,36 @@ export function deviceScreenshot(path) {
   adb('pull', '/data/local/tmp/unihub-screen.png', path);
 }
 
+/** The type the app last handed Android's sheet for this action (debug builds log it). */
+export async function chooserType(action) {
+  for (let attempt = 0; attempt < 30; attempt++) {
+    const line = adb('logcat', '-d', '-s', 'UniHubFiles:I').split('\n').reverse().find(entry => entry.includes(`chooser ${action} `));
+    if (line) return line.trim().split(' ').pop();
+    await sleep(1000);
+  }
+  return null;
+}
+
+let chooserShots = 0;
+
+/** Waits for Android's chooser (or the one app it chose) over the app, keeps a screenshot named after `name`, and closes it. */
+export async function closeChooser(name = 'android-file-chooser') {
+  for (let attempt = 0; attempt < 30; attempt++) {
+    const top = adb('shell', 'dumpsys', 'activity', 'activities').split('\n').find(line => line.includes('topResumedActivity')) ?? '';
+    // Between two activities nothing is resumed; wait for the next one.
+    if (top.includes('ActivityRecord') && !top.includes(PACKAGE)) {
+      // Android's chooser, or the only app for the type, which it starts at once (a PDF viewer).
+      console.log(`over the app: ${top.trim()}`);
+      await sleep(2500);
+      deviceScreenshot(`${process.env.UNIHUB_E2E_EVIDENCE ?? process.env.TMPDIR ?? '/tmp'}/${name}-${chooserShots++}.png`);
+      adb('shell', 'input', 'keyevent', 'KEYCODE_BACK');
+      return top;
+    }
+    await sleep(1000);
+  }
+  throw new Error('no chooser appeared over the app');
+}
+
 /**
  * Touches a page element with a real tap on the screen, as a finger would:
  * some controls (Radix pickers in the WebView) do not open on Playwright's

@@ -8,43 +8,13 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { PACKAGE, adb, answerSlowDialogs, deviceScreenshot, navigate, openApp, sleep, tapNative, ticketLog } from '../support/android.mjs';
+import { PACKAGE, adb, answerSlowDialogs, chooserType, closeChooser, deviceScreenshot, navigate, openApp, sleep, tapNative, ticketLog } from '../support/android.mjs';
 import { sendMail } from '../tests/support/mail.ts';
 
 const fixture = name => fileURLToPath(new URL(`../fixtures/${name}`, import.meta.url));
 const evidence = process.env.UNIHUB_E2E_EVIDENCE ?? `${process.env.TMPDIR ?? '/tmp'}`;
 const run = Date.now().toString(36);
 const pdfName = `report-${run}.pdf`, jpgName = `photo-${run}.jpg`;
-
-/** The type the app last handed Android's sheet for this action (debug builds log it). */
-async function chooserType(action) {
-  for (let attempt = 0; attempt < 30; attempt++) {
-    const line = adb('logcat', '-d', '-s', 'UniHubFiles:I').split('\n').reverse().find(entry => entry.includes(`chooser ${action} `));
-    if (line) return line.trim().split(' ').pop();
-    await sleep(1000);
-  }
-  return null;
-}
-
-let chooserShots = 0;
-
-/** Waits for Android's chooser (or the one app it chose) over the app, and closes it. */
-async function closeChooser() {
-  for (let attempt = 0; attempt < 30; attempt++) {
-    const top = adb('shell', 'dumpsys', 'activity', 'activities').split('\n').find(line => line.includes('topResumedActivity')) ?? '';
-    // Between two activities nothing is resumed; wait for the next one.
-    if (top.includes('ActivityRecord') && !top.includes(PACKAGE)) {
-      // Android's chooser, or the only app for the type, which it starts at once (a PDF viewer).
-      console.log(`over the app: ${top.trim()}`);
-      await sleep(2500);
-      deviceScreenshot(`${evidence}/android-file-chooser-${chooserShots++}.png`);
-      adb('shell', 'input', 'keyevent', 'KEYCODE_BACK');
-      return top;
-    }
-    await sleep(1000);
-  }
-  throw new Error('no chooser appeared over the app');
-}
 
 const cacheCopies = () => adb('shell', 'run-as', PACKAGE, 'sh', '-c', '"ls cache/shared 2>/dev/null | wc -l"').trim();
 
