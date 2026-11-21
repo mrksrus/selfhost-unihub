@@ -169,7 +169,8 @@ class FileActions(private val activity: Activity, private val origin: String) {
      * "share", read-only, for the app the person picks. UniHub declares no
      * activity for files, so the chooser never lists UniHub itself.
      */
-    fun offer(action: String, file: File, type: String) {
+    fun offer(action: String, file: File, given: String) {
+        val type = if (action == "open") SharedFiles.openType(given) else given
         val name = file.name
         val uri = FileProvider.getUriForFile(activity, authority(activity), file)
         val target = if (action == "open") {

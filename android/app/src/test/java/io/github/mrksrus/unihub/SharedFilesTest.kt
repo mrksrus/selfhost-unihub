@@ -112,6 +112,13 @@ class SharedFilesTest {
     }
 
     @Test
+    fun openWithNeverNamesAnAppPackage() {
+        assertEquals("application/octet-stream", SharedFiles.openType(SharedFiles.mimeType(null, "Application/VND.android.package-archive", null)))
+        assertEquals("application/octet-stream", SharedFiles.openType(SharedFiles.mimeType(null, "", "application/vnd.android.package-archive")))
+        assertEquals("application/pdf", SharedFiles.openType("application/pdf"))
+    }
+
+    @Test
     fun copiesExpireAfterSixHoursOrWithAClockFromTheFuture() {
         val now = 1_000_000_000_000L
         assertFalse(SharedFiles.stale(now - 60_000, now))

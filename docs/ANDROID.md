@@ -137,7 +137,9 @@ leaves the page and the app decrypts nothing. The name and the type are
 the sender's choice: the app makes the name one file name of at most 200
 characters with no path in it, writes the copy only into its cache folder
 for shared copies, and hands Android's sheet the type if it is well formed
-(else the extension's). The copy is kept and deleted like the copies above,
+(else the extension's). Open with never names an app package: such a file, a
+mail attachment too, goes to the sheet as a plain file, so Android's
+installer is not offered for a file someone sent. The copy is kept and deleted like the copies above,
 and a hand-over that breaks off or ends with the session leaves none.
 UniHub declares no activity for files, so the sheet never offers UniHub
 itself, and the chosen app gets read access to that one copy. Chat's

@@ -69,6 +69,9 @@ object SharedFiles {
 
     private const val GENERIC = "application/octet-stream"
 
+    /** The type Open with is told: an app package goes as a plain file, so a file someone sent is never one tap from Android's installer. */
+    fun openType(type: String): String = if (type == "application/vnd.android.package-archive") GENERIC else type
+
     private fun normalize(value: String?): String? =
         value?.substringBefore(';')?.trim()?.lowercase()?.takeIf { MIME.matches(it) }
 
