@@ -20,7 +20,7 @@ const DAY = 24 * 60 * 60 * 1000;
 const count = (amount: number, one: string) => `${amount} ${one}${amount === 1 ? '' : 's'}`;
 
 const CONSEQUENCES = [
-  'Deleting starts 24 hours after you save, or up to an hour later. Until then you can undo it on this page, and nothing is deleted.',
+  'Deleting starts 24 hours after you save. Until then you can undo it on this page, and nothing is deleted.',
   'A device that is switched off deletes its copies when it is next opened.',
   'An instance backup made before then still holds the encrypted messages for as long as it is kept.',
   'This deletes even where people may not delete for good.',
@@ -54,8 +54,7 @@ export function RetentionWarning({ days, preview, typed, onTyped }: { days: numb
 /**
  * Under the rule while chats wait to start deleting. `saved` is a shorter
  * time saved in this visit: only then the page knows the earlier value and
- * offers Undo, and it shows before the server's hourly check has started the
- * wait. The owner alone may end the wait.
+ * offers Undo. The owner alone may end the wait.
  */
 export function RetentionPending({ pending, saved, onUndo }: { pending?: RetentionPreview; saved: { days: number; at: number } | null; onUndo: () => void }) {
   const { user } = useAuth();

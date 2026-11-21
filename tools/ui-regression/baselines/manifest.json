@@ -191,20 +191,20 @@
       "bytes": 149815
     },
     "chat-retention-dialog-phone-dark.png": {
-      "sha256": "07b1289f63543880d7e5257de553a93fefb90640a43a7ec66588b080dedca760",
-      "bytes": 60861
+      "sha256": "2a2eda81913e299fdd0c9e2d0756cdf61eab4e7dbe1211d89a91dbc65953096d",
+      "bytes": 60667
     },
     "chat-retention-dialog-phone-light.png": {
-      "sha256": "323f076798e4f0a0f104591dd9b7a5110271421e079f7b714d8542a262491ba8",
-      "bytes": 64511
+      "sha256": "f792b653c086fd1892f9a5f138721404588dd604108004a6e6954c396c87daae",
+      "bytes": 64442
     },
     "chat-retention-dialog-wide-dark.png": {
-      "sha256": "9779f473e63b3d040272949bda961c45de770e99d92a136ba628c75f79b22ef6",
-      "bytes": 157704
+      "sha256": "1920dd6ea9c95b5afc262c86775e29e8a3f25839c2066b67734905e657956856",
+      "bytes": 156552
     },
     "chat-retention-dialog-wide-light.png": {
-      "sha256": "4c0437998ec61429ea56d53fea43cb1e0e606c5abed92591a75b1b284d0ac34f",
-      "bytes": 163097
+      "sha256": "07915ed5cdfbec1984d605c76ea0eb5a662128ba4a6bc6d2b995a87533579e11",
+      "bytes": 162082
     },
     "chat-retention-pending-phone-dark.png": {
       "sha256": "6b302e665e567919c83a7d975b3240d506032dd426e18bacbaab7c5f3885ecbc",
@@ -1657,6 +1657,48 @@
         "settings-chat-phone-light.png",
         "settings-chat-wide-dark.png",
         "settings-chat-wide-light.png"
+      ],
+      "removed": []
+    },
+    {
+      "date": "2026-11-21T04:15:56.882Z",
+      "reason": "The retention dialog says deleting starts 24 hours after the save (the server now starts the wait at the save). Agent change, same screen.",
+      "source": {
+        "commit": "855ac556adbb5332f6176ea7c607749d360df39b",
+        "branch": "p7-034",
+        "dirty": true,
+        "digest": "d30df57e38ba7bac681b85aedeaa71afe548a4ef2cb6cb63359cfd07985a2727"
+      },
+      "render": {
+        "playwright": "1.64.0",
+        "browser": "chromium-headless-shell 156.0.8078.4",
+        "browserArgs": [
+          "--font-render-hinting=none",
+          "--disable-lcd-text",
+          "--force-color-profile=srgb",
+          "--disable-gpu",
+          "--disable-skia-runtime-opts",
+          "--num-raster-threads=1",
+          "--disable-partial-raster"
+        ],
+        "platform": "linux-x64",
+        "fonts": {
+          "@fontsource/inter": "5.3.0",
+          "@fontsource/jetbrains-mono": "5.3.0"
+        },
+        "fontconfig": "isolated",
+        "deviceScaleFactor": 1
+      },
+      "host": {
+        "node": "v26.12.1",
+        "ci": false
+      },
+      "added": [],
+      "changed": [
+        "chat-retention-dialog-phone-dark.png",
+        "chat-retention-dialog-phone-light.png",
+        "chat-retention-dialog-wide-dark.png",
+        "chat-retention-dialog-wide-light.png"
       ],
       "removed": []
     }

@@ -15,7 +15,8 @@ import { utcIso } from './chat-devices';
 // Chat retention (chat.retention_days). A message is one row for all its
 // readers, so a chat follows the shortest value among its active people. Each
 // chat stores the value in force and the moment deleting under it starts: a
-// shorter value starts 24 hours after the hourly job first sees it, whatever
+// shorter value starts 24 hours after it is first seen (at a save of the
+// rules, a change of a group's people or the hourly pass), whatever
 // made it shorter (a policy, someone joining a group or the chat); a longer
 // one, or none, holds at once without ending a wait. Only the owner starts
 // the waiting chats at once. Retention deletes even while bin.delete forbids

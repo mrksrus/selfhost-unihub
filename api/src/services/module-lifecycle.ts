@@ -34,6 +34,9 @@ async function applyModuleChange(userId: string, previous: readonly ModuleState[
  * modules now on.
  */
 async function applyPolicyChange(userIds: readonly string[]): Promise<void> {
+  // A chat's retention follows its people's rules from this change on, so a shorter one starts its 24 hours now and not at the hourly pass.
+  await (require('./chat-retention') as typeof import('./chat-retention')).refreshRetention()
+    .catch(error => log.error('POLICY', 'Working out the retention of the chats again failed', error));
   // The 2FA grace counts from the change that made the rule apply (and ends
   // with the one that lifts it); the gate starts any this misses.
   await syncTwoFactorGrace(userIds).catch(error => log.error('POLICY', 'Starting or ending 2FA graces failed', error));

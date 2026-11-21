@@ -419,7 +419,8 @@ must let a 101 MiB body through to this route
 **Retention.** `chat.retention_days` deletes messages older than it. A chat
 follows the shortest value among its active people; each conversation
 answers `retention_days` and `retention_from` (when deleting under it
-starts). The hourly job works the value out again: a shorter one starts 24
+starts). A save of the rules, a change of a group's people and the hourly
+job work the value out again: a shorter one starts 24
 hours later, whatever made it shorter (a policy, or someone under a shorter
 rule joining a group or the chat); a longer one, or none, holds at once and
 never ends a wait early. Then it deletes, in the chats whose moment has

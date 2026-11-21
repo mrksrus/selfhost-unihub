@@ -885,8 +885,7 @@ the one rule whose purpose is to delete ([Chat](CHAT.md#files-and-retention-serv
 has the server's side). When a save makes it shorter for Everyone or a
 group, the save dialog first shows the server's count of the messages and
 files older than the new time and in how many chats, says that deleting
-starts 24 hours later (up to an hour more, until the hourly job has seen
-the rule), that a device that is switched off deletes its copies when it is
+starts 24 hours later, that a device that is switched off deletes its copies when it is
 next opened, that an earlier instance backup still holds the encrypted
 messages and that this deletes even where people may not delete for good,
 and asks for the typed word DELETE besides the password. The word is the
@@ -895,10 +894,7 @@ page then shows the change that waits. Right after the save it offers
 "Undo", which saves the value the page had loaded, because the server does
 not keep the earlier value. On a later visit it shows the server's date and
 how many chats wait, and says that a longer time set before then keeps what
-is younger than it and that "Never" keeps everything. The server counts a
-chat as waiting only once the hourly job has seen the rule, so for up to an
-hour after a save, or after an Undo, a later visit does not show the change
-or still shows it. "Apply now…" is offered to the owner alone. Settings ›
+is younger than it and that "Never" keeps everything. "Apply now…" is offered to the owner alone. Settings ›
 Chat tells each person how long their messages are kept and how large a
 file they may send, and a chat under a retention says so under its header,
 with the date while its 24 hours run.
