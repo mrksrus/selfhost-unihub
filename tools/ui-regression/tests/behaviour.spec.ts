@@ -317,6 +317,21 @@ test.describe('P-11 touch targets are big enough and never overlap', () => {
     expectOnlyKnown(await touchViolations(page, 'section[aria-label="Chat with Blair Example"]'), []);
   });
 
+  test('Chat: a group chat, its people and a new group chat', async ({ page, open, settle }) => {
+    await withChat(page);
+    await open('/chat?c=chat-planning');
+    await expect(page.getByText('@Ada Example', { exact: true })).toBeVisible();
+    await settle();
+    expectOnlyKnown(await touchViolations(page, 'section[aria-label="Chat with Warehouse planning"]'), []);
+    await page.getByRole('button', { name: 'People in this chat' }).click();
+    await expect(page.getByRole('button', { name: 'Leave chat' })).toBeVisible();
+    expectOnlyKnown(await touchViolations(page, '[role="dialog"]'), []);
+    await open('/chat');
+    await page.getByRole('button', { name: 'New group' }).click();
+    await expect(page.getByRole('checkbox', { name: /^Blair Example/ })).toBeVisible();
+    expectOnlyKnown(await touchViolations(page, '[role="dialog"]'), []);
+  });
+
   test('Chat: the passphrase chosen and entered, the new-key dialog and Settings › Chat', async ({ page, open, settle }) => {
     await withChat(page, { readiness: { state: 'enter-passphrase' } });
     await open('/chat');

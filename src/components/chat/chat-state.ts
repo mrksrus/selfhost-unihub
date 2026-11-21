@@ -1,7 +1,7 @@
 // How the Chat screens read the engine, and the words they share.
 import { useCallback, useSyncExternalStore } from 'react';
 import { format, isThisYear, isToday, isYesterday } from 'date-fns';
-import type { ChatConversationSummary, ChatEngine, ChatEngineSnapshot, ChatThreadItem } from '@/lib/chat/types';
+import type { ChatConversationSummary, ChatEngine, ChatEngineSnapshot, ChatMember, ChatThreadItem, ChatThreadMessage } from '@/lib/chat/types';
 import { MIN_PASSPHRASE_LENGTH } from '@/lib/chat/key-backup';
 
 const never = () => () => {};
@@ -19,6 +19,11 @@ export function useChatSnapshot(engine: ChatEngine | null): ChatEngineSnapshot |
 /** A conversation's items; null until the device's store was read. */
 export function useChatThread(engine: ChatEngine, conversationId: string): ChatThreadItem[] | null {
   return useEngineStore(engine, () => engine.thread(conversationId));
+}
+
+/** A chat's people; null while they load and after a load that failed (asking again tries again). */
+export function useChatMembers(engine: ChatEngine, conversationId: string): ChatMember[] | null {
+  return useEngineStore(engine, () => engine.members(conversationId));
 }
 
 /** The longest message the server takes. */
@@ -52,12 +57,28 @@ export function lastMessageLine({ last_message: last }: ChatConversationSummary)
   return last.from_me ? `You: ${last.text}` : last.text;
 }
 
+/** How far an own message got, once the server has it: "Read by 3 of 7" in a group chat, where the people who read it are known. */
+export function deliveryLabel({ delivery, read_by: readBy }: ChatThreadMessage) {
+  if (readBy?.people.length) return `Read by ${readBy.people.length} of ${readBy.of}`;
+  return delivery === 'sent' ? 'Sent' : delivery === 'delivered' ? 'Delivered' : delivery === 'read' ? 'Read' : null;
+}
+
 const LINK = /(https?:\/\/[^\s<>"]+[^\s<>".,:;!?)\]}'])/g;
 
-/** A message's text in pieces: plain text and the web addresses in it. Nothing else becomes a link. */
-export function textParts(text: string): { text: string; href?: string }[] {
-  // split() with one capture group puts the addresses at the odd places.
-  return text.split(LINK).map((part, index) => (index % 2 ? { text: part, href: part } : { text: part })).filter(part => part.text);
+/**
+ * A message's text in pieces: plain text, the web addresses in it, and
+ * "@name" for each of `people`. Nothing else becomes a link or a mention.
+ */
+export function textParts<P extends { name: string }>(text: string, people: P[] = []): { text: string; href?: string; mention?: P }[] {
+  // The longest name first: "@Alex Example" is not a mention of an "Alex" who is in the chat too.
+  const names = people.map(person => person.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).sort((a, b) => b.length - a.length);
+  const mention = names.length ? new RegExp(`(@(?:${names.join('|')}))(?![\\p{L}\\p{N}])`, 'gu') : null;
+  // split() with one capture group puts the addresses, and then the mentions, at the odd places.
+  return text.split(LINK).flatMap((part, index) => (index % 2 ? [{ text: part, href: part }]
+    : !mention ? [{ text: part }]
+    // Not inside a word: the "@" of a mail address mentions nobody.
+    : part.split(mention).map((piece, at, pieces) => (at % 2 && !/[\p{L}\p{N}]$/u.test(pieces[at - 1]) ? { text: piece, mention: people.find(person => piece === `@${person.name}`) } : { text: piece }))))
+    .filter(part => part.text);
 }
 
 /** A passphrase's characters as the engine counts them. */

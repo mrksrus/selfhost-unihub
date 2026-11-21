@@ -1,7 +1,7 @@
 import { Fragment, useContext, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { ArrowLeft, MonitorSmartphone } from 'lucide-react';
-import type { ChatConversationSummary, ChatEngine, ChatThreadMessage } from '@/lib/chat/types';
+import { AtSign, Bell, BellOff, MonitorSmartphone, ArrowLeft, Users } from 'lucide-react';
+import type { ChatConversationSummary, ChatEngine, ChatNotify, ChatThreadMessage } from '@/lib/chat/types';
 import { AuthContext } from '@/contexts/auth-context';
 import { useIsMobile } from '@/hooks/use-mobile';
 import { usePolicy } from '@/hooks/use-policies';
@@ -12,14 +12,19 @@ import {
 } from '@/components/ui/alert-dialog';
 import { Button } from '@/components/ui/button';
 import { buttonVariants } from '@/components/ui/button-variants';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { EmptyState, LoadingState } from '@/components/ui/page-states';
 import { ChatComposer, type ComposerMode } from '@/components/chat/ChatComposer';
 import { ChatMessage } from '@/components/chat/ChatMessage';
+import { ChatPeople } from '@/components/chat/ChatPeople';
 import { PeerAvatar } from '@/components/chat/ConversationList';
-import { dayLabel, useChatThread } from '@/components/chat/chat-state';
+import { dayLabel, deliveryLabel, useChatMembers, useChatThread } from '@/components/chat/chat-state';
 
 // Messages drawn at once; "Show earlier messages" adds as many again.
 const PAGE = 200;
+
+// What a chat notifies its reader of; the unread count shows every message either way.
+const NOTIFY = { all: { label: 'All messages', icon: Bell }, mentions: { label: 'Mentions only', icon: AtSign }, none: { label: 'Nothing', icon: BellOff } } as const;
 
 interface Props {
   engine: ChatEngine;
@@ -29,13 +34,17 @@ interface Props {
 }
 
 /**
- * One conversation: who it is with, its messages by day, and the composer.
+ * One conversation: who it is with (a group chat: its name and people),
+ * its messages by day, and the composer.
  * On a phone it takes the visible area above the keyboard, over the page's
  * header and the bottom bar, as the mail composer does.
  */
 export function ChatThread({ engine, conversation, draft, onDraft }: Props) {
-  const { peer } = conversation;
+  const { peer, group } = conversation;
   const items = useChatThread(engine, conversation.id);
+  // Asked for as the thread opens: the engine marks a former colleague, and a group message's readers, only once it has the people.
+  const members = useChatMembers(engine, conversation.id);
+  const [people, setPeople] = useState(false);
   const phone = useIsMobile();
   // The session where one is mounted; a thread rendered on its own has none.
   const user = useContext(AuthContext)?.user;
@@ -71,16 +80,21 @@ export function ChatThread({ engine, conversation, draft, onDraft }: Props) {
   }, [engine, conversation.id, conversation.unread, loaded]);
 
   const choose = (next: ComposerMode) => { setMode(next); focusField.current = true; };
-  const send = (text: string) => {
+  const send = (text: string, mentions: string[]) => {
     try {
       if (mode?.kind === 'edit') engine.edit(mode.message.id, text);
-      else engine.send(conversation.id, text, mode?.message.id ?? null);
+      else engine.send(conversation.id, text, mode?.message.id ?? null, ...(mentions.length ? [mentions] : []));
     } catch (error) {
       // The message was deleted meanwhile, on another device or by the time the change was typed.
       toast({ title: mode?.kind === 'edit' ? 'The change was not saved' : 'The message was not sent', description: error instanceof Error ? error.message : undefined, variant: 'destructive' });
     }
     setMode(null);
     atEnd.current = true;
+  };
+  const notify = (next: string) => {
+    engine.setNotify(conversation.id, next as ChatNotify).catch((error: unknown) => {
+      if (!scope.ended) toast({ title: 'Could not change the notifications', description: error instanceof Error ? error.message : undefined, variant: 'destructive' });
+    });
   };
   const remove = async (message: ChatThreadMessage) => {
     focusField.current = true;
@@ -100,26 +114,45 @@ export function ChatThread({ engine, conversation, draft, onDraft }: Props) {
   const visible = items?.slice(-shown) ?? [];
   // A quote names its writer; one's own messages read "You".
   const own = new Set(items?.filter(item => item.kind === 'message' && item.from_me).map(item => item.id));
-  // Read, delivered and sent each reach up to one message: only the last of each says so.
+  // Read (by so many), delivered and sent each reach up to one message: only the last of each says so.
   const left = visible.filter((item): item is ChatThreadMessage => item.kind === 'message' && !item.deleted && (item.delivery === 'sent' || item.delivery === 'delivered' || item.delivery === 'read'));
-  const marked = new Set(left.filter((item, index) => item.delivery !== left[index + 1]?.delivery).map(item => item.id));
+  const marked = new Set(left.filter((item, index) => deliveryLabel(item) !== (left[index + 1] && deliveryLabel(left[index + 1]))).map(item => item.id));
+  const NotifyIcon = NOTIFY[conversation.notify].icon;
 
   return (
     <section aria-label={`Chat with ${peer.name}`} className={phone ? 'fixed inset-x-0 z-50 flex flex-col bg-background pt-[env(safe-area-inset-top,0px)]' : 'flex min-h-0 min-w-0 flex-1 flex-col'}
       style={phone ? { top: 'var(--visible-top, 0px)', height: 'var(--visible-height, 100dvh)' } : undefined}>
-      <header className="flex h-14 shrink-0 items-center gap-3 border-b border-border px-2 lg:px-4">
+      {/* As high as its lines need: a chat can say more under its name. */}
+      <header className="flex min-h-14 shrink-0 items-center gap-3 border-b border-border px-2 py-1.5 lg:px-4">
         <Button asChild variant="ghost" size="icon" className="lg:hidden"><Link to="/chat" aria-label="Back to chats"><ArrowLeft aria-hidden="true" /></Link></Button>
-        <PeerAvatar peer={peer} />
-        <div className="min-w-0">
+        <PeerAvatar peer={peer} group={!!group} />
+        <div className="min-w-0 flex-1">
           <h2 className="truncate text-sm font-semibold">{peer.name}</h2>
-          {peer.online && <p className="text-xs text-muted-foreground">Online</p>}
+          {group ? <p className="truncate text-xs text-muted-foreground">{group.member_count} {group.member_count === 1 ? 'person' : 'people'}{group.follows && `, follows ${group.follows.kind === 'everyone' ? 'everyone' : group.follows.name}`}</p>
+            : peer.online && <p className="text-xs text-muted-foreground">Online</p>}
+        </div>
+        <div className="flex shrink-0 items-center touch:gap-1">
+          {group && <Button variant="ghost" size="icon" aria-label="People in this chat" onClick={() => setPeople(true)}><Users aria-hidden="true" /></Button>}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="ghost" size="icon" aria-label={`Notifications: ${NOTIFY[conversation.notify].label}`}><NotifyIcon aria-hidden="true" /></Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuLabel>Notify me of</DropdownMenuLabel>
+              <DropdownMenuRadioGroup value={conversation.notify} onValueChange={notify}>
+                {(group ? ['all', 'mentions', 'none'] as const : ['all', 'none'] as const).map(value => <DropdownMenuRadioItem key={value} value={value}>{NOTIFY[value].label}</DropdownMenuRadioItem>)}
+              </DropdownMenuRadioGroup>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
       </header>
+      {conversation.catching_up && <p role="status" className="shrink-0 border-b border-border px-4 py-1.5 text-xs text-muted-foreground">Catching up on the messages since you were last here…</p>}
 
       <div ref={scroller} className="min-h-0 flex-1 overflow-y-auto px-3 py-3 md:px-4"
         onScroll={event => { const box = event.currentTarget; atEnd.current = box.scrollHeight - box.scrollTop - box.clientHeight < 48; }}>
         {items === null ? <LoadingState label="Loading messages…" />
-          : items.length === 0 ? <EmptyState title="No messages yet" description={peer.can_write ? `Only you and ${peer.name} can read what you write here.` : undefined} />
+          : items.length === 0 ? <EmptyState title="No messages yet" description={group ? (group.added_by ? `You were added by ${group.added_by}. Messages appear from now on.` : 'Only the people in this chat can read what is written here.')
+            : peer.can_write ? `Only you and ${peer.name} can read what you write here.` : undefined} />
           : (
             <>
               {items.length > shown && <div className="pb-3 text-center"><Button variant="outline" size="sm" onClick={() => setShown(shown + PAGE)}>Show earlier messages</Button></div>}
@@ -127,17 +160,22 @@ export function ChatThread({ engine, conversation, draft, onDraft }: Props) {
                 {visible.map((item, index) => {
                   const day = new Date(item.created_at).toDateString();
                   const before = visible[index - 1];
+                  const newDay = !before || day !== new Date(before.created_at).toDateString();
+                  const sameSender = before?.kind === 'message' && item.kind === 'message' && before.sender_user_id === item.sender_user_id && before.sender_name === item.sender_name;
                   return (
                     <Fragment key={item.id}>
-                      {(!before || day !== new Date(before.created_at).toDateString()) && (
+                      {newDay && (
                         <li className="py-3 text-center text-xs text-muted-foreground">{dayLabel(item.created_at)}</li>
                       )}
                       {item.kind !== 'message' ? (
                         <li className="flex items-center justify-center gap-1.5 py-2 text-center text-xs text-muted-foreground">
-                          <MonitorSmartphone aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />{item.user_id && item.user_id === user?.id ? 'You' : item.name} {{ 'device-added': 'added a device', joined: 'joined', left: 'left' }[item.kind]}
+                          {item.kind === 'device-added' && <MonitorSmartphone aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />}
+                          {item.user_id && item.user_id === user?.id ? 'You' : item.name} {{ 'device-added': 'added a device', joined: 'joined the chat', left: 'left the chat' }[item.kind]}
                         </li>
                       ) : (
-                        <ChatMessage message={item} turn={before?.kind === 'message' && before.from_me !== item.from_me} showDelivery={marked.has(item.id)} canWrite={peer.can_write} deleteLock={deleteLock} quotedOwn={!!item.reply_to && own.has(item.reply_to.id)}
+                        <ChatMessage message={item} turn={before?.kind === 'message' && !sameSender} named={(!!group || item.former_colleague) && (!sameSender || newDay)} avatar={!!group}
+                          mentions={item.mentions.length ? members?.filter(member => item.mentions.includes(member.user_id)).map(member => ({ name: member.name, me: member.user_id === user?.id })) : undefined}
+                          showDelivery={marked.has(item.id)} canWrite={peer.can_write} deleteLock={deleteLock} quotedOwn={!!item.reply_to && own.has(item.reply_to.id)}
                           onReply={() => choose({ kind: 'reply', message: item })} onEdit={() => choose({ kind: 'edit', message: item })}
                           onDelete={() => (item.seq === null ? void remove(item) : setDeleting(item))} onRetry={() => engine.retry(item.id)} onMenuCloseAutoFocus={focusAfterClose} />
                       )}
@@ -150,7 +188,7 @@ export function ChatThread({ engine, conversation, draft, onDraft }: Props) {
       </div>
 
       {peer.can_write
-        ? <ChatComposer peerName={peer.name} mode={mode} draft={draft} onDraft={onDraft} onSend={send} onCancel={() => setMode(null)} fieldRef={field} />
+        ? <ChatComposer peerName={peer.name} mode={mode} draft={draft} people={group ? members?.filter(member => member.active && member.user_id !== user?.id) : undefined} onDraft={onDraft} onSend={send} onCancel={() => setMode(null)} fieldRef={field} />
         // The server's words: the person is deactivated, has Chat off, or has not opened UniHub since the update.
         : <p className="shrink-0 border-t border-border px-4 py-3 text-sm text-muted-foreground max-md:pb-[calc(0.75rem+env(safe-area-inset-bottom,0px))]">{peer.reason ?? `${peer.name} cannot be written to now.`}</p>}
 
@@ -158,7 +196,7 @@ export function ChatThread({ engine, conversation, draft, onDraft }: Props) {
         <AlertDialogContent onCloseAutoFocus={focusAfterClose}>
           <AlertDialogHeader>
             <AlertDialogTitle>Delete this message?</AlertDialogTitle>
-            <AlertDialogDescription>It is deleted for you and for {peer.name}, with its earlier versions. This cannot be undone.</AlertDialogDescription>
+            <AlertDialogDescription>It is deleted for {group ? 'everyone in this chat' : `you and for ${peer.name}`}, with its earlier versions. This cannot be undone.</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
@@ -166,6 +204,7 @@ export function ChatThread({ engine, conversation, draft, onDraft }: Props) {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+      {group && <ChatPeople engine={engine} conversation={conversation} members={members} open={people} onClose={() => setPeople(false)} />}
     </section>
   );
 }

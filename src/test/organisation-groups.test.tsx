@@ -17,6 +17,7 @@ vi.mock('@/hooks/use-toast', () => ({ useToast: () => ({ toast: state.toast }), 
 vi.mock('@/contexts/useAuth', () => ({ useAuth: () => ({ user: state.user, isOffline: false }) }));
 vi.mock('@/hooks/use-modules', () => ({ useModules: () => ({ isPending: false, isEnabled: () => true, canAccess: () => true, modules: [], pages: [] }) }));
 vi.mock('@/lib/api', () => ({ api: { get: vi.fn(), put: vi.fn(), post: vi.fn(), delete: vi.fn() } }));
+vi.mock('@/hooks/use-chat-engine', () => ({ useChatEngine: () => null }));
 
 const SUPPORT = { id: 'grp-support', name: 'Support', description: 'Customer support, both shifts', member_count: 3, manager_count: 1, has_policies: true };
 const FINANCE = { id: 'grp-finance', name: 'Finance', description: null, member_count: 1, manager_count: 0, has_policies: false };

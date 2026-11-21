@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import { Link, useSearchParams } from 'react-router-dom';
-import { MessageCircle, MessageCircleOff, Plus } from 'lucide-react';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
+import { MessageCircle, MessageCircleOff, Plus, Users } from 'lucide-react';
 import { useChatEngine } from '@/hooks/use-chat-engine';
 import { useAppLock } from '@/hooks/use-app-lock';
 import { useModules } from '@/hooks/use-modules';
@@ -11,6 +11,7 @@ import { EmptyState, ErrorState, LoadingState } from '@/components/ui/page-state
 import { ChatPassphraseGate } from '@/components/chat/ChatPassphraseGate';
 import { ChatThread } from '@/components/chat/ChatThread';
 import { ConversationList } from '@/components/chat/ConversationList';
+import { NewGroupDialog } from '@/components/chat/NewGroupDialog';
 import { useChatSnapshot } from '@/components/chat/chat-state';
 import { UPDATE_APP_TO_LOCK_CHAT } from '@/components/app-lock/area-names';
 import type { ChatEngine } from '@/lib/chat/types';
@@ -43,10 +44,19 @@ export default function ChatPage() {
   // A chat starts at a colleague: their entry in the company directory has Message.
   const directory = canAccess('/contacts');
   const newChat = directory && <Button asChild size="sm"><Link to="/contacts?book=company"><Plus aria-hidden="true" />New chat</Link></Button>;
+  const [newGroup, setNewGroup] = useState(false);
+  // A chat that goes while it is open (the person left it or was removed from it): back to the list.
+  const navigate = useNavigate();
+  const opened = useRef<string | null>(null);
+  useEffect(() => {
+    if (active) opened.current = active.id;
+    else if (activeId && opened.current === activeId) navigate('/chat', { replace: true });
+  }, [active, activeId, navigate]);
 
   return (
     <PageShell>
-      <PageHeader title="Chat" className={activeId ? 'hidden lg:block' : undefined} actions={(readiness.state === 'ready' || waiting) && newChat} />
+      <PageHeader title="Chat" className={activeId ? 'hidden lg:block' : undefined} actions={(readiness.state === 'ready' || waiting) && <><Button variant="outline" size="sm" onClick={() => setNewGroup(true)}><Users aria-hidden="true" />New group</Button>{newChat}</>} />
+      {newGroup && engine && <NewGroupDialog engine={engine} onClose={() => setNewGroup(false)} />}
       {!engine || !snapshot || readiness.state === 'starting' ? <PageBody width="reading"><LoadingState label="Opening Chat…" /></PageBody>
         : readiness.state === 'unsupported' ? <PageBody width="reading"><EmptyState icon={MessageCircleOff} title="Chat cannot run in this browser" description={readiness.reason} /></PageBody>
         : readiness.state === 'failed' ? <PageBody width="reading"><ErrorState title="Chat could not start" error={lock.method.appUpdateForChat ? `${readiness.reason} ${UPDATE_APP_TO_LOCK_CHAT}` : readiness.reason} onRetry={() => engine.restart()} /></PageBody>

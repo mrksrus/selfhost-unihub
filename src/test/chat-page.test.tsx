@@ -247,7 +247,107 @@ describe('the chat passphrase', () => {
   });
 });
 
+describe('group chats', () => {
+  const sent = (engine: { calls: unknown[][] }) => engine.calls.filter(([name]) => name === 'send');
+
+  it('"@" offers the chat\'s people: the arrows choose, Enter takes one instead of sending, Escape closes the list, and the message names who it mentions', () => {
+    const engine = createFixtureChatEngine();
+    state.engine = engine;
+    render(<App user="A" at="/chat?c=chat-planning" />);
+    const input = field('Warehouse planning');
+    input.focus();
+    fireEvent.change(input, { target: { value: 'Thanks @c' } });
+    // Only active people whose name has the letters; the deactivated one is not offered.
+    expect(within(screen.getByRole('listbox', { name: 'People to mention' })).getAllByRole('option').map(option => option.textContent)).toEqual(['Casey Example', 'Katherine Johnson-Example of the Accounting Office']);
+    fireEvent.keyDown(input, { key: 'ArrowDown' });
+    expect(screen.getByRole('option', { name: /^Katherine/ })).toHaveAttribute('aria-selected', 'true');
+    fireEvent.keyDown(input, { key: 'ArrowUp' });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(input).toHaveValue('Thanks @Casey Example ');
+    expect(input).toHaveFocus();
+    expect(sent(engine)).toEqual([]);
+    expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
+
+    fireEvent.change(input, { target: { value: 'Thanks @Casey Example and @bl' } });
+    expect(screen.getByRole('option', { name: 'Blair Example' })).toBeInTheDocument();
+    fireEvent.keyDown(input, { key: 'Escape' });
+    expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(sent(engine)).toEqual([['send', 'chat-planning', 'Thanks @Casey Example and @bl', null, ['user-casey']]]);
+  });
+
+  const leaveChat = () => {
+    fireEvent.click(screen.getByRole('button', { name: 'People in this chat' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Leave chat' }));
+    fireEvent.click(within(screen.getByRole('alertdialog', { name: 'Leave Warehouse planning?' })).getByRole('button', { name: 'Leave chat' }));
+  };
+
+  it('leaving a chat goes back to the list', async () => {
+    state.engine = createFixtureChatEngine();
+    render(<App user="A" at="/chat?c=chat-planning" />);
+    leaveChat();
+    await waitFor(() => expect(screen.getByTestId('where')).toHaveTextContent(/^\/chat$/));
+    expect(screen.queryByRole('link', { name: /^Warehouse planning/ })).not.toBeInTheDocument();
+  });
+
+  it('a chat left while another one was opened meanwhile moves nothing there', async () => {
+    const engine = createFixtureChatEngine();
+    const leave = engine.leave;
+    let answer!: () => void;
+    engine.leave = id => new Promise<void>(resolve => { answer = () => resolve(leave(id)); });
+    state.engine = engine;
+    render(<App user="A" at="/chat?c=chat-planning" />);
+    leaveChat();
+    fireEvent.click(screen.getByRole('link', { name: /^Alex Example/, hidden: true }));
+    await act(async () => { answer(); await new Promise(done => setTimeout(done, 20)); });
+    expect(screen.getByTestId('where')).toHaveTextContent('/chat?c=chat-alex');
+    expect(field('Alex Example')).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /^Warehouse planning/ })).not.toBeInTheDocument();
+  });
+
+  it('a new group chat the server refuses keeps the dialog with its name and ticked people, and says why in the server\'s words', async () => {
+    const engine = createFixtureChatEngine();
+    engine.createGroup = async () => { throw new Error('A chat can have at most 100 people.'); };
+    state.engine = engine;
+    render(<App user="A" at="/chat" />);
+    fireEvent.click(screen.getByRole('button', { name: 'New group' }));
+    const dialog = within(screen.getByRole('dialog', { name: 'New group chat' }));
+    fireEvent.change(dialog.getByLabelText('Name'), { target: { value: 'Stocktake' } });
+    fireEvent.click(await dialog.findByRole('checkbox', { name: /^Blair Example/ }));
+    fireEvent.click(dialog.getByRole('button', { name: 'Create chat' }));
+    expect(await dialog.findByRole('alert')).toHaveTextContent('A chat can have at most 100 people.');
+    expect(dialog.getByLabelText('Name')).toHaveValue('Stocktake');
+    expect(dialog.getByRole('checkbox', { name: /^Blair Example/ })).toBeChecked();
+    expect(screen.getByTestId('where')).toHaveTextContent(/^\/chat$/);
+  });
+
+  it('offers to load the people again when they do not come', () => {
+    vi.useFakeTimers();
+    try {
+      const engine = createFixtureChatEngine({ members: {} });
+      const asked = vi.spyOn(engine, 'members');
+      state.engine = engine;
+      render(<App user="A" at="/chat?c=chat-planning" />);
+      fireEvent.click(screen.getByRole('button', { name: 'People in this chat' }));
+      expect(screen.getByText('Loading the people…')).toBeInTheDocument();
+      act(() => { vi.advanceTimersByTime(8000); });
+      expect(screen.getByText('Could not load the people')).toBeInTheDocument();
+      asked.mockClear();
+      fireEvent.click(screen.getByRole('button', { name: /try again/i }));
+      expect(asked).toHaveBeenCalledWith('chat-planning');
+      expect(screen.getByText('Loading the people…')).toBeInTheDocument();
+    } finally { vi.useRealTimers(); }
+  });
+});
+
 describe('message text', () => {
+  it('marks "@name" for the people a message mentions, the longest name first', () => {
+    const [alex, alexander] = [{ name: 'Alex' }, { name: 'Alex Example' }];
+    expect(textParts('@Alex Example and @Alex, not @Alexa or mail@Alex.example', [alex, alexander])).toEqual([
+      { text: '@Alex Example', mention: alexander }, { text: ' and ' }, { text: '@Alex', mention: alex }, { text: ', not @Alexa or mail' }, { text: '@Alex' }, { text: '.example' },
+    ]);
+  });
+
   it('links web addresses only', () => {
     expect(textParts('See https://intranet.example.com/rota/june. Not javascript:alert(1) or data:text/html,x')).toEqual([
       { text: 'See ' }, { text: 'https://intranet.example.com/rota/june', href: 'https://intranet.example.com/rota/june' }, { text: '. Not javascript:alert(1) or data:text/html,x' },

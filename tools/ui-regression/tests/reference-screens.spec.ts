@@ -20,8 +20,9 @@
 // and a custom repeat rule (Phone), and Chat with an open chat at
 // its newest and at its first messages (Wide), the list and an open chat
 // (Phone), and the chat passphrase chosen and entered and Settings -> Chat
-// (Wide and Phone), each in Dark Default and Light Default.
-// One hundred and fourteen pictures; see docs/UI_BASELINES.md.
+// (Wide and Phone), and a group chat and its people (Wide and Phone), each in
+// Dark Default and Light Default.
+// One hundred and twenty-two pictures; see docs/UI_BASELINES.md.
 import { customRepeat, expect, expectBaseline, sharedCalendars, test, THEMES, VIEWPORTS, withChat, type Page } from '../support/test.ts';
 import { CURRENT_DEVICE_LOCKED, POLICIES_ADMIN_APP_LOCK, POLICIES_EFFECTIVE_APP_LOCK, POLICIES_EFFECTIVE_TWO_FACTOR, USER } from '../support/fixtures.ts';
 
@@ -185,6 +186,24 @@ for (const theme of THEMES) {
         await expect(page.getByText('Blair Example added a device')).toBeInViewport();
         await settle();
         await expectBaseline(page, `chat-earlier-wide-${theme}.png`);
+      });
+
+      // A group chat with the fixed engine: names and initials, a former colleague, mentions, who read and the lines; then its people.
+      test(`chat group (wide, ${theme})`, async ({ page, open, settle }) => {
+        await withChat(page);
+        await open('/chat?c=chat-planning');
+        await expect(page.getByText('@Ada Example', { exact: true })).toBeVisible();
+        await settle();
+        await expectBaseline(page, `chat-group-wide-${theme}.png`);
+      });
+
+      test(`chat people (wide, ${theme})`, async ({ page, open, settle }) => {
+        await withChat(page);
+        await open('/chat?c=chat-planning');
+        await page.getByRole('button', { name: 'People in this chat' }).click();
+        await expect(page.getByRole('dialog', { name: 'Warehouse planning' }).getByRole('button', { name: 'Leave chat' })).toBeVisible();
+        await settle();
+        await expectBaseline(page, `chat-people-wide-${theme}.png`);
       });
 
       // 0.31: a shared address book the person manages, with a contact open, and its share dialog.
@@ -502,6 +521,24 @@ for (const theme of THEMES) {
         await expect(page.getByText('And the holiday list?')).toBeVisible();
         await settle();
         await expectBaseline(page, `chat-thread-phone-${theme}.png`);
+      });
+
+      // A group chat with the fixed engine: names and initials, a former colleague, mentions, who read and the lines; then its people.
+      test(`chat group (phone, ${theme})`, async ({ page, open, settle }) => {
+        await withChat(page);
+        await open('/chat?c=chat-planning');
+        await expect(page.getByText('@Ada Example', { exact: true })).toBeVisible();
+        await settle();
+        await expectBaseline(page, `chat-group-phone-${theme}.png`);
+      });
+
+      test(`chat people (phone, ${theme})`, async ({ page, open, settle }) => {
+        await withChat(page);
+        await open('/chat?c=chat-planning');
+        await page.getByRole('button', { name: 'People in this chat' }).click();
+        await expect(page.getByRole('dialog', { name: 'Warehouse planning' }).getByRole('button', { name: 'Leave chat' })).toBeVisible();
+        await settle();
+        await expectBaseline(page, `chat-people-phone-${theme}.png`);
       });
 
       test(`contact detail (phone, ${theme})`, async ({ page, open }) => {

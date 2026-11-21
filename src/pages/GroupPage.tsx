@@ -4,6 +4,7 @@ import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { ChevronLeft, Plus } from 'lucide-react';
 import { useAuth } from '@/contexts/useAuth';
 import { useAdminCalendars } from '@/hooks/use-calendar-shares';
+import { useChatEngine } from '@/hooks/use-chat-engine';
 import { useModules } from '@/hooks/use-modules';
 import { invalidateOrganisation, useGroup } from '@/hooks/use-organisation';
 import { useSecretMutation } from '@/hooks/use-secret-mutation';
@@ -16,6 +17,7 @@ import { updateGroup } from '@/lib/groups-api';
 import { can } from '@/lib/permissions';
 import { PasswordConfirmDialog } from '@/components/admin/PasswordConfirmDialog';
 import { calendarMeta, useSharedCalendarActions } from '@/components/calendar/SharedCalendarActions';
+import { NewGroupDialog } from '@/components/chat/NewGroupDialog';
 import { GroupDialog } from '@/components/organisation/GroupDialog';
 import { GroupMembers } from '@/components/organisation/GroupMembers';
 import { groupMeta } from '@/components/organisation/GroupRow';
@@ -56,6 +58,9 @@ const GroupPage = ({ admin = false }: { admin?: boolean }) => {
   const calendars = (can(user, 'calendars.manage') ? everyCalendar?.filter(calendar => !calendar.deleted_at) : myCalendars?.filter(calendar => calendar.owner_kind === 'group'))
     ?.filter(calendar => calendar.group?.id === id) ?? [];
   const calendarActions = useSharedCalendarActions();
+  // Null while Chat is off for the person: then the group's page offers no chat.
+  const chat = useChatEngine();
+  const [newChat, setNewChat] = useState(false);
 
   const rename = useSessionMutation({
     mutationFn: (input: { name: string; description: string | null }) => updateGroup(id, input),
@@ -91,6 +96,10 @@ const GroupPage = ({ admin = false }: { admin?: boolean }) => {
                 {calendars.length === 0 ? <p className="py-4 text-sm text-muted-foreground">This group has no calendar yet.</p>
                   : <ul aria-label="Calendars of the group" className="divide-y divide-border">{calendars.map(calendar => calendarActions.row(calendar, 'share_count' in calendar ? calendarMeta(calendar) : calendar.archived && 'Archived', { manage: true }))}</ul>}
               </SettingsSection>
+            )}
+            {chat && query.data.can_manage && (
+              <SettingsSection title="Chat" description="A group chat that follows this group has exactly its members: whoever is added to the group joins the chat, whoever is removed leaves it."
+                action={<Button variant="outline" onClick={() => setNewChat(true)}><Plus aria-hidden="true" />New group chat</Button>}>{null}</SettingsSection>
             )}
             {!editRules && (
               <SettingsSection title="Rules">
@@ -130,6 +139,7 @@ const GroupPage = ({ admin = false }: { admin?: boolean }) => {
       </PageHeader>
       <PageBody width="reading">{body}</PageBody>
       {calendarActions.dialogs}
+      {newChat && chat && group && <NewGroupDialog engine={chat} follow={{ id, name: group.name }} onClose={() => setNewChat(false)} />}
       <GroupDialog open={renaming} group={group} pending={rename.isPending} onClose={() => setRenaming(false)} onSubmit={input => rename.mutate(input)} />
       <PasswordConfirmDialog open={deleting} onClose={() => setDeleting(false)} title={`Delete ${group?.name ?? 'this group'}?`}
         description="The group, its memberships and its rules are deleted. People who were in it keep their accounts and data; only the rules for everyone and of their other groups still apply to them, which may be looser."

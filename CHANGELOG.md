@@ -10,6 +10,27 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
 ### Added
 
+- **Group chats.** "New group" in Chat makes a chat with the people you
+  choose, or one that follows an organisation group you manage (also from
+  the group's page) and changes with it. Messages carry their sender's name
+  and initials, "Read by 3 of 7" opens the names, and lines say who joined
+  or left. Someone who joins reads from then on.
+- **The people of a group chat** open from its header: who manages it, who
+  is online, and why someone's devices are not in it yet. A manager renames
+  the chat and adds or removes people; anyone leaves. A removed person
+  reads nothing new and the chat goes from their devices.
+- **Mentions.** "@" in a group chat offers its people. A mention is
+  highlighted, more strongly for the person it names, and the chat shows
+  "@" in the list while it is unread.
+- **Notifications per chat**: all messages, mentions only, or nothing, from
+  the bell in the chat's header.
+- **Former colleagues.** Messages of someone who was deactivated or deleted
+  keep their name, marked "former colleague".
+- Reference pictures: `chat-group-*` and `chat-people-*` (Wide and Phone)
+  are new; `chat-wide-*`, `chat-earlier-wide-*`, `chat-list-phone-*` and
+  `chat-thread-phone-*` gain the group chats in the list and the bell in
+  the chat's header.
+
 - **Three chat policies** on Server › Policies, for everyone or per group:
   who members may add to a group chat (the people of their own groups, or
   anyone), the largest file in a chat (50 MB unless changed), and after how

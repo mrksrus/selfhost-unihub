@@ -49,6 +49,39 @@ export async function secondBrowser(person: Person): Promise<{ browser: Browser;
   return { browser, page: await context.newPage() };
 }
 
+/** A browser of the person's own with Chat open and their passphrase chosen; they have no chat yet. */
+export async function chatBrowser(person: Person) {
+  const opened = await secondBrowser(person);
+  await opened.page.goto(`${stack.url}${chatWithHook}`);
+  await choosePassphrase(opened.page);
+  await shows(opened.page.getByText('No chats yet', { exact: true }), 60_000);
+  return opened;
+}
+
+/** A chat's row in the list, its messages when it is open, and a message written into it. */
+export const chatRow = (page: Page, chat: string) => page.getByRole('list', { name: 'Chats' }).getByRole('link', { name: new RegExp(`^${escape(chat)}`) });
+export const messagesOf = (page: Page, chat: string) => page.getByRole('list', { name: `Messages with ${chat}` });
+export async function write(page: Page, chat: string, text: string) {
+  await page.getByRole('textbox', { name: `Message to ${chat}` }).fill(text);
+  await page.getByRole('button', { name: 'Send', exact: true }).click();
+  await shows(messagesOf(page, chat).getByText(text, { exact: true }));
+}
+
+/** Whether the server still serves the person the chat's messages. */
+export const readsChat = async (person: Person, conversationId: string | null) =>
+  (await (await signIn(person.email))('GET', `/api/chat/conversations/${conversationId}/messages?after=0&limit=200`)).status === 200;
+
+/** Closes the browsers (keeping each screen of a failed test) and removes the test's people, also those already gone, and its group. */
+export async function leave(opened: { browser: Browser; page: Page }[], people: Person[], passed: boolean, groupId?: string) {
+  for (const [index, entry] of opened.entries()) {
+    if (!passed) await keepScreen(entry.page, `person-${index + 1}`);
+    await entry.browser.close().catch(() => undefined);
+  }
+  const admin = await signIn('admin');
+  for (const person of people) await admin('DELETE', `/api/admin/users/${person.id}`, { current_password: signInPassword });
+  if (groupId) await admin('DELETE', `/api/admin/groups/${groupId}`, { current_password: signInPassword });
+}
+
 /** The URL of Chat with the test hook (src/lib/chat/test-hook.ts) loaded. */
 export const chatWithHook = '/chat#chat-test';
 
