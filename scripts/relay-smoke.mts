@@ -58,7 +58,7 @@ function xorAddress(ip: string, port: number, id: Buffer) {
 }
 const errorCode = (reply: Reply) => { const value = reply.attrs.get(ERROR); return value ? value[2]! * 100 + value[3]! : 0; };
 
-const socket = dgram.createSocket('udp4');
+let socket = dgram.createSocket('udp4');
 // Attributes are built per request: a peer address is masked with its transaction id.
 function request(method: number, attrs: (id: Buffer) => [number, Buffer][], key?: Buffer, timeout = 3000) {
   const id = crypto.randomBytes(12);
@@ -91,23 +91,24 @@ try {
     assert(binding && binding.type === 0x0101 && binding.attrs.has(MAPPED), 'The relay must answer a STUN binding request');
     assert.equal(await tcpOpen(), true, 'The relay must listen on TCP 3478');
     const transport: [number, Buffer] = [TRANSPORT, Buffer.from([17, 0, 0, 0])];
-    const challenge = await request(ALLOCATE, () => [transport]);
-    assert(challenge && errorCode(challenge) === 401, 'An allocation without credentials must be challenged');
-    const realm = challenge.attrs.get(REALM)!, nonce = challenge.attrs.get(NONCE)!;
     // The shared-secret scheme: user name "<expiry>:<id>", password base64(HMAC-SHA1(secret, user name)).
-    const credentials = (key: string, expiry: number) => {
-      const user = `${expiry}:relay-smoke`;
+    // coturn ties a client address to the first user name it tried, so each try gets its own socket and nonce.
+    const allocate = async (key: string, expiry: number) => {
+      socket.close(); socket = dgram.createSocket('udp4');
+      const challenge = await request(ALLOCATE, () => [transport]);
+      assert(challenge && errorCode(challenge) === 401, 'An allocation without credentials must be challenged');
+      const realm = challenge.attrs.get(REALM)!, user = `${expiry}:relay-smoke`;
       const password = crypto.createHmac('sha1', key).update(user).digest('base64');
-      const attrs: [number, Buffer][] = [[USERNAME, Buffer.from(user)], [REALM, realm], [NONCE, nonce]];
-      return { attrs, key: crypto.createHash('md5').update(`${user}:${realm}:${password}`).digest() };
+      const attrs: [number, Buffer][] = [[USERNAME, Buffer.from(user)], [REALM, realm], [NONCE, challenge.attrs.get(NONCE)!]];
+      const integrity = crypto.createHash('md5').update(`${user}:${realm}:${password}`).digest();
+      return { reply: await request(ALLOCATE, () => [transport, ...attrs], integrity), attrs, key: integrity };
     };
     const now = Math.floor(Date.now() / 1000);
-    for (const [label, wrong] of [['a wrong secret', credentials('not-the-secret', now + 3600)], ['an expired user name', credentials(secret, now - 60)]] as const) {
-      const refused = await request(ALLOCATE, () => [transport, ...wrong.attrs], wrong.key);
+    for (const [label, key, expiry] of [['a wrong secret', 'not-the-secret', now + 3600], ['an expired user name', secret, now - 60]] as const) {
+      const { reply: refused } = await allocate(key, expiry);
       assert(refused && errorCode(refused) === 401, `An allocation with ${label} must be refused, got ${refused && errorCode(refused)}`);
     }
-    const valid = credentials(secret, now + 3600);
-    const allocation = await request(ALLOCATE, () => [transport, ...valid.attrs], valid.key);
+    const valid = await allocate(secret, now + 3600), allocation = valid.reply;
     assert(allocation && allocation.type === 0x0103 && allocation.attrs.has(RELAYED), `The allocation must succeed, got ${allocation && errorCode(allocation)}`);
     let channel = 0x4000;
     for (const target of (process.env.RELAY_REFUSE || '').split(/\s+/).filter(Boolean)) {
