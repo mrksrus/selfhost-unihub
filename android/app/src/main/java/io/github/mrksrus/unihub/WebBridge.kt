@@ -10,6 +10,7 @@ import android.net.Uri
 import android.os.Environment
 import android.provider.MediaStore
 import android.util.Base64
+import android.webkit.MimeTypeMap
 import android.webkit.WebView
 import android.widget.Toast
 import androidx.webkit.JavaScriptReplyProxy
@@ -17,6 +18,7 @@ import androidx.webkit.WebMessageCompat
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 import org.json.JSONObject
+import java.io.File
 import java.io.OutputStream
 import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
@@ -81,7 +83,9 @@ class WebBridge(
             return
         }
         when (data.optString("type")) {
-            "saveFileStart" -> fileStep(reply, data) { id -> startFile(id, data.optString("name"), data.optString("mime")) }
+            "saveFileStart" -> fileStep(reply, data) { id ->
+                SharedFiles.handOverTarget(data.optString("target"))?.let { startFile(id, data.optString("name"), data.optString("mime"), it) } ?: false
+            }
             "saveFileChunk" -> fileStep(reply, data) { id -> writeFile(id, data.optString("data")) }
             "saveFileEnd" -> fileStep(reply, data) { id -> finishFile(id) }
             "saveFileAbort" -> data.optString("id").takeIf { validId(it) }?.let { id -> onFiles { abortFile(id) } }
@@ -132,9 +136,12 @@ class WebBridge(
     // ── Saving a file the page made (an attachment it loaded, an export) ──
     // The page sends it in pieces (src/lib/platform.ts) and waits for each
     // reply, so memory stays bounded. Files are written on one thread, in order;
-    // `open` is only touched there.
+    // `open` is only touched there. A file the page decrypted (a chat's) can
+    // instead go to Open with or Share: a copy among FileActions' shared
+    // copies, deleted as they are, and the same chooser.
 
-    private class OpenFile(val name: String, val uri: Uri, val stream: OutputStream) {
+    // `copy`: the cached file for "open" or "share", whose session is `token`; null for Downloads.
+    private class OpenFile(val name: String, val mime: String, val uri: Uri?, val stream: OutputStream, val target: String, val copy: File?, val token: Long) {
         var lastUsed = System.currentTimeMillis()
     }
 
@@ -166,9 +173,16 @@ class WebBridge(
         }
     }
 
-    private fun startFile(id: String, name: String, mime: String): Boolean {
+    private fun startFile(id: String, name: String, mime: String, target: String): Boolean {
         if (id in open || open.size >= MAX_OPEN_FILES) return false
-        val fileName = safeFileName(name)
+        val fileName = SharedFiles.safeFileName(name)
+        if (target != "save") {
+            FileActions.pruneLater(activity)
+            val copy = fileActions.newCopy(fileName)
+            val stream = try { copy.outputStream() } catch (error: Exception) { copy.parentFile?.deleteRecursively(); throw error }
+            open[id] = OpenFile(fileName, mime, null, stream, target, copy, FileActions.session.current())
+            return true
+        }
         val resolver = activity.contentResolver
         val values = ContentValues().apply {
             put(MediaStore.Downloads.DISPLAY_NAME, fileName)
@@ -182,7 +196,7 @@ class WebBridge(
             resolver.delete(uri, null, null)
             throw error
         }
-        open[id] = OpenFile(fileName, uri, stream)
+        open[id] = OpenFile(fileName, mime, uri, stream, target, null, 0)
         return true
     }
 
@@ -194,12 +208,26 @@ class WebBridge(
 
     private fun finishFile(id: String): Boolean {
         val file = open.remove(id) ?: return false
+        if (file.copy != null) {
+            try {
+                file.stream.close()
+                // Signed out while it came: the copy must not outlive the session.
+                if (!FileActions.session.isCurrent(file.token)) throw IllegalStateException("Signed out")
+                val byExtension = SharedFiles.extension(file.name)?.let { MimeTypeMap.getSingleton().getMimeTypeFromExtension(it) }
+                fileActions.offer(file.target, file.copy, SharedFiles.mimeType(null, file.mime, byExtension))
+            } catch (error: Exception) {
+                file.copy.parentFile?.deleteRecursively()
+                throw error
+            }
+            return true
+        }
+        val uri = file.uri ?: return false
         try {
             file.stream.close()
             val values = ContentValues().apply { put(MediaStore.Downloads.IS_PENDING, 0) }
-            activity.contentResolver.update(file.uri, values, null, null)
+            activity.contentResolver.update(uri, values, null, null)
         } catch (error: Exception) {
-            activity.contentResolver.delete(file.uri, null, null)
+            activity.contentResolver.delete(uri, null, null)
             throw error
         }
         activity.runOnUiThread {
@@ -219,7 +247,8 @@ class WebBridge(
     private fun abortFile(id: String) {
         val file = open.remove(id) ?: return
         try { file.stream.close() } catch (_: Exception) { }
-        try { activity.contentResolver.delete(file.uri, null, null) } catch (_: Exception) { }
+        file.copy?.parentFile?.deleteRecursively()
+        file.uri?.let { try { activity.contentResolver.delete(it, null, null) } catch (_: Exception) { } }
     }
 
     /**
@@ -237,7 +266,7 @@ class WebBridge(
      */
     fun download(url: String, name: String, userAgent: String) {
         if (!ServerAddress.sameOrigin(origin, url)) return
-        val fileName = safeFileName(name)
+        val fileName = SharedFiles.safeFileName(name)
         // The app update shows no "complete" notification: opened from there,
         // Android refuses to install it; the app opens the installer (AppUpdate).
         val update = SharedFiles.isAppUpdate(origin, url)
@@ -272,9 +301,6 @@ class WebBridge(
 
         private fun parseColor(value: String): Int? =
             if (Regex("#[0-9a-fA-F]{6}").matches(value)) Color.parseColor(value) else null
-
-        fun safeFileName(name: String): String =
-            name.replace(Regex("[\\\\/:*?\"<>|\\u0000-\\u001f]"), "_").trim().trimStart('.').take(200).ifEmpty { "download" }
 
         /** Opens a link outside UniHub (a website, a mail or phone app). */
         fun openExternal(activity: Activity, url: String) {

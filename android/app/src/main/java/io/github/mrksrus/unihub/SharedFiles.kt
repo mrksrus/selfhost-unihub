@@ -76,5 +76,18 @@ object SharedFiles {
     fun extension(name: String): String? =
         name.substringAfterLast('.', "").lowercase().takeIf { it.isNotEmpty() && it.length <= 10 && it.all(Char::isLetterOrDigit) }
 
+    /** A name the page or a chat's sender chose, as one bounded file name with no path in it. */
+    fun safeFileName(name: String): String =
+        name.replace(Regex("[\\\\/:*?\"<>|\\u0000-\\u001f]"), "_").trim().trimStart('.').take(200).ifEmpty { "download" }
+
+    /**
+     * Where a file the page hands over goes: "save" to Downloads (also when
+     * the page names nothing, as pages before Open with and Share do), "open"
+     * or "share" through a copy for Android's sheet; null refuses it.
+     */
+    fun handOverTarget(value: String): String? = value.ifEmpty { "save" }.takeIf { it in HAND_OVER_TARGETS }
+
+    private val HAND_OVER_TARGETS = setOf("save", "open", "share")
+
     fun stale(modifiedMs: Long, nowMs: Long): Boolean = nowMs - modifiedMs > MAX_AGE_MS || modifiedMs > nowMs + 60_000
 }

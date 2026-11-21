@@ -47,7 +47,7 @@ class FileActions(private val activity: Activity, private val origin: String) {
             done(activity.getString(R.string.files_refused))
             return
         }
-        val fileName = WebBridge.safeFileName(name)
+        val fileName = SharedFiles.safeFileName(name)
         try {
             pruneLater(activity)
             worker.execute {
@@ -78,7 +78,7 @@ class FileActions(private val activity: Activity, private val origin: String) {
         if (!ServerAddress.sameOrigin(origin, url) || !SharedFiles.isLegacyBackupDownload(origin, url)) return false
         val cookie = CookieManager.getInstance().getCookie(url)?.takeIf { it.isNotBlank() } ?: return false
         val token = session.current()
-        val fileName = WebBridge.safeFileName(name)
+        val fileName = SharedFiles.safeFileName(name)
         return try {
             backups.execute {
                 val error = try {
@@ -148,9 +148,7 @@ class FileActions(private val activity: Activity, private val origin: String) {
 
     private fun share(action: String, url: String, name: String, mime: String, token: Long) {
         if (!session.isCurrent(token)) throw Problem(activity.getString(R.string.files_failed))
-        val folder = File(sharedDir(activity), UUID.randomUUID().toString())
-        if (!folder.mkdirs()) throw IOException("No cache folder")
-        val file = File(folder, name)
+        val file = newCopy(name)
         val type = try {
             fetch(url, name, mime) { download ->
                 download.body.use { input -> file.outputStream().use { copy(input, it) } }
@@ -160,9 +158,19 @@ class FileActions(private val activity: Activity, private val origin: String) {
                 if (!session.isCurrent(token)) throw Problem(activity.getString(R.string.files_failed))
             }
         } catch (error: Exception) {
-            folder.deleteRecursively()
+            file.parentFile?.deleteRecursively()
             throw error
         }
+        offer(action, file, type)
+    }
+
+    /**
+     * Hands a finished copy (newCopy) to Android's chooser: "open" or
+     * "share", read-only, for the app the person picks. UniHub declares no
+     * activity for files, so the chooser never lists UniHub itself.
+     */
+    fun offer(action: String, file: File, type: String) {
+        val name = file.name
         val uri = FileProvider.getUriForFile(activity, authority(activity), file)
         val target = if (action == "open") {
             Intent(Intent.ACTION_VIEW).setDataAndType(uri, type)
@@ -186,6 +194,13 @@ class FileActions(private val activity: Activity, private val origin: String) {
                 Toast.makeText(activity, R.string.files_no_app, Toast.LENGTH_SHORT).show()
             }
         }
+    }
+
+    /** An empty file of this name in a new folder of the shared copies, which their clean-ups delete with the rest. */
+    fun newCopy(name: String): File {
+        val folder = File(sharedDir(activity), UUID.randomUUID().toString())
+        if (!folder.mkdirs()) throw IOException("No cache folder")
+        return File(folder, name)
     }
 
     // `token`: the session the file belongs to; signed out meanwhile, it is not kept.
@@ -284,7 +299,7 @@ class FileActions(private val activity: Activity, private val origin: String) {
             if (!alive()) throw PickedFiles.Cancelled()
             val folder = File(pickedDir(context), UUID.randomUUID().toString())
             if (!folder.mkdirs()) throw IOException("No cache folder")
-            val file = File(folder, WebBridge.safeFileName(displayName(context, source)))
+            val file = File(folder, SharedFiles.safeFileName(displayName(context, source)))
             try {
                 val size = (context.contentResolver.openInputStream(source) ?: throw IOException("Unreadable")).use { input ->
                     file.outputStream().use { PickedFiles.copy(input, it, limit, free, alive) }

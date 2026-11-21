@@ -975,7 +975,7 @@ class MainActivity : Activity() {
     // The page gets only the files that were copied; the others are named here.
     private fun showRefusedFiles(refused: List<Pair<String, PickedFiles.Refusal>>) {
         val lines = refused.joinToString("\n") { (name, reason) ->
-            getString(R.string.files_not_added_line, WebBridge.safeFileName(name), getString(when (reason) {
+            getString(R.string.files_not_added_line, SharedFiles.safeFileName(name), getString(when (reason) {
                 PickedFiles.Refusal.TOO_LARGE -> R.string.files_not_added_too_large
                 PickedFiles.Refusal.NO_SPACE -> R.string.files_not_added_no_space
                 PickedFiles.Refusal.UNREADABLE -> R.string.files_not_added_unreadable
@@ -1116,8 +1116,9 @@ class MainActivity : Activity() {
         // What the page may ask of WebBridge, announced in the user agent:
         // 1 up to 0.24 (files from the page, downloads, theme, notifications),
         // 2 from 0.25 (fileAction: open with, save, share with a download ticket),
-        // 3 from 0.29 (appLock: the app lock with the phone's own unlock).
-        const val BRIDGE_LEVEL = 3
+        // 3 from 0.29 (appLock: the app lock with the phone's own unlock),
+        // 4 from 0.34 (saveFileStart's target: Open with and Share of a file the page made).
+        const val BRIDGE_LEVEL = 4
         private const val COVER_LOCK = 1
         /** Debug builds only: the cover going up and down and the page's first visible content, in order (tools/e2e/android/app-lock-bridge.test.mjs). */
         private const val LOCK_LOG = "UniHubLock"

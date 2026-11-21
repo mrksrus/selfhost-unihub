@@ -92,6 +92,26 @@ class SharedFilesTest {
     }
 
     @Test
+    fun aSendersFileNameStaysOneBoundedNameInItsFolder() {
+        assertEquals("_.._etc_passwd", SharedFiles.safeFileName("../../etc/passwd"))
+        assertEquals("a_b_c.pdf", SharedFiles.safeFileName("a\\b\u0000c.pdf"))
+        assertEquals("download", SharedFiles.safeFileName(".."))
+        assertEquals("download", SharedFiles.safeFileName("  "))
+        assertEquals("env", SharedFiles.safeFileName(".env"))
+        assertEquals(200, SharedFiles.safeFileName("x".repeat(500) + ".pdf").length)
+    }
+
+    @Test
+    fun aHandOverGoesToDownloadsUnlessItNamesOpenOrShare() {
+        assertEquals("save", SharedFiles.handOverTarget(""))
+        assertEquals("save", SharedFiles.handOverTarget("save"))
+        assertEquals("open", SharedFiles.handOverTarget("open"))
+        assertEquals("share", SharedFiles.handOverTarget("share"))
+        assertNull(SharedFiles.handOverTarget("view"))
+        assertNull(SharedFiles.handOverTarget("Open"))
+    }
+
+    @Test
     fun copiesExpireAfterSixHoursOrWithAClockFromTheFuture() {
         val now = 1_000_000_000_000L
         assertFalse(SharedFiles.stale(now - 60_000, now))
