@@ -38,7 +38,7 @@ export function ChatComposer({ peerName, mode, draft, people, onDraft, onSend, o
   const [text, setText] = useState(draft);
   const [caret, setCaret] = useState(draft.length);
   const [chosen, setChosen] = useState(0);
-  // Where the "@" stands whose list Escape closed.
+  // Where the "@" stands whose list Escape closed; typing a new "@" opens it again.
   const [closedAt, setClosedAt] = useState(-1);
   const caretAfter = useRef<number | null>(null);
   const editing = mode?.kind === 'edit' ? mode.message : null;
@@ -125,7 +125,7 @@ export function ChatComposer({ peerName, mode, draft, people, onDraft, onSend, o
           </ul>
         )}
         <Textarea ref={fieldRef} rows={1} value={text} maxLength={MAX_MESSAGE_LENGTH} onKeyDown={onKeyDown}
-          onChange={event => { setCaret(event.target.selectionStart); setChosen(0); change(event.target.value); }} onSelect={event => setCaret(event.currentTarget.selectionStart)}
+          onChange={event => { setCaret(event.target.selectionStart); setChosen(0); if (event.target.value[closedAt] !== '@') setClosedAt(-1); change(event.target.value); }} onSelect={event => setCaret(event.currentTarget.selectionStart)}
           aria-controls={offered.length ? 'chat-mention-list' : undefined} aria-activedescendant={offered.length ? `chat-mention-${active}` : undefined}
           aria-label={`Message to ${peerName}`} placeholder="Write a message" className="max-h-40 min-h-10 resize-none touch:min-h-11" />
         <Button type="submit" size="icon" className="shrink-0" disabled={!ready} aria-label={editing ? 'Save change' : 'Send'}>

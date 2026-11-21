@@ -45,13 +45,14 @@ export default function ChatPage() {
   const directory = canAccess('/contacts');
   const newChat = directory && <Button asChild size="sm"><Link to="/contacts?book=company"><Plus aria-hidden="true" />New chat</Link></Button>;
   const [newGroup, setNewGroup] = useState(false);
-  // A chat that goes while it is open (the person left it or was removed from it): back to the list.
+  // A chat that goes while it is open (the person left it or was removed from it): back to the list. Not while Chat starts again and lists nothing yet.
   const navigate = useNavigate();
   const opened = useRef<string | null>(null);
+  const ready = readiness.state === 'ready';
   useEffect(() => {
     if (active) opened.current = active.id;
-    else if (activeId && opened.current === activeId) navigate('/chat', { replace: true });
-  }, [active, activeId, navigate]);
+    else if (ready && activeId && opened.current === activeId) navigate('/chat', { replace: true });
+  }, [active, activeId, ready, navigate]);
 
   return (
     <PageShell>

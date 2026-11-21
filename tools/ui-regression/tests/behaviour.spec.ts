@@ -325,10 +325,13 @@ test.describe('P-11 touch targets are big enough and never overlap', () => {
     expectOnlyKnown(await touchViolations(page, 'section[aria-label="Chat with Warehouse planning"]'), []);
     await page.getByRole('button', { name: 'People in this chat' }).click();
     await expect(page.getByRole('button', { name: 'Leave chat' })).toBeVisible();
+    await settle();
     expectOnlyKnown(await touchViolations(page, '[role="dialog"]'), []);
     await open('/chat');
     await page.getByRole('button', { name: 'New group' }).click();
     await expect(page.getByRole('checkbox', { name: /^Blair Example/ })).toBeVisible();
+    // The dialog has grown to its size: a button measured while it opens is a hair under 40 px.
+    await settle();
     expectOnlyKnown(await touchViolations(page, '[role="dialog"]'), []);
   });
 

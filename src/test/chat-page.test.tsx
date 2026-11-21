@@ -272,6 +272,10 @@ describe('group chats', () => {
     expect(screen.getByRole('option', { name: 'Blair Example' })).toBeInTheDocument();
     fireEvent.keyDown(input, { key: 'Escape' });
     expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
+    // Closed for this "@" only: a new one in its place offers again.
+    fireEvent.change(input, { target: { value: 'Thanks @Casey Example and ' } });
+    fireEvent.change(input, { target: { value: 'Thanks @Casey Example and @bl' } });
+    fireEvent.keyDown(input, { key: 'Escape' });
     fireEvent.keyDown(input, { key: 'Enter' });
     expect(sent(engine)).toEqual([['send', 'chat-planning', 'Thanks @Casey Example and @bl', null, ['user-casey']]]);
   });
