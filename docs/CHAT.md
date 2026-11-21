@@ -446,7 +446,7 @@ messages and files stay, with the sender and the uploader emptied.
 | --- | --- |
 | `POST /api/chat/conversations/:id/attachments?id=` | Upload a file's ciphertext (body kind `upload`) |
 | `GET /api/chat/attachments/:id` | The ciphertext, `Cache-Control: no-store` |
-| `GET /api/admin/chat/retention-preview?days=&group_id=` | Messages, files and chats a shorter value would delete |
+| `GET /api/admin/chat/retention-preview?days=&group_id=` | Messages, files and chats a shorter value would delete; and how many chats wait to start deleting, and from when |
 | `POST /api/admin/chat/retention/apply-now` | The owner ends the waits, with the password |
 
 ## Reference

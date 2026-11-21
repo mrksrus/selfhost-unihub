@@ -10,6 +10,7 @@ import { groupExists, groupMemberIds } from './groups';
 import { policyForEveryone } from './settings';
 import { recordAudit } from './audit';
 import { dropAttachments, removeFiles, sweepChatFiles } from './chat-attachments';
+import { utcIso } from './chat-devices';
 
 // Chat retention (chat.retention_days). A message is one row for all its
 // readers, so a chat follows the shortest value among its active people. Each
@@ -140,6 +141,9 @@ async function runChatRetention() {
  * shorten: their shown messages older than the new value and those messages' files.
  */
 async function previewRetention(daysParam: string | null, groupId: string | null): Promise<ChatRetentionPreviewResponse> {
+  const [[waits]] = await db.execute<RowDataPacket[]>('SELECT COUNT(*) AS waiting, MIN(retention_from) AS first FROM chat_conversations WHERE retention_from > UTC_TIMESTAMP()');
+  const preview = { messages: 0, files: 0, conversations: 0, waiting: Number(waits.waiting), waiting_from: waits.first ? utcIso(waits.first) : null };
+  if (daysParam === null) return preview;
   const days = Number(daysParam) as ChatRetentionDays;
   if (!DAYS.includes(days)) throw badRequest('CHAT_RETENTION_INVALID', 'Choose 30, 90, 180 or 365 days');
   if (groupId !== null && !await groupExists(groupId)) throw notFound('GROUP_NOT_FOUND', 'Group not found');
@@ -149,7 +153,6 @@ async function previewRetention(daysParam: string | null, groupId: string | null
     const now = policy.of(id).value;
     return (!reached || reached.has(id)) && shorter(days, now) ? days : now;
   });
-  const preview = { messages: 0, files: 0, conversations: 0 };
   for (const chat of result) {
     if (chat.value === undefined || !shorter(chat.value, chat.stored)) continue;
     const [[counted]] = await db.execute<RowDataPacket[]>(`SELECT (SELECT COUNT(*) FROM chat_messages WHERE ${OLDER} AND ${SHOWN}) AS messages,

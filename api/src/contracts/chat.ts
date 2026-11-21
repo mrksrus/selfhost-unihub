@@ -475,9 +475,16 @@ export interface ChatFileTooLargeDetails { limit_mb: number; reason: string }
  * (permission server.settings): before saving chat.retention_days for
  * Everyone (no group_id) or a group, what that value would delete once its
  * wait is over: the messages and files older than it in the chats it would
- * shorten. Changes nothing.
+ * shorten. Changes nothing. Without days the three counts are 0.
  */
-export interface ChatRetentionPreviewResponse { messages: number; files: number; conversations: number }
+export interface ChatRetentionPreviewResponse {
+  messages: number;
+  files: number;
+  conversations: number;
+  /** The chats that wait to start deleting under a shorter retention, and when the first of them starts; null while none waits. */
+  waiting: number;
+  waiting_from: string | null;
+}
 
 /**
  * POST /api/admin/chat/retention/apply-now: the owner only (403

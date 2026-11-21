@@ -31,8 +31,10 @@ test('chat retention: the shortest value, the 24-hour wait, undo, the owner skip
   const policy = (values: Record<string, unknown>, target?: string, body: Record<string, unknown> = { current_password: password }) =>
     admin.request('PUT', target ? `/api/admin/groups/${target}/policies` : '/api/admin/policies', { ...body, values });
   const saved = async (values: Record<string, unknown>, target?: string) => assert.equal((await policy(values, target)).status, 200);
-  const preview = async (days: number, target?: string) =>
-    call(admin, 'GET', `/api/admin/chat/retention-preview?days=${days}${target ? `&group_id=${target}` : ''}`);
+  const preview = async (days: number, target?: string) => {
+    const { messages, files, conversations } = await call(admin, 'GET', `/api/admin/chat/retention-preview?days=${days}${target ? `&group_id=${target}` : ''}`);
+    return { messages, files, conversations };
+  };
   const listed = async (client: typeof alex, id: string) => (await call(client, 'GET', '/api/chat/conversations')).conversations.find((item: FixtureValue) => item.id === id);
   const present = async (...messageIds: string[]) => (await rows(`SELECT id FROM chat_messages WHERE id IN (${messageIds.map(() => '?').join(', ')})`, messageIds)).length;
   // The clock moves: a message sent `days` ago; a chat's wait `hours` further on.
@@ -70,6 +72,7 @@ test('chat retention: the shortest value, the 24-hour wait, undo, the owner skip
   const waiting = await listed(alex, support);
   assert.equal(waiting.retention_days, 90);
   assert.ok(Date.parse(waiting.retention_from) > Date.now() + 23 * 3600 * 1000, 'deleting starts in 24 hours');
+  assert.deepEqual(await call(admin, 'GET', '/api/admin/chat/retention-preview'), { messages: 0, files: 0, conversations: 0, waiting: 1, waiting_from: waiting.retention_from }, 'the Policies page sees the wait');
   assert.deepEqual([(await listed(admin, ops)).retention_days, (await listed(admin, ops)).retention_from], [null, null], 'Ops keeps its messages');
   await later(support, 23);
   await runChatRetention();
