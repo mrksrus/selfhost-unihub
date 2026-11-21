@@ -115,9 +115,12 @@ export async function startChat(page: Page, withPerson: Person) {
   await page.waitForURL(/\/chat\?c=/, { timeout: 60_000 });
 }
 
-/** Whether the server still serves the person the chat's messages. */
-export const readsChat = async (person: Person, conversationId: string | null) =>
-  (await (await signIn(person.email))('GET', `/api/chat/conversations/${conversationId}/messages?after=0&limit=200`)).status === 200;
+/** Whether the server still serves the person, from their page's device in Chat, the chat's messages; otherwise it answers 404. */
+export async function readsChat(page: Evaluates, conversationId: string | null) {
+  const { status } = await pageApi(page, 'GET', `/api/chat/conversations/${conversationId}/messages?after=0&limit=200`);
+  expect([200, 404].includes(status), `served or not found, never refused for the device: ${status}`).toBe(true);
+  return status === 200;
+}
 
 /** Closes the browsers (keeping each screen of a failed test) and removes the test's people, also those already gone, and its group. */
 export async function leave(opened: { browser: Browser; page: Page }[], people: Person[], passed: boolean, groupId?: string) {

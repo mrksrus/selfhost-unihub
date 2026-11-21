@@ -11,6 +11,8 @@
 // and the notice covers the page: every change here confirms it for the
 // seeded people (and the test's own people it names).
 
+import crypto from 'node:crypto';
+
 export const PASSWORD = 'local-dev-admin-password';
 export const SEEDED = ['admin@example.com', 'alex@example.com', 'blair@example.com'];
 const PERSON_PREFIX = 'e2e-org-';
@@ -48,6 +50,16 @@ export async function ok(call, what) {
   if (status < 200 || status > 299) throw new Error(`${what}: ${status} ${JSON.stringify(data).slice(0, 300)}`);
   return data;
 }
+
+/**
+ * A first chat passphrase for a synthetic history key (nothing opens its
+ * backup), as the body of POST /api/chat/account: setting Chat up joins the
+ * chat device of the session that sends it.
+ */
+export const chatAccount = () => ({
+  history_public: crypto.createECDH('prime256v1').generateKeys().toString('base64url'),
+  key_backup: { format: 1, salt: crypto.randomBytes(16).toString('base64url'), rounds: 600000, wrapped: crypto.randomBytes(60).toString('base64url') },
+});
 
 /** Confirms the rules notice for the seeded people and any other sessions given, where it is due. */
 export async function acknowledge(others = []) {

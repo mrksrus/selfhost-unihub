@@ -15,7 +15,7 @@ import { chromium } from 'playwright-core';
 import {
   PACKAGE, adb, bridgeMessage, chooserType, closeChooser, openApp, pickFromDownloads, pushToDownloads, shownNotifications, signOutApp, sleep,
 } from '../support/android.mjs';
-import { PASSWORD, acknowledge, addPerson, createGroup, ok, resetPeople } from '../support/people.mjs';
+import { PASSWORD, acknowledge, addPerson, chatAccount, createGroup, ok, resetPeople } from '../support/people.mjs';
 
 const webPush = createRequire(new URL('../../../api/package.json', import.meta.url))('web-push');
 const fixture = name => fileURLToPath(new URL(`../fixtures/${name}`, import.meta.url));
@@ -130,6 +130,7 @@ test('in the app a picked picture and a recorded voice message reach Blair, her 
     // Drew writes to a group chat with the app in the background, then mentions the app's person.
     const [, , drewApi] = sessions;
     await ok(drewApi('POST', '/api/chat/devices', { preview: null, key_packages: [random(313)], last_resort: random(313) }), 'Drew\'s chat device');
+    await ok(drewApi('POST', '/api/chat/account', chatAccount()), 'Drew sets Chat up');
     const chat = `Team ${run}`;
     const { id: conversation } = (await ok(drewApi('POST', '/api/chat/conversations', { kind: 'group', name: chat, user_ids: [me.id] }), 'group chat')).conversation;
     const { devices } = await ok(drewApi('GET', `/api/chat/conversations/${conversation}/devices`), 'devices');

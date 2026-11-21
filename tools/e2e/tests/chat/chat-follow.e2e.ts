@@ -70,7 +70,7 @@ test('a chat follows an organisation group: started from the group\'s page, it s
     const later = `After Blair ${run}`;
     await write(a, chat, later);
     await shows(messagesOf(c, chat).getByText(later, { exact: true }), 60_000);
-    expect(await readsChat(blair, id), 'the server serves Blair nothing of the chat').toBe(false);
+    expect(await readsChat(b, id), 'the server serves Blair nothing of the chat').toBe(false);
     passed = true;
   } finally {
     await leave(opened, people, passed, team.id);

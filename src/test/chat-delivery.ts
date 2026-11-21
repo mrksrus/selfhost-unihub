@@ -191,7 +191,7 @@ function deliveryService() {
   };
   const members = (conversation: Conversation) => ({ members: conversation.people.map(person => ({
     user_id: person, name: names.get(person)!, email: `${person}@example.com`, role: conversation.managers?.includes(person) ? 'manager' : 'member', active: true,
-    reason: valid([person]).length ? null : 'has not opened UniHub since the update', online: null, read_seq: marksOf(conversation, person).read,
+    reason: valid([person]).length ? null : accounts.has(person) ? 'is not signed in to Chat on any device' : 'has not set up Chat yet', online: null, read_seq: marksOf(conversation, person).read,
     delivered_seq: marksOf(conversation, person).delivered, joined_seq: conversation.joined.get(person) ?? 0,
   })) });
   /** Someone leaves or is removed: refused from now on, without their marks and archive copies of the chat. */

@@ -11,7 +11,7 @@ import { createRequire } from 'node:module';
 import {
   PACKAGE, adb, appLockMessage, bridgeMessage, navigate, openApp, resetAppLock, shownNotifications, sleep, tapNative, windowIsSecure,
 } from '../support/android.mjs';
-import { ok, people, seededIds } from '../support/people.mjs';
+import { chatAccount, ok, people, seededIds } from '../support/people.mjs';
 
 const webPush = createRequire(new URL('../../../api/package.json', import.meta.url))('web-push');
 const sdk = Number(adb('shell', 'getprop', 'ro.build.version.sdk').trim());
@@ -56,8 +56,15 @@ test('a chat message shows its text at "full", the sender at "sender", nothing u
       if (Date.now() > enrolled) throw new Error('the app enrolled no chat device');
       await sleep(1000);
     }
+    // The administrator sets Chat up from the app's own session, which joins the app's chat device.
+    const setUp = await page.evaluate(async body => {
+      const { csrfToken } = await (await fetch('/api/auth/me')).json();
+      return (await fetch('/api/chat/account', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken }, body: JSON.stringify(body) })).status;
+    }, chatAccount());
+    assert.equal(setUp, 200, 'the administrator sets Chat up in the app');
 
     await ok(blair('POST', '/api/chat/devices', { preview: null, key_packages: [random(313)], last_resort: random(313) }), 'Blair\'s chat device');
+    await ok(blair('POST', '/api/chat/account', chatAccount()), 'Blair sets Chat up');
     const { id: conversation, current_group_id: previous } = (await ok(blair('POST', '/api/chat/conversations', { user_id: ids['admin@example.com'] }), 'conversation')).conversation;
     const { devices } = await ok(blair('GET', `/api/chat/conversations/${conversation}/devices`), 'devices');
     assert.ok(devices.some(item => item.user_id === ids['admin@example.com'] && item.preview), JSON.stringify(devices));

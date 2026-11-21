@@ -1,7 +1,7 @@
 import { test } from '@e2e-dev/web';
 import { expect } from 'e2e';
 import { runId } from '../support/env.ts';
-import { ok, signIn } from '../support/api.ts';
+import { ok, pageApi } from '../support/api.ts';
 import { onlyOn } from '../support/ui.ts';
 import { addPerson, createGroup } from '../organisation/organisation-helpers.ts';
 import { chatBrowser, chatRow, confirmRules, escape, leave, messagesOf, readsChat, shows, write } from './chat-helpers.ts';
@@ -69,7 +69,7 @@ test('a group chat of three: all write, a mention is marked for the one it names
     await b.getByRole('button', { name: 'Notifications: All messages', exact: true }).click();
     await b.getByRole('menuitemradio', { name: 'Mentions only', exact: true }).click();
     await shows(b.getByRole('button', { name: 'Notifications: Mentions only', exact: true }));
-    const blairsChat = ok(await (await signIn(blair.email))<{ conversations: { id: string; kind: string; notify: string }[] }>('GET', '/api/chat/conversations'), 'Blair\'s chats')
+    const blairsChat = ok(await pageApi<{ conversations: { id: string; kind: string; notify: string }[] }>(b, 'GET', '/api/chat/conversations'), 'Blair\'s chats')
       .conversations.find((entry) => entry.kind === 'group');
     expect(blairsChat?.notify, 'the server keeps Blair\'s choice').toBe('mentions');
 
@@ -93,7 +93,7 @@ test('a group chat of three: all write, a mention is marked for the one it names
     await write(a, chat, after);
     await shows(messagesOf(b, chat).getByText(after, { exact: true }), 60_000);
     await shows(messagesOf(b, chat).getByText(`${casey.name} left the chat`));
-    expect(await readsChat(casey, blairsChat!.id), 'the server serves Casey nothing of the chat').toBe(false);
+    expect(await readsChat(c, blairsChat!.id), 'the server serves Casey nothing of the chat').toBe(false);
     expect(await c.getByText(after, { exact: true }).count(), 'nothing new on Casey\'s screen').toBe(0);
     passed = true;
   } finally {

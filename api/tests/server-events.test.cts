@@ -142,6 +142,27 @@ test('closing the connection removes the stream and stops delivery', () => {
   assert.equal(bus.publish('u1', 'mail.changed', {}), 0);
 });
 
+test('presence follows whether the person holds a stream that takes chat events: opened, closed or revalidated', async () => {
+  const { bus, open } = hub();
+  const told: [string, boolean][] = [];
+  bus.onPresence((userId: string, present: boolean) => told.push([userId, present]));
+  let joined = false;
+  const revalidate = async (stream: FixtureValue) => {
+    stream.withheld = new Set(joined ? [] : ['chat']);
+    stream.modules = new Set(joined ? ['chat'] : []);
+    return true;
+  };
+  open('blair', { modules: ['chat'], withheld: ['chat'], revalidate });
+  assert.deepEqual(told, [], 'the page of a device waiting to join Chat');
+  const page = open('blair', { modules: ['chat'] });
+  assert.deepEqual(told, [['blair', true]], 'a page in Chat opened beside it');
+  page.res.emit('close');
+  assert.deepEqual(told.at(-1), ['blair', false], 'and closed again');
+  joined = true;
+  await bus.revalidateUser('blair');
+  assert.deepEqual(told, [['blair', true], ['blair', false], ['blair', true]], 'the waiting device joined');
+});
+
 test('concurrent streams are capped per user and globally', () => {
   const { bus, open } = hub({ maxPerUser: 5, maxTotal: 7 });
   for (let i = 0; i < 5; i++) assert.equal(open('u1').result.ok, true);

@@ -5,16 +5,17 @@ const test: typeof import('node:test') = require('node:test');
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
 const crypto = require('node:crypto') as typeof import('node:crypto');
 const { withTestDatabase } = require('./helpers/test-database.cts') as import('./helpers/test-database.cts').TestDatabaseHelpers;
-const { seedPeople, PEOPLE } = require('./helpers/people.cts') as import('./helpers/people.cts').PeopleHelpers;
+const { PEOPLE } = require('./helpers/people.cts') as import('./helpers/people.cts').PeopleHelpers;
+const { chatPeople } = require('./helpers/chat.cts') as import('./helpers/chat.cts').ChatHelpers;
 
 // Chat accounts, chat devices and key packages through the real request
-// handler with the shared people. Alex (two devices) and Blair have a
+// handler with the shared people, whose devices join Chat as a page does. Alex (two devices) and Blair have a
 // conversation; Casey, Drew and the administrator are in none. The server
 // handles opaque bytes, so synthetic random ones stand in for MLS key
 // packages and sealed keys.
 test('chat devices: enrolment, key packages, device lists, removal, the module and app lock gates, and the key backup', { skip: !process.env.MYSQL_TEST_HOST, timeout: 300000 }, async t => {
   const pool = await withTestDatabase(t);
-  const { ids, groups, clients, password, api } = await seedPeople(t, pool);
+  const { ids, groups, clients, password, api, join } = await chatPeople(t, pool);
   const { admin, manager: alex, member: blair, stranger: casey, revoked: drew } = clients;
   type Client = typeof admin;
   const call = async (client: Client, method: string, url: string, body?: unknown, status = 200): Promise<FixtureValue> => {
@@ -30,8 +31,13 @@ test('chat devices: enrolment, key packages, device lists, removal, the module a
   const pointKey = () => { const ecdh = crypto.createECDH('prime256v1'); ecdh.generateKeys(); return ecdh.getPublicKey().toString('base64url'); };
   const preview = () => ({ p256dh: pointKey(), auth: random(16) });
   const packages = (count: number) => Array.from({ length: count }, () => random(313));
-  const enrol = (client: Client, count: number, withPreview = true) =>
-    call(client, 'POST', '/api/chat/devices', { preview: withPreview ? preview() : null, key_packages: packages(count), last_resort: random(313) });
+  // Enrolled and joined, as a page does after the passphrase.
+  const enrol = async (client: Client, count: number, withPreview = true) => {
+    await call(client, 'POST', '/api/chat/devices', { preview: withPreview ? preview() : null, key_packages: packages(count), last_resort: random(313) });
+    await join(client);
+    return call(client, 'GET', '/api/chat/devices/current');
+  };
+  const backup = () => ({ format: 1, salt: random(16), rounds: 600000, wrapped: random(60) });
   const signIn = async (who: keyof typeof PEOPLE) => {
     const client = api.client();
     await call(client, 'POST', '/api/auth/signin', { email: PEOPLE[who].email, password, device: { key: random(32), kind: 'web' } });
@@ -48,6 +54,11 @@ test('chat devices: enrolment, key packages, device lists, removal, the module a
   const a2 = await enrol(alexPhone, 2, false);
   const b1 = await enrol(blair, 1);
   assert.deepEqual(await refused(casey, 'GET', '/api/chat/devices/current'), [404, 'CHAT_DEVICE_NOT_ENROLLED']);
+  // A device that joined before devices waited, of a person who never set Chat up, has no key backup to change.
+  await call(drew, 'POST', '/api/chat/devices', { preview: null, key_packages: packages(1), last_resort: random(313) });
+  await pool.execute('UPDATE chat_devices SET approved_at = UTC_TIMESTAMP() WHERE user_id = ?', [ids.revoked]);
+  assert.deepEqual(await call(drew, 'GET', '/api/chat/account'), { account: null });
+  assert.deepEqual(await refused(drew, 'PUT', '/api/chat/account/key-backup', { history_public: pointKey(), key_backup: backup(), current_password: password }), [404, 'CHAT_ACCOUNT_NOT_FOUND']);
   assert.deepEqual(await refused(casey, 'POST', '/api/chat/devices', { preview: null, key_packages: [], last_resort: random(313) }), [400, 'CHAT_KEY_PACKAGES_INVALID']);
   assert.deepEqual(await refused(casey, 'POST', '/api/chat/devices', { preview: null, key_packages: ['not base64!'], last_resort: random(313) }), [400, 'CHAT_KEY_PACKAGES_INVALID']);
   assert.deepEqual([(await deviceOf(alex)).chat, (await deviceOf(casey)).chat], [true, false], 'the device list marks a device that holds chat keys');
@@ -175,15 +186,12 @@ test('chat devices: enrolment, key packages, device lists, removal, the module a
   await call(admin, 'PUT', '/api/admin/policies', { current_password: password, values: { 'app_lock.required': [] } });
 
   // ── The key backup: only its person reads it; a new passphrase or key needs the account password ──
-  const backup = () => ({ format: 1, salt: random(16), rounds: 600000, wrapped: random(60) });
-  const history = pointKey();
-  assert.deepEqual(await call(blair, 'GET', '/api/chat/account'), { account: null });
-  const made = (await call(blair, 'POST', '/api/chat/account', { history_public: history, key_backup: backup() })).account;
-  assert.equal(made.history_public, history);
+  // Blair set Chat up when her first device joined.
+  const made = (await call(blair, 'GET', '/api/chat/account')).account;
+  const history = made.history_public as string;
   assert.deepEqual(await refused(blair, 'POST', '/api/chat/account', { history_public: history, key_backup: backup() }), [409, 'CHAT_ACCOUNT_EXISTS']);
   assert.deepEqual(await refused(blair, 'POST', '/api/chat/account', { history_public: history, key_backup: { ...backup(), rounds: 1000 } }), [400, 'CHAT_ACCOUNT_INVALID']);
-  for (const client of [alex, casey, admin]) assert.deepEqual(await call(client, 'GET', '/api/chat/account'), { account: null });
-  assert.deepEqual((await call(blair, 'GET', '/api/chat/account')).account, made);
+  for (const client of [alex, outsiders.stranger, admin]) assert.notEqual((await call(client, 'GET', '/api/chat/account')).account.history_public, history, 'each reads their own');
   const rewrap = { history_public: history, key_backup: backup() };
   assert.deepEqual(await refused(blair, 'PUT', '/api/chat/account/key-backup', rewrap), [400, 'PASSWORD_REQUIRED']);
   assert.deepEqual(await refused(blair, 'PUT', '/api/chat/account/key-backup', { ...rewrap, current_password: 'not the password' }), [403, 'PASSWORD_INCORRECT']);
@@ -191,7 +199,6 @@ test('chat devices: enrolment, key packages, device lists, removal, the module a
   assert.deepEqual((await call(blair, 'GET', '/api/chat/account')).account.key_backup, made.key_backup, 'a refused change changes nothing');
   assert.deepEqual((await call(blair, 'PUT', '/api/chat/account/key-backup', { ...rewrap, current_password: password })).account.key_backup, rewrap.key_backup);
   assert.deepEqual(await refused(blair, 'PUT', '/api/chat/account/key-backup', { history_public: pointKey(), key_backup: backup(), current_password: password }), [409, 'CHAT_KEY_CHANGED']);
-  assert.deepEqual(await refused(outsiders.stranger, 'PUT', '/api/chat/account/key-backup', { ...rewrap, current_password: password }), [404, 'CHAT_ACCOUNT_NOT_FOUND']);
   // A new key drops the copies only the old one opens.
   const message = crypto.randomUUID();
   await pool.execute("INSERT INTO chat_messages (id, conversation_id, seq, group_id, sender_user_id, ciphertext) VALUES (?, ?, 1, ?, ?, ?)", [message, conversation, group, ids.member, random(400)]);

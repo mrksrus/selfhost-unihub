@@ -247,6 +247,21 @@ test('a route that shows another module\'s data is locked with that module: a ma
     /unknown module notes/);
 });
 
+test('every chat route refuses a device that has not joined Chat before its handler, but the ones it needs to join', async (t) => {
+  const { run } = boundary(t, { userId: 'alex', answer: openGates([]) });
+  // The file upload is spooled before its handler runs.
+  const spool = require('node:fs').mkdtempSync(require('node:path').join(require('node:os').tmpdir(), 'routes-policy-'));
+  process.env.UPLOAD_SPOOL_ROOT = spool;
+  t.after(() => { delete process.env.UPLOAD_SPOOL_ROOT; require('node:fs').rmSync(spool, { recursive: true, force: true }); });
+  const open: string[] = [];
+  const chatRoutes = Object.keys(routes).filter(key => key.split(' ')[1].startsWith('/api/chat/'));
+  assert.ok(chatRoutes.length > 30, `${chatRoutes.length} chat routes`);
+  // The request carries no session token, so the guard finds no device in Chat; an open route's handler then fails on the database.
+  for (const key of chatRoutes) if ((await run(key)).body?.code !== 'CHAT_DEVICE_WAITING') open.push(key);
+  assert.deepEqual(open.sort(), ['GET /api/chat/account', 'GET /api/chat/devices/current', 'POST /api/chat/account', 'POST /api/chat/account/new-key', 'POST /api/chat/devices',
+    'POST /api/chat/devices/current/approval', 'POST /api/chat/devices/current/challenge', 'POST /api/chat/devices/current/key-packages', 'POST /api/chat/devices/current/proof']);
+});
+
 // 2FA required (0.30) for a person without it whose grace started `daysAgo`.
 const twoFactorGates = (daysAgo: number) => (sql: string) => {
   if (sql.startsWith('SELECT setting_value FROM user_settings')) return [];

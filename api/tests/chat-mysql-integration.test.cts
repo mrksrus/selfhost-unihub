@@ -18,12 +18,12 @@ test('chat: conversations, groups, messages in order, edits and deletes, marks a
   type Client = typeof admin;
   const rows = async (sql: string, params: unknown[] = []) => (await pool.query<RowDataPacket[]>(sql, params))[0];
 
-  // ── Alex starts a chat with Blair, who has not opened Chat since the update ──
+  // ── Alex starts a chat with Blair, who has not set Chat up yet ──
   const a1 = await enrol(alex);
   const started = await call(alex, 'POST', '/api/chat/conversations', { user_id: ids.member });
   const conversation = started.conversation.id as string;
   assert.deepEqual([started.created, started.conversation.peer.name, started.conversation.peer.can_write], [true, 'Blair Member', false]);
-  assert.match(started.conversation.peer.reason, /has not opened UniHub/);
+  assert.match(started.conversation.peer.reason, /has not set up Chat yet\./);
   assert.deepEqual(await refused(alex, 'POST', '/api/chat/conversations', { user_id: ids.manager }), [400, 'CHAT_SELF']);
   assert.deepEqual(await refused(alex, 'POST', '/api/chat/conversations', { user_id: crypto.randomUUID() }), [404, 'USER_NOT_FOUND']);
   const url = (path: string) => `/api/chat/conversations/${conversation}/${path}`;

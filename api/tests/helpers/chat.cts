@@ -8,8 +8,30 @@ const { seedPeople, PEOPLE } = require('./people.cts') as import('./people.cts')
 
 // The shared people with what the chat tests need: calls that check their
 // status, chat devices with synthetic key packages (the server handles opaque
-// bytes), synthetic messages, extra sign-ins and live streams.
+// bytes) that join Chat as a page does, synthetic messages, extra sign-ins
+// and live streams.
 const ANDROID_AGENT = 'Mozilla/5.0 (Linux; Android 16) UniHubAndroid/0.33.0 (33) UniHubBridge/3';
+
+/** A history key: a real P-256 key, so a test opens the server's challenges as a device would. */
+function historyKey() {
+  const key = crypto.createECDH('prime256v1');
+  key.generateKeys();
+  return key;
+}
+
+/** RFC 8291 opening, as the page's seal.ts does it, with the history key's fixed auth secret. */
+function openSealed(history: import('node:crypto').ECDH, sealed: string) {
+  const data = Buffer.from(sealed, 'base64url');
+  const salt = data.subarray(0, 16);
+  const sender = data.subarray(21, 21 + data[20]);
+  const record = data.subarray(21 + data[20]);
+  const hkdf = (key: Buffer, ikm: Buffer, info: Buffer, length: number) => Buffer.from(crypto.hkdfSync('sha256', ikm, key, info, length));
+  const ikm = hkdf(Buffer.alloc(16), history.computeSecret(sender), Buffer.concat([Buffer.from('WebPush: info\0'), history.getPublicKey(), sender]), 32);
+  const decipher = crypto.createDecipheriv('aes-128-gcm', hkdf(salt, ikm, Buffer.from('Content-Encoding: aes128gcm\0'), 16), hkdf(salt, ikm, Buffer.from('Content-Encoding: nonce\0'), 12));
+  decipher.setAuthTag(record.subarray(record.length - 16));
+  const padded = Buffer.concat([decipher.update(record.subarray(0, record.length - 16)), decipher.final()]);
+  return padded.subarray(0, padded.lastIndexOf(2)).toString('base64url');
+}
 
 async function chatPeople(t: TestContext, pool: Pool) {
   const people = await seedPeople(t, pool);
@@ -30,8 +52,32 @@ async function chatPeople(t: TestContext, pool: Pool) {
     const auth = random(16);
     return { ecdh, auth, keys: { p256dh: ecdh.generateKeys().toString('base64url'), auth } };
   };
-  const enrol = async (client: Client, preview: { p256dh: string; auth: string } | null = pushKeys().keys) =>
-    (await call(client, 'POST', '/api/chat/devices', { preview, key_packages: [random(313)], last_resort: random(313) })).chat_device_id as string;
+  // Each person's history key by its public half, as the passphrase would unwrap it on any of their devices.
+  const historyKeys = new Map<string, import('node:crypto').ECDH>();
+  const backup = () => ({ format: 1, salt: random(16), rounds: 600000, wrapped: random(60) });
+  /** Sets Chat up (the first passphrase) with this history key, which joins the client's enrolled device; answers the reply. */
+  const setUpChat = (client: Client, history = historyKey()) => {
+    historyKeys.set(history.getPublicKey().toString('base64url'), history);
+    return client.request('POST', '/api/chat/account', { history_public: history.getPublicKey().toString('base64url'), key_backup: backup() });
+  };
+  /** The opened challenge of the client's device, with the history key of its person's account. */
+  const challenge = async (client: Client) => {
+    const { account } = await call(client, 'GET', '/api/chat/account');
+    const history = historyKeys.get(account?.history_public);
+    assert.ok(history, 'an account this helper made');
+    return openSealed(history, (await call(client, 'POST', '/api/chat/devices/current/challenge')).sealed);
+  };
+  /** Joins the client's waiting device: the person's first device sets Chat up, a later one proves the history key, as after the passphrase. */
+  const join = async (client: Client) => {
+    if (!(await call(client, 'GET', '/api/chat/account')).account) return assert.equal((await setUpChat(client)).status, 200, 'sets Chat up');
+    await call(client, 'POST', '/api/chat/devices/current/proof', { value: await challenge(client) });
+  };
+  /** Enrols the client's device; it joins Chat unless `waiting`. */
+  const enrol = async (client: Client, preview: { p256dh: string; auth: string } | null = pushKeys().keys, { waiting = false } = {}) => {
+    const id = (await call(client, 'POST', '/api/chat/devices', { preview, key_packages: [random(313)], last_resort: random(313) })).chat_device_id as string;
+    if (!waiting) await join(client);
+    return id;
+  };
   const signIn = async (who: keyof typeof PEOPLE, agent: string | null = null) => {
     const client = people.api.client();
     const reply = await client.request('POST', '/api/auth/signin', { email: PEOPLE[who].email, password: people.password, device: { key: random(32), kind: agent ? 'android' : 'web' } },
@@ -98,7 +144,7 @@ async function chatPeople(t: TestContext, pool: Pool) {
     }
   };
 
-  return { ...people, call, refused, random, pushKeys, enrol, signIn, group, message, send, stream, until, ANDROID_AGENT };
+  return { ...people, call, refused, random, pushKeys, enrol, join, setUpChat, challenge, historyKey, backup, signIn, group, message, send, stream, until, ANDROID_AGENT };
 }
 
 export type ChatHelpers = { chatPeople: typeof chatPeople };
