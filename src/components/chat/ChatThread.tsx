@@ -93,7 +93,6 @@ export function ChatThread({ engine, conversation, draft, onDraft }: Props) {
   useEffect(() => {
     if (targetAt < 0) return;
     setShown(now => Math.max(now, Math.ceil((items!.length - targetAt) / PAGE) * PAGE));
-    atEnd.current = false;
     setFound({ id: target! });
     // Once per opening, and once the device holds the message; not whenever a message arrives, since the person may have scrolled on.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -101,6 +100,8 @@ export function ChatThread({ engine, conversation, draft, onDraft }: Props) {
   useEffect(() => {
     if (!found) return;
     document.getElementById(`chat-message-${found.id}`)?.scrollIntoView({ block: 'center' });
+    // Set here, after the scroll: the chat's own scroll to its end may still report itself and would otherwise send the next update back there.
+    atEnd.current = false;
     const timer = setTimeout(() => setFound(null), 2500);
     return () => clearTimeout(timer);
   }, [found]);
