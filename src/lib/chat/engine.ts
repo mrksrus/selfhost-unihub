@@ -299,7 +299,8 @@ class Engine implements ChatEngine {
 
   private readiness(): ChatReadiness {
     if (this.problem) return this.problem;
-    if (!this.loaded || this.account === undefined || (this.leading && !this.device) || !this.enrolled) return { state: 'starting' };
+    // Every tab shows what the store holds once a device was enrolled, so a screen is not torn down while the leading tab starts its device.
+    if (!this.loaded || this.account === undefined || !this.enrolled) return { state: 'starting' };
     if (!this.account) return { state: 'choose-passphrase' };
     if (this.waiting) return { state: 'waiting', approvers: this.approvers, code: this.code };
     return this.historyKey ? { state: 'ready' } : { state: 'enter-passphrase' };
