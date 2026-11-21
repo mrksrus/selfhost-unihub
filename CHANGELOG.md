@@ -14,6 +14,15 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
   who members may add to a group chat (the people of their own groups, or
   anyone), the largest file in a chat (50 MB unless changed), and after how
   many days chat messages are deleted (kept unless set).
+- **Chat files on the server.** Files sent in a chat are stored encrypted,
+  as the device sent them, and count toward their sender on Server ›
+  Storage ("Chat files"; a deleted person's under "former colleagues").
+  A reverse proxy in front of UniHub must allow request bodies of 101 MB.
+- **Chat retention waits 24 hours.** A shorter rule starts deleting 24 hours
+  after a chat's time got shorter, also when someone under a shorter rule
+  joins; before saving, the administrator sees how many messages and files
+  it would delete; only the owner can start it at once, with their password,
+  and that is written to the activity log.
 
 ## 0.33.0
 

@@ -638,6 +638,12 @@ async function policyOffByUser(executor: SqlExecutor = db): Promise<{ everyone: 
   return { everyone: new Set(policyOffOf([set.installation]).modules.keys()), byUser };
 }
 
+/** One key for every person from one read of the stored policies, for jobs that scan everyone: Everyone's value, and a person's. */
+async function policyForEveryone<K extends PolicyKey>(key: K, executor: SqlExecutor = db) {
+  const set = await loadRuleSet(executor);
+  return { everyone: effectivePolicy(key, [set.installation]), of: (userId: string) => effectivePolicy(key, levelsIn(set, userId)) };
+}
+
 /** Every policy key as it applies to the person, from one read of the stored policies. */
 async function resolvePolicies(userId: string, executor: SqlExecutor = db): Promise<{ [K in PolicyKey]: EffectivePolicy<K> }> {
   const levels = await loadPolicyLevels(executor, { userId });
@@ -1193,6 +1199,7 @@ export {
   withRequestPolicies,
   policyOff,
   policyOffByUser,
+  policyForEveryone,
   resolvePolicyValue,
   appLockRequirementFor,
   assertAllowed,

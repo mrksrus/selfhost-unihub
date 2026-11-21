@@ -18,6 +18,7 @@ import { attachmentsRoot, rawRoot } from './mail-storage';
 import { RECORDINGS_ROOT } from './recordings';
 import { BACKUPS_ROOT } from './export-jobs';
 import { photosRoot } from './contact-photos';
+import { chatFilesRoot } from './chat-attachments';
 import { isWorkerOwner } from './worker-owner';
 import {
   EncryptedWriter, TarWriter, InstanceBackupFormatError, INSTANCE_BACKUP_PART_BYTES, keyFingerprint, scanInstanceBackup,
@@ -83,9 +84,11 @@ function fileRoots() {
     { name: 'recordings', dir: path.resolve(RECORDINGS_ROOT) },
     { name: 'contact-photos', dir: path.resolve(photosRoot()) },
     { name: 'backups', dir: path.resolve(BACKUPS_ROOT) },
+    { name: 'chat', dir: chatFilesRoot() },
   ];
 }
-const ROOT_NAMES = ['attachments', 'mail-raw', 'recordings', 'contact-photos', 'backups'];
+// A backup without one of them (made before it existed) restores with that root empty.
+const ROOT_NAMES = ['attachments', 'mail-raw', 'recordings', 'contact-photos', 'backups', 'chat'];
 
 // What a backup leaves out of a root: only the work in progress of the app's
 // own writers, by the exact names they give it, which a restore must not

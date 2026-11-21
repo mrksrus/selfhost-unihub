@@ -41,6 +41,8 @@ const { TABLE_DECLARATIONS, BOOK_ROWS, CALENDAR_ROWS } = require(path.join(apiRo
 const CHAT_TABLES = Object.keys(TABLE_DECLARATIONS).filter(table => TABLE_DECLARATIONS[table].module === 'chat').sort();
 // Where the installation keeps a shared book's photos (services/contact-photos.ts photoPath).
 const bookPhotos = path.resolve(process.env.CONTACT_PHOTOS_ROOT || '/app/uploads/contact-photos', 'books');
+// Where chat files are kept (services/chat-attachments.ts).
+const chatFiles = path.resolve(process.env.CHAT_FILES_ROOT || '/app/uploads/chat');
 
 // BIGINTs arrive as strings (bigNumberStrings); a whole number past 2^53 here would hash with lost digits.
 const hash = (value: unknown) => crypto.createHash('sha256').update(JSON.stringify(value, (_key, item) => {
@@ -157,9 +159,11 @@ async function main() {
         [teamMessage, teamChat, teamGroup, admin, adminChat, bytes(402)]);
       await db.execute('INSERT INTO chat_attachments (id, conversation_id, message_id, uploader_user_id, size_bytes, storage_path) VALUES (?, ?, ?, ?, 4096, ?)',
         [file, teamChat, teamMessage, admin, `chat/${teamChat}/${file}`]);
+      fs.mkdirSync(path.join(chatFiles, teamChat), { recursive: true });
+      fs.writeFileSync(path.join(chatFiles, teamChat, file), crypto.randomBytes(4096));
       console.log(JSON.stringify({ seeded: ['setting_policies', 'instance_backups', 'mail_engine_migration_progress', 'org_groups', 'org_group_members', 'invites', 'login_attempts',
         'address_books', 'grants', 'directory_entries', ...BOOK_ROWS.tables.map(table => `${table} of books`), 'photo files of books',
-        ...CALENDAR_ROWS.tables.map(table => `${table} of organisation calendars`), 'calendar_series', 'calendar_views', 'calendar_reminders', 'calendar offers', ...CHAT_TABLES] }));
+        ...CALENDAR_ROWS.tables.map(table => `${table} of organisation calendars`), 'calendar_series', 'calendar_views', 'calendar_reminders', 'calendar offers', ...CHAT_TABLES, 'chat files'] }));
       return;
     }
     if (process.env.DRILL_MODE !== 'report') throw new Error('DRILL_MODE is seed or report');
@@ -190,6 +194,8 @@ async function main() {
     for (const table of CHAT_TABLES) installation[table] ??= await report(table, 'user');
     const files = fs.existsSync(bookPhotos) ? (fs.readdirSync(bookPhotos, { recursive: true }) as string[]).filter(name => fs.statSync(path.join(bookPhotos, name)).isFile()).sort() : [];
     installation['photo files of books'] = { owner: 'organisation', rows: files.map(name => ({ key: name, columns: { content: hash(fs.readFileSync(path.join(bookPhotos, name))) }, plain: {} })) };
+    const chatNames = fs.existsSync(chatFiles) ? (fs.readdirSync(chatFiles, { recursive: true }) as string[]).filter(name => fs.statSync(path.join(chatFiles, name)).isFile()).sort() : [];
+    installation['chat files'] = { owner: 'organisation', rows: chatNames.map(name => ({ key: name, columns: { content: hash(fs.readFileSync(path.join(chatFiles, name))) }, plain: {} })) };
     const users = (await rows('SELECT * FROM users ORDER BY id')).map(row => ({ id: row.id, email: row.email, role: row.role, is_active: Number(row.is_active), row: hash(row) }));
     const mailAccounts = (await rows('SELECT * FROM mail_accounts ORDER BY id')).map(row => {
       const kept = Object.fromEntries(Object.entries(row).filter(([key]) => !ACCOUNT_RESETS.includes(key)));

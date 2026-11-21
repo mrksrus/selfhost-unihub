@@ -89,7 +89,7 @@ async function startTestApi(t: TestContext) {
         if (value && !/Expires=Thu, 01 Jan 1970/.test(line)) cookies.set(name, value); else cookies.delete(name);
       }
       const bytes = Buffer.from(await response.arrayBuffer());
-      const binary = /^(image|audio|video)\//.test(response.headers.get('content-type') || '');
+      const binary = /^(image|audio|video)\/|^application\/octet-stream/.test(response.headers.get('content-type') || '');
       const text = binary ? '' : bytes.toString('utf8');
       const parsed = text ? JSON.parse(text) : {};
       if (typeof parsed?.csrfToken === 'string') csrfToken = parsed.csrfToken;

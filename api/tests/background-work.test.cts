@@ -44,6 +44,7 @@ function deps(timers: ReturnType<typeof fakeTimers>) {
       purgeBin: async () => { calls.push('bin'); return { items: 0, merges: 0 }; },
       sweepContactPhotos: async () => { calls.push('contact photos'); return 0; },
       sweepContactImports: async () => { calls.push('contact imports'); return { expired: 0, orphans: 0 }; },
+      runChatRetention: async () => { calls.push('chat retention'); return { messages: 0, files: 0, welcomes: 0, unsent: 0, chats: 0 }; },
       isWorkerOwner: () => true,
       stopCalendarWork: () => { calls.push('stop calendar work'); },
       recoverInstanceBackups: async () => { calls.push('recover instance backups'); },
@@ -59,13 +60,13 @@ async function quietly<T>(work: () => Promise<T>) {
   try { return await work(); } finally { console.log = original; }
 }
 
-test('background work starts the seventeen timers and stop clears every one of them', async () => {
+test('background work starts the eighteen timers and stop clears every one of them', async () => {
   const timers = fakeTimers();
   const { overrides, calls, idle } = deps(timers);
   const work = startBackgroundWork(overrides);
   await quietly(() => work.ready);
   assert.deepEqual([...timers.intervals.values()].map(timer => timer.ms).sort((a, b) => a - b),
-    [1000, 15000, 15000, 30000, 30000, 30000, 60000, 60000, 60000, 60000, 3600000, 3600000, 3600000, 3600000, 3600000, 3600000, 86400000]);
+    [1000, 15000, 15000, 30000, 30000, 30000, 60000, 60000, 60000, 60000, 3600000, 3600000, 3600000, 3600000, 3600000, 3600000, 3600000, 86400000]);
   // The hourly cleanup expires uploaded restore archives.
   await quietly(async () => { for (const { fn, ms } of timers.intervals.values()) if (ms === 3600000) fn(); await new Promise(resolve => setTimeout(resolve, 10)); });
   assert.ok(calls.includes('restore uploads'));

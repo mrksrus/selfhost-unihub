@@ -7,6 +7,7 @@ import { passwordMinimum } from '../services/sign-in-policies';
 import { attachmentsRoot, rawRoot } from '../services/mail-storage';
 import { RECORDINGS_ROOT } from '../services/recordings';
 import { BACKUPS_ROOT } from '../services/export-jobs';
+import { chatFilesRoot } from '../services/chat-attachments';
 import { realtime } from '../services/realtime';
 import { hintEveryone } from '../services/address-books';
 import { endUserSessions, lockOwnSession } from '../services/sessions';
@@ -181,6 +182,8 @@ async function buildAdminStorageOverview() {
     rawMailFilesByUser,
     recordingFilesByUser,
     exportFilesByUser,
+    chatFiles,
+    [chatRows],
   ] = await Promise.all([
     db.execute<RowDataPacket[]>('SELECT COUNT(*) AS total, SUM(is_active = TRUE) AS active FROM users'),
     db.execute<RowDataPacket[]>('SELECT id, email, full_name, is_active FROM users ORDER BY created_at DESC'),
@@ -199,7 +202,12 @@ async function buildAdminStorageOverview() {
     sumFilesByImmediateChild(rawRoot()),
     sumFilesByImmediateChild(RECORDINGS_ROOT, new Set(['.tmp'])),
     sumFilesByImmediateChild(BACKUPS_ROOT),
+    sumFilesUnder(chatFilesRoot()),
+    // Chat files belong to their chat; each counts toward its uploader, a deleted one's under former colleagues (uploader emptied).
+    db.execute<RowDataPacket[]>('SELECT uploader_user_id, COUNT(*) AS files, COALESCE(SUM(size_bytes), 0) AS bytes FROM chat_attachments GROUP BY uploader_user_id'),
   ]);
+  const chatByUser = new Map(chatRows.filter(row => row.uploader_user_id).map(row => [String(row.uploader_user_id), { bytes: numericValue(row.bytes), files: numericValue(row.files) }]));
+  const former = chatRows.find(row => !row.uploader_user_id);
 
   const sections = [
     {
@@ -242,6 +250,17 @@ async function buildAdminStorageOverview() {
       path_exists: exportFiles.exists,
       scan_error: exportFiles.error,
     },
+    {
+      key: 'chat_files',
+      label: 'Chat files',
+      bytes: chatFiles.bytes,
+      files: chatFiles.files,
+      tracked_bytes: chatRows.reduce((sum, row) => sum + numericValue(row.bytes), 0),
+      tracked_items: chatRows.reduce((sum, row) => sum + numericValue(row.files), 0),
+      former_colleagues: { bytes: numericValue(former?.bytes), files: numericValue(former?.files) },
+      path_exists: chatFiles.exists,
+      scan_error: chatFiles.error,
+    },
   ];
   const usersById = new Map((users || []).map(row => [String(row.id), row]));
   const userIds = new Set([
@@ -250,6 +269,7 @@ async function buildAdminStorageOverview() {
     ...rawMailFilesByUser.keys(),
     ...recordingFilesByUser.keys(),
     ...exportFilesByUser.keys(),
+    ...chatByUser.keys(),
   ]);
 
   const perUser = Array.from(userIds).map((userId) => {
@@ -263,6 +283,7 @@ async function buildAdminStorageOverview() {
       mail_raw: mailRaw,
       recordings,
       exports,
+      chat_files: getUserStorageSection(chatByUser, userId),
     };
     const bytes = Object.values(userSections).reduce((sum, section) => sum + section.bytes, 0);
     const files = Object.values(userSections).reduce((sum, section) => sum + section.files, 0);

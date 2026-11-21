@@ -18,11 +18,11 @@ const scratch = path.join(os.tmpdir(), `unihub-instance-backup-${crypto.randomUU
 const uploads = path.join(scratch, 'uploads');
 const rootDirs = {
   attachments: path.join(uploads, 'attachments'), 'mail-raw': path.join(uploads, 'mail-raw'), recordings: path.join(uploads, 'recordings'),
-  'contact-photos': path.join(uploads, 'contact-photos'), backups: path.join(uploads, 'backups'),
+  'contact-photos': path.join(uploads, 'contact-photos'), backups: path.join(uploads, 'backups'), chat: path.join(uploads, 'chat'),
 };
 Object.assign(process.env, {
   MAIL_ATTACHMENT_UPLOAD_ROOT: rootDirs.attachments, MAIL_RAW_STORAGE_ROOT: rootDirs['mail-raw'], RECORDINGS_ROOT: rootDirs.recordings,
-  CONTACT_PHOTOS_ROOT: rootDirs['contact-photos'], BACKUP_ARCHIVES_ROOT: rootDirs.backups, UPLOAD_SPOOL_ROOT: path.join(uploads, 'spool'),
+  CONTACT_PHOTOS_ROOT: rootDirs['contact-photos'], BACKUP_ARCHIVES_ROOT: rootDirs.backups, CHAT_FILES_ROOT: rootDirs.chat, UPLOAD_SPOOL_ROOT: path.join(uploads, 'spool'),
   CONTACT_IMPORTS_ROOT: path.join(uploads, 'contacts', 'imports'),
 });
 if (process.env.MYSQL_TEST_HOST) {
@@ -138,6 +138,8 @@ test('the instance backup copies the installation, keeps only verified runs, ref
     write(path.join(rootDirs.attachments, users.alex, 'a'.repeat(150) + '-attachment.bin'), crypto.randomBytes(5000)),
     write(path.join(rootDirs['contact-photos'], users.alex, `${'c'.repeat(64)}.jpg`), crypto.randomBytes(2000)),
     write(path.join(rootDirs.backups, users.alex, `${crypto.randomUUID()}.unihub-backup`), crypto.randomBytes(70_000)),
+    // A chat file's ciphertext, under its conversation.
+    write(path.join(rootDirs.chat, uuid(), uuid()), crypto.randomBytes(9000)),
     write(path.join(rootDirs['mail-raw'], users.blair, 'leaves-during-copy.eml'), 'Subject: Removed after the dump\r\n\r\n'),
   ];
   const removedDuringCopy = included[included.length - 1];

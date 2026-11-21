@@ -148,6 +148,8 @@ export interface ChatPeer {
   /** null once the person was deleted ("Deleted person"). */
   user_id: string | null;
   name: string;
+  /** false while they are deactivated or once deleted: their messages show the name they carry, marked as a former colleague. */
+  active: boolean;
   /** Whether the caller can write to them now; false while they are deactivated, deleted, have Chat off or have no chat device yet. */
   can_write: boolean;
   /** Why not, in plain words; null while they can be written to. */

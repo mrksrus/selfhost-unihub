@@ -185,7 +185,7 @@ test('chat: conversations, groups, messages in order, edits and deletes, marks a
   const kept = (await call(alex, 'GET', `/api/chat/conversations/${withDrew}/messages`)).messages;
   assert.deepEqual(kept.map((item: FixtureValue) => [item.id, item.ciphertext, item.sender_user_id, item.sender_chat_device_id]), [[fromDrew.id, fromDrew.ciphertext, null, null]],
     'the conversation stays for Alex, with the sender empty');
-  assert.deepEqual((await listed(alex, withDrew)).peer, { user_id: null, name: 'Deleted person', can_write: false, reason: 'This person was deleted.', online: null });
+  assert.deepEqual((await listed(alex, withDrew)).peer, { user_id: null, name: 'Deleted person', active: false, can_write: false, reason: 'This person was deleted.', online: null });
   assert.deepEqual(await refused(alex, 'POST', `/api/chat/conversations/${withDrew}/messages`, message(g4)), [403, 'CHAT_UNAVAILABLE']);
   const reopened = await call(alex, 'POST', '/api/chat/conversations', { user_id: ids.revoked });
   assert.deepEqual([reopened.created, reopened.conversation.id], [false, withDrew], 'starting it again opens the same one');

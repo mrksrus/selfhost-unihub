@@ -24,12 +24,13 @@ import { photosHeldForUndo } from './contact-merge';
 import { purgeBin } from './bin';
 import { sweepContactPhotos } from './contact-photos';
 import { sweepContactImports } from './contacts-import';
+import { runChatRetention } from './chat-retention';
 import { isModuleEnabled } from './module-settings';
 import { isWorkerOwner } from './worker-owner';
 import { fileRemovalGate } from './file-removal-gate';
 import { log } from '../log';
 
-// The periodic work of this API process: the sixteen timers listed in
+// The periodic work of this API process: the eighteen timers listed in
 // docs/ARCHITECTURE.md "Scheduled Jobs", the startup resets they rely on and
 // the mail IDLE supervisor they start. app.ts starts it once after the server
 // listens and stops it on shutdown. UniHub runs one API process; everything
@@ -70,6 +71,7 @@ interface BackgroundWorkDeps {
   purgeBin: (active: () => boolean) => Promise<{ items: number; merges: number }>;
   sweepContactPhotos: (active: () => boolean) => Promise<number>;
   sweepContactImports: () => Promise<{ expired: number; orphans: number }>;
+  runChatRetention: typeof runChatRetention;
   isWorkerOwner: () => boolean;
   recoverInstanceBackups: () => Promise<unknown>;
   runDueInstanceBackup: () => Promise<unknown>;
@@ -102,6 +104,7 @@ function defaultDeps(): BackgroundWorkDeps {
     purgeBin: active => purgeBin({ active }),
     sweepContactPhotos: active => sweepContactPhotos({ active, moduleEnabled: userId => isModuleEnabled(userId, 'contacts'), heldForUndo: userId => photosHeldForUndo(userId) }),
     sweepContactImports: () => sweepContactImports(),
+    runChatRetention: () => runChatRetention(),
     isWorkerOwner,
     recoverInstanceBackups: () => (require('./instance-backup') as typeof import('./instance-backup')).recoverInterruptedInstanceBackups(),
     runDueInstanceBackup: () => (require('./instance-backup') as typeof import('./instance-backup')).runDueInstanceBackup(),
@@ -280,6 +283,12 @@ async function runStartup(deps: BackgroundWorkDeps, state: { stopped: boolean },
   every('CLEANUP', 60 * 60 * 1000, async () => {
     const { expired, orphans } = await deps.sweepContactImports();
     if (expired > 0 || orphans > 0) log.info('CLEANUP', 'Deleted expired contact imports', { expired, orphans });
+  });
+  // Chat retention, Welcomes no longer needed, chat uploads never sent and
+  // chats nobody is in (chat-retention.ts); its file removals queue at the gate.
+  every('CLEANUP', 60 * 60 * 1000, async () => {
+    const done = await deps.runChatRetention();
+    if (Object.values(done).some(count => count > 0)) log.info('CLEANUP', 'Chat retention', done);
   });
   const photoSweep = every('CLEANUP', CONTACT_PHOTO_SWEEP_INTERVAL_MS, async () => {
     const removed = await deps.sweepContactPhotos(removing);

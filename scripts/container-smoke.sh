@@ -197,6 +197,9 @@ if (bytes.length !== version.android.size || createHash('sha256').update(bytes).
 console.log(`Android app ${version.android.versionName} offered and served (${bytes.length} bytes)`);
 NODE
 UNIHUB_SMOKE_CONTAINER="$container_name" node "$script_dir/container-smoke.mts"
+# Anywhere but a chat file's upload, Nginx refuses a 60 MB body (40 MB under /api/).
+[[ "$(head -c 62914560 /dev/zero | curl --silent --output /dev/null --write-out '%{http_code}' -H 'Content-Type: application/octet-stream' \
+  --data-binary @- http://localhost/api/auth/signin)" == 413 ]] || { echo 'A 60 MB body outside the chat upload was not refused by Nginx.' >&2; exit 1; }
 docker exec -i -u 10001:10001 -e UNIHUB_API_ROOT=/app/api "$container_name" node --input-type=commonjs-typescript < "$script_dir/../api/tests/helpers/audio-conversion-smoke.cts"
 # Contact photos: sharp's prebuilt musl libvips loads, AVIF decodes, and the
 # image's FFmpeg turns a HEIC with an irot transform into an upright picture.

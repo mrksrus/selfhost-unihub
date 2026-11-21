@@ -19,6 +19,7 @@ import { isModuleEnabled } from './module-settings';
 import { resolvePolicy, settingValues } from './settings';
 import { publishChatChanged, publishChatPresence, realtime } from './realtime';
 import { enqueueFromSource, processNotificationJobs } from './notifications';
+import { deleteMessageFiles, tieAttachments } from './chat-attachments';
 
 // Conversations, groups, messages, marks, the personal archive and presence.
 // The server stores and hands out opaque bytes; what it decides is
@@ -90,16 +91,16 @@ const JOINED = "IF(me.user_id IS NULL AND c.kind = 'group', c.last_seq, COALESCE
 
 // --- The other person -------------------------------------------------------------------
 
-interface PeerState { user_id: string | null; name: string; reason: string | null; ready: boolean }
+interface PeerState { user_id: string | null; name: string; reason: string | null; ready: boolean; active: boolean }
 
 /** Whether a person can be written to: active, Chat on, and (for a message) a chat device. ready leaves out the device. */
 async function peerState(peerId: string | null, executor: SqlExecutor = db): Promise<PeerState> {
   const [[user]] = await executor.execute<RowDataPacket[]>("SELECT COALESCE(NULLIF(full_name, ''), email) AS name, is_active FROM users WHERE id = ?", [peerId]);
-  if (!peerId || !user) return { user_id: null, name: 'Deleted person', reason: 'This person was deleted.', ready: false };
+  if (!peerId || !user) return { user_id: null, name: 'Deleted person', reason: 'This person was deleted.', ready: false, active: false };
   const name = String(user.name);
   const off = !user.is_active ? `${name} is deactivated.` : !await isModuleEnabled(peerId!, 'chat', executor) ? `Chat is off for ${name}.` : null;
   const reason = off ?? ((await validDevices([peerId!], executor)).length ? null : `${name} has not opened UniHub since the update.`);
-  return { user_id: peerId, name, reason, ready: !off };
+  return { user_id: peerId, name, reason, ready: !off, active: !!user.is_active };
 }
 
 // --- Conversations ----------------------------------------------------------------------
@@ -148,7 +149,7 @@ async function describeConversations(userId: string, ids: readonly string[], exe
     const theirs = peer.user_id ? await chatSettings(peer.user_id, executor) : null;
     conversations.push({
       ...base, kind: 'direct',
-      peer: { user_id: peer.user_id, name: peer.name, can_write: !peer.reason, reason: peer.reason,
+      peer: { user_id: peer.user_id, name: peer.name, active: peer.active, can_write: !peer.reason, reason: peer.reason,
         online: mine.chat_presence && theirs?.chat_presence ? realtime.isPresent(peer.user_id) : null } satisfies ChatPeer,
       peer_read_seq: mine.chat_read_receipts && theirs?.chat_read_receipts ? Number(row.peer_read_seq) : null,
       peer_delivered_seq: Number(row.peer_delivered_seq),
@@ -543,6 +544,7 @@ async function postMessage(userId: string, token: string | null, conversationId:
     await cx.execute(`INSERT INTO chat_messages (id, conversation_id, seq, group_id, sender_user_id, sender_chat_device_id, kind, replaces, format, ciphertext)
       VALUES (?, ?, ?, ?, ?, ?, 'message', ?, ?, ?)`, [message.id, conversationId, seq, message.groupId, userId, own, message.replaces, message.format, message.ciphertext]);
     await cx.execute('INSERT INTO chat_archive (user_id, message_id, sealed) VALUES (?, ?, ?)', [userId, message.id, message.archive]);
+    await tieAttachments(cx, conversationId, userId, message.id, !!message.replaces, object(input).attachments);
     // An edit is not news. Each person's choice for the chat is applied when it is sent (notificationSource).
     for (const person of message.replaces ? [] : people.filter(id => id !== userId)) {
       const previews = Object.fromEntries(devices.filter(device => device.user_id === person && message.previews.has(device.chat_device_id))
@@ -613,6 +615,7 @@ async function deleteMessage(userId: string, token: string | null, messageId: st
       VALUES (?, ?, ?, ?, ?, ?, 'delete', ?, NULL)`, [crypto.randomUUID(), conversationId, next, conversation.current_group_id ?? message.group_id, userId, own, messageId]);
     return next;
   });
+  await deleteMessageFiles(messageId);
   publishChatChanged(await conversationPeople(conversationId), conversationId);
   return { deleted: true as const, seq };
 }

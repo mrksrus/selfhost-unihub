@@ -143,7 +143,9 @@ copy.
 **What is in the file.** Every table, including users, policies, the
 activity log, the push identity and the runs of `instance_backups`, and the
 stored files: mail attachments and originals, recordings, contact photos and
-the account backups kept on the server, under any name a person gave them
+the account backups kept on the server, chat files (the root `chat`, as
+ciphertext; a backup made before 0.34.0 has no such root and restores with
+it empty), under any name a person gave them
 (an attachment called `report.tmp` is data). Not in it: the app's own work in
 progress, by the exact names its writers use (a raw message being written,
 a recording being converted or uploaded in chunks, a contact photo being
@@ -369,6 +371,16 @@ is in the backup. The drill seeds two people with chat accounts, devices,
 key packages, a chat with its grants and marks, a group with its Welcome,
 messages (one edited, one deleted) and archive copies, compares every chat
 table and requires every chat device to come back removed.
+
+0.34.0 adds `chat_attachments` (upgrade step 32), also in no personal
+backup, and the instance backup's file root `chat`. A chat file is
+removed after its row, through the file removal gate: with its message,
+by retention and when an upload was never sent. Retention
+([Chat](CHAT.md#files-and-retention-server)) deletes messages, copies and
+files after its 24-hour wait even while deleting for good is forbidden;
+instance backups made before still hold them as ciphertext until they are
+removed. The drill also seeds a group chat with a retention and a file, and
+compares the file's bytes.
 
 0.28.0 writes data schema 7: a backup holds data by class (local,
 configuration, Download-mode mail by choice or policy), never a provider's

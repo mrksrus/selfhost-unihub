@@ -394,6 +394,61 @@ most 100 people (`400 CHAT_TOO_MANY_PEOPLE`). Its people are its grants:
 | `PUT /api/chat/conversations/:id/notify` | `all`, `mentions` or `none` for the caller |
 | `GET /api/chat/candidates?q=` | People within reach and the groups the caller may follow |
 
+## Files and retention (server)
+
+**Files.** The device encrypts a file (and a picture's small preview, a
+second file) and uploads the ciphertext, one request per file of at most
+101 MiB; the server checks the uploader's `chat.attachment_max_mb` (`413
+CHAT_FILE_TOO_LARGE` with the limit) and stores it under
+`chat/<conversation>/<id>` of the uploads volume. The post names up to 10 of
+the sender's uploads to that chat that no message uses yet (`400
+CHAT_ATTACHMENT_INVALID` otherwise; an edit names none). A file is served,
+as stored and never cached, to a member of the chat who reads its message
+(not to someone who joined after it), and to its uploader before it is
+sent. It goes with its message; an upload no message names goes after a
+day. A file belongs to its chat: deleting the uploader keeps it for the
+others, and Server › Storage counts it toward its uploader (a deleted
+one's under "former colleagues"). The server sees each file's size, chat
+and uploader, never its name, type or content. A reverse proxy in front
+must let a 101 MiB body through to this route
+([Installation](INSTALLATION.md#1-prepare-your-server-and-browser-address)).
+
+**Retention.** `chat.retention_days` deletes messages older than it. A chat
+follows the shortest value among its active people; each conversation
+answers `retention_days` and `retention_from` (when deleting under it
+starts). The hourly job works the value out again: a shorter one starts 24
+hours later, whatever made it shorter (a policy, or someone under a shorter
+rule joining a group or the chat); a longer one, or none, holds at once and
+never ends a wait early. Then it deletes, in the chats whose moment has
+passed, the messages sent before the value (an edit does not renew one)
+with their edits, deletion entries, archive copies, files and queued
+notifications. Retention deletes even while `bin.delete` forbids deleting
+for good. Before saving a shorter value an administrator sees what it would
+delete (`GET /api/admin/chat/retention-preview`); a policy is saved with the
+password and written to the activity log, as every policy is. Only the
+owner starts the waiting chats at once, with their password (`POST
+/api/admin/chat/retention/apply-now`, `admin.chat_retention_applied`);
+"Undo" is saving the earlier value within the 24 hours. Devices delete their
+own copies when next opened. Instance backups made before keep the deleted
+messages, as ciphertext, for as long as they are kept.
+
+The same job clears the Welcome of a group replaced 30 days ago, deletes
+uploads never sent, and deletes a chat nobody is in any more (not one that
+follows a group), with everything it holds; while deleting for good is
+forbidden for everyone, such a chat stays until retention has emptied it.
+
+**People who leave.** A deactivated person stays in their chats and comes
+back when activated; `active` is false on their member entry, their
+messages' sender and, in a direct chat, the `peer`. A deleted person's
+messages and files stay, with the sender and the uploader emptied.
+
+| Route | What it does |
+| --- | --- |
+| `POST /api/chat/conversations/:id/attachments?id=` | Upload a file's ciphertext (body kind `upload`) |
+| `GET /api/chat/attachments/:id` | The ciphertext, `Cache-Control: no-store` |
+| `GET /api/admin/chat/retention-preview?days=&group_id=` | Messages, files and chats a shorter value would delete |
+| `POST /api/admin/chat/retention/apply-now` | The owner ends the waits, with the password |
+
 ## Reference
 
 ### Routes
@@ -460,6 +515,7 @@ backup carries each as stored. The manifest is `api/src/modules/chat.ts`.
 | `chat_group_devices` | Which chat devices are in which group, and whether they joined | organisation | installation |
 | `chat_messages` | Messages, edits and deletions, ciphertext only | organisation | ciphertext |
 | `chat_archive` | Each person's sealed archive copies | person | ciphertext |
+| `chat_attachments` | A file's chat, message, uploader and size; its ciphertext under `chat/` (step 32) | organisation | ciphertext |
 
 Membership of a chat is two grants of the access kind `conversation`. A
 removed chat device stays as a row without a device while a current group

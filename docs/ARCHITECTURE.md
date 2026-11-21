@@ -496,7 +496,7 @@ released its lock.
 `api/src/services/background-work.ts` holds the periodic work of the API
 process. `app.ts` starts it once after the server listens and stops it on
 shutdown, before the event streams close. Each timer skips a tick while its
-previous run is still going (`services/timers.ts`). These sixteen run:
+previous run is still going (`services/timers.ts`). These eighteen run:
 
 | Interval | Job |
 | --- | --- |
@@ -516,6 +516,7 @@ previous run is still going (`services/timers.ts`). These sixteen run:
 | 1 hour | Delete uploaded restore archives seven days after their upload, except while a restore validates or runs from one (`backup-restore-jobs.ts`) |
 | 1 hour | Delete contacts merged away more than 30 days ago and their merge records (`contact-merge.ts`); skips people with a running contacts restore or the Contacts module off |
 | 1 hour | Delete contact imports past their 24 hours and their staged files (`contacts-import.ts`); skips people with a running contacts restore or the Contacts module off |
+| 1 hour | Chat retention and its 24-hour wait, Welcomes of groups replaced 30 days ago, chat uploads never sent and chats nobody is in (`chat-retention.ts`) |
 | 1 day | Delete contact photo files older than an hour that no contact, bin item or merge undo refers to (`contact-photos.ts`), also 10 minutes after a start; skips the same people |
 
 The two contact sweeps above skip their turn while an instance backup copies
