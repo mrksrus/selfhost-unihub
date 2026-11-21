@@ -65,6 +65,7 @@ test('chat retention: the shortest value, the 24-hour wait, undo, the owner skip
   assert.deepEqual([(await policy({ 'chat.retention_days': 90 }, groups.support, {})).status], [400]);
   assert.deepEqual(await preview(90, groups.support), { messages: 1, files: 1, conversations: 1 }, 'only the old message of Support, with its file');
   await saved({ 'chat.retention_days': 90 }, groups.support);
+  assert.equal((await call(admin, 'GET', '/api/chat/candidates?q=')).people.find((person: FixtureValue) => person.id === ids.member).retention_days, 90, 'whoever adds Blair to a chat is told her rule');
   assert.equal((await rows("SELECT COUNT(*) AS n FROM audit_log WHERE action = 'admin.policy_changed' AND details LIKE '%chat.retention_days%'"))[0].n, 1);
 
   // ── Nothing goes in the 24 hours after it got shorter; then the old rows, copies and file go, nothing younger ──

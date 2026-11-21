@@ -398,7 +398,7 @@ async function chatCandidates(userId: string, query: string): Promise<ChatCandid
   const wide = admin || (await resolvePolicy(userId, 'chat.reach')).value === 'organisation';
   const people = [];
   for (const person of await peopleMatching(query, wide ? {} : { sharingGroupsWith: userId })) {
-    if (person.id !== userId && await isModuleEnabled(person.id, 'chat')) people.push(person);
+    if (person.id !== userId && await isModuleEnabled(person.id, 'chat')) people.push({ ...person, retention_days: (await resolvePolicy(person.id, 'chat.retention_days')).value });
   }
   const needle = query.trim().toLowerCase();
   const groups = (admin ? await listGroups() : (await groupsOf(userId)).filter(group => group.role === 'manager'))

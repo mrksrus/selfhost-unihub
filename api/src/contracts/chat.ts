@@ -323,7 +323,8 @@ export interface ChatNotifyResponse { notify: ChatNotify }
  * may follow everyone.
  */
 export interface ChatCandidatesResponse {
-  people: { id: string; email: string; full_name: string | null }[];
+  /** retention_days: the person's own chat retention; adding someone under a shorter one than the chat's shortens the chat for everyone. */
+  people: { id: string; email: string; full_name: string | null; retention_days: ChatRetentionDays | null }[];
   groups: { id: string; name: string }[];
   everyone: boolean;
 }

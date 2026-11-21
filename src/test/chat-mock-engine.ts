@@ -238,7 +238,7 @@ export const CHAT_MEMBERS: Record<string, ChatMember[]> = {
 };
 
 export const CHAT_CANDIDATES: ChatCandidatesResponse = {
-  people: [{ id: 'user-alex', email: 'alex@example.com', full_name: ALEX }, { id: 'user-blair', email: 'blair@example.com', full_name: BLAIR.name }, { id: 'user-finley', email: 'finley@example.com', full_name: 'Finley Example' }],
+  people: [{ id: 'user-alex', email: 'alex@example.com', full_name: ALEX, retention_days: null }, { id: 'user-blair', email: 'blair@example.com', full_name: BLAIR.name, retention_days: null }, { id: 'user-finley', email: 'finley@example.com', full_name: 'Finley Example', retention_days: null }],
   groups: [{ id: 'grp-support', name: 'Support' }],
   everyone: false,
 };
