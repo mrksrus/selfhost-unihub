@@ -31,12 +31,12 @@
       "bytes": 155886
     },
     "admin-policies-wide-dark.png": {
-      "sha256": "809a3d6588016211775e79ad24b349b7112ba18e927af37fa0889a799ce71aa2",
-      "bytes": 136590
+      "sha256": "03d75c61a6c1794d7d0da837e14e97d87266809d0971c0e3df0a9d1c97f6447e",
+      "bytes": 143625
     },
     "admin-policies-wide-light.png": {
-      "sha256": "a78e14824f0284438bc56c3a872618a4add22dcc237502145f175d33a6409ec2",
-      "bytes": 139332
+      "sha256": "37d9bf811ef522201f122e4427dfec6b4dbf857bf3e1e64b0ef69eb7e34255f9",
+      "bytes": 147100
     },
     "bin-phone-dark.png": {
       "sha256": "368ab0af0cef3b0f14868e91ee743795b4f19657eb06561b0aa30f87fc8140d1",
@@ -190,6 +190,38 @@
       "sha256": "6e1b93f4540581c7c3f7e32dbb156037915db499967d711ddd9a7f20a5a92bd1",
       "bytes": 149815
     },
+    "chat-retention-dialog-phone-dark.png": {
+      "sha256": "07b1289f63543880d7e5257de553a93fefb90640a43a7ec66588b080dedca760",
+      "bytes": 60861
+    },
+    "chat-retention-dialog-phone-light.png": {
+      "sha256": "323f076798e4f0a0f104591dd9b7a5110271421e079f7b714d8542a262491ba8",
+      "bytes": 64511
+    },
+    "chat-retention-dialog-wide-dark.png": {
+      "sha256": "9779f473e63b3d040272949bda961c45de770e99d92a136ba628c75f79b22ef6",
+      "bytes": 157704
+    },
+    "chat-retention-dialog-wide-light.png": {
+      "sha256": "4c0437998ec61429ea56d53fea43cb1e0e606c5abed92591a75b1b284d0ac34f",
+      "bytes": 163097
+    },
+    "chat-retention-pending-phone-dark.png": {
+      "sha256": "6b302e665e567919c83a7d975b3240d506032dd426e18bacbaab7c5f3885ecbc",
+      "bytes": 75596
+    },
+    "chat-retention-pending-phone-light.png": {
+      "sha256": "819be395e0bc896ba99716b4f7839ec3e8527c2e9dc4c8befae95b431bb4c5ba",
+      "bytes": 81385
+    },
+    "chat-retention-pending-wide-dark.png": {
+      "sha256": "da3d09d77adbb3e61b7c5c28224a4e34fe42330ee8ee17d4cb5e1f442d4197a8",
+      "bytes": 168303
+    },
+    "chat-retention-pending-wide-light.png": {
+      "sha256": "da4d7ecca56d046f80ef1d5bac03e1759354bd2acf7a4c162dd0afe13056ef9a",
+      "bytes": 172260
+    },
     "chat-thread-phone-dark.png": {
       "sha256": "9bad00e5813451273e10fe33e8c91e5cc9c04889f5565f72bf78160723bec8a9",
       "bytes": 60324
@@ -279,12 +311,12 @@
       "bytes": 44852
     },
     "group-policies-wide-dark.png": {
-      "sha256": "5860f079bf1dd64dd24e36eac4bb38ab9b90bed915023f12714bd63e8f1a3172",
-      "bytes": 157355
+      "sha256": "c31914c28d103f638799a08ab7e1d72996606037c1dd55866389901f7ae884d8",
+      "bytes": 161052
     },
     "group-policies-wide-light.png": {
-      "sha256": "57432121595993d56938fe96e0b17edef35b248a1dc6acba142d3a8b209a3442",
-      "bytes": 159818
+      "sha256": "b0da08c8faf30200c0d0dc403b23499f3277be6727c65bae54051ce9c64429a9",
+      "bytes": 163300
     },
     "groups-wide-dark.png": {
       "sha256": "0992980b3f3df97f22914cdf263e7b034582c2a4d26bcee1404eb8c80d0db569",
@@ -439,20 +471,20 @@
       "bytes": 160642
     },
     "settings-chat-phone-dark.png": {
-      "sha256": "2a02dfc57e9a5e2a7a1f742f2bc72bb6bba25e5125a62f2db71e838b420269bf",
-      "bytes": 67536
+      "sha256": "35a388f4b1ea12b95128906f6ff971eb24bd51c570fedf3430a85b457a96083f",
+      "bytes": 66432
     },
     "settings-chat-phone-light.png": {
-      "sha256": "24bcc71c48b47ac95356f81962a08986317a0703f35f427e4a2802f97c2b9812",
-      "bytes": 71644
+      "sha256": "65bcb011e52361d67f2fdc6fa30904998c915242b20175c79ad3e7f55ec32a16",
+      "bytes": 70627
     },
     "settings-chat-wide-dark.png": {
-      "sha256": "960026385c40ebb8fdb7f9490fd2dbaee548f96a36bbde966d6f9a1b84d0baaf",
-      "bytes": 141806
+      "sha256": "7d47fefa979ffaffe0b8d89064158d0e46a6a19b7487c6e227b96d4a709aad33",
+      "bytes": 136680
     },
     "settings-chat-wide-light.png": {
-      "sha256": "2cbfedc8f0e48d345d779241bda37d6739bd97073d2efea57989e5dc7f36b96b",
-      "bytes": 148806
+      "sha256": "ae391d268725a9bf4970f95a2bb2a3cf2b26665b3a10ebc946296ed9ad90ceb6",
+      "bytes": 140424
     },
     "settings-pages-wide-dark.png": {
       "sha256": "037a9e0fa8fc03f7875540db3e7cda27f2ce7f7108c9412e6024219096acdbac",
@@ -1565,6 +1597,62 @@
         "chat-thread-phone-light.png",
         "chat-wide-dark.png",
         "chat-wide-light.png",
+        "settings-chat-phone-dark.png",
+        "settings-chat-phone-light.png",
+        "settings-chat-wide-dark.png",
+        "settings-chat-wide-light.png"
+      ],
+      "removed": []
+    },
+    {
+      "date": "2026-11-21T04:01:36.044Z",
+      "reason": "Group chats and the chat retention rule joined on one branch: Settings › Chat shows the navigation count of the group chats together with the new Messages and files section. Agent rebase, same screens as approved in both parts.",
+      "source": {
+        "commit": "86496318859de0c6d79d50b89549d5c190288d00",
+        "branch": "p7-034",
+        "dirty": false,
+        "digest": "7cf36097dc5178a158aca31a5c2a1dfab7a5813f3bfd52df457c6af7f91a293e"
+      },
+      "render": {
+        "playwright": "1.64.0",
+        "browser": "chromium-headless-shell 156.0.8078.4",
+        "browserArgs": [
+          "--font-render-hinting=none",
+          "--disable-lcd-text",
+          "--force-color-profile=srgb",
+          "--disable-gpu",
+          "--disable-skia-runtime-opts",
+          "--num-raster-threads=1",
+          "--disable-partial-raster"
+        ],
+        "platform": "linux-x64",
+        "fonts": {
+          "@fontsource/inter": "5.3.0",
+          "@fontsource/jetbrains-mono": "5.3.0"
+        },
+        "fontconfig": "isolated",
+        "deviceScaleFactor": 1
+      },
+      "host": {
+        "node": "v26.12.1",
+        "ci": false
+      },
+      "added": [
+        "chat-retention-dialog-phone-dark.png",
+        "chat-retention-dialog-phone-light.png",
+        "chat-retention-dialog-wide-dark.png",
+        "chat-retention-dialog-wide-light.png",
+        "chat-retention-pending-phone-dark.png",
+        "chat-retention-pending-phone-light.png",
+        "chat-retention-pending-wide-dark.png",
+        "chat-retention-pending-wide-light.png"
+      ],
+      "changed": [
+        "admin-policies-wide-dark.png",
+        "admin-policies-wide-light.png",
+        "group-policies-wide-dark.png",
+        "group-policies-wide-light.png",
+        "person-leaving-calendars-wide-light.png",
         "settings-chat-phone-dark.png",
         "settings-chat-phone-light.png",
         "settings-chat-wide-dark.png",

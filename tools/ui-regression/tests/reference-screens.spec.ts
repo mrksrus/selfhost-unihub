@@ -23,7 +23,7 @@
 // (Wide and Phone), and a group chat and its people (Wide and Phone), and the
 // save dialog of a shorter chat retention and a retention that waits on
 // Server -> Policies (Wide and Phone), each in Dark Default and Light Default.
-// One hundred and twenty-two pictures; see docs/UI_BASELINES.md.
+// One hundred and thirty pictures; see docs/UI_BASELINES.md.
 import { customRepeat, expect, expectBaseline, sharedCalendars, test, THEMES, VIEWPORTS, withChat, type Page } from '../support/test.ts';
 import { CURRENT_DEVICE_LOCKED, POLICIES_ADMIN_APP_LOCK, POLICIES_ADMIN_RETENTION, POLICIES_EFFECTIVE_APP_LOCK, POLICIES_EFFECTIVE_TWO_FACTOR, RETENTION_WAITING, USER } from '../support/fixtures.ts';
 

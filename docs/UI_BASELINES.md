@@ -34,7 +34,7 @@ names, kernels and paths are not recorded.
 config and runs these checks against it in Chromium.
 
 **Reference screens.** Each screen is captured in Dark Default and Light Default,
-one hundred and twenty-two pictures in all, compared with zero tolerance:
+one hundred and thirty pictures in all, compared with zero tolerance:
 
 | Picture | Viewport | Steps |
 | --- | --- | --- |
