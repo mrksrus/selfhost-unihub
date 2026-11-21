@@ -2,9 +2,10 @@
 // pictures: the screens are built on the interface, and this fills it without
 // encryption or a server. Actions change the data the way the engine would
 // show them at once (a sent message is "sending", an edit is pending).
+import { searchChats } from '@/lib/chat/search';
 import type {
-  ChatCandidatesResponse, ChatConversationSummary, ChatEngine, ChatEngineSnapshot, ChatGroupSummary, ChatMember, ChatNotify, ChatPeer, ChatReadiness, ChatRestoreProgress,
-  ChatThreadItem, ChatThreadMessage,
+  ChatCandidatesResponse, ChatConversationSummary, ChatEngine, ChatEngineSnapshot, ChatFileToSend, ChatGroupSummary, ChatMember, ChatNotify, ChatPeer, ChatReadiness, ChatRestoreProgress,
+  ChatThreadFile, ChatThreadItem, ChatThreadMessage,
 } from '@/lib/chat/types';
 
 export interface MockChatOptions {
@@ -19,6 +20,8 @@ export interface MockChatOptions {
   candidates?: ChatCandidatesResponse;
   /** delete() is refused with this sentence, as the server refuses under the rule against deleting for good. */
   deleteRefusal?: string;
+  /** What openFile() answers per file id: the Blob, or a call that answers later or refuses. Any other file is an empty Blob. */
+  files?: Record<string, Blob | (() => Promise<Blob>)>;
 }
 
 export interface MockChatEngine extends ChatEngine {
@@ -52,6 +55,13 @@ export const message = (id: string, from_me: boolean, sender_name: string, creat
   reply_to: null, edited: false, deleted: false, unreadable: false, created_at, delivery: from_me ? 'read' : null, edit_state: null, error: null, ...fields,
 });
 
+export const file = (id: string, name: string, type: string, size: number, fields: Partial<ChatThreadFile> = {}): ChatThreadFile => ({
+  id, name, type, size, picture: null, voice_seconds: null, state: 'sent', progress: null, error: null, ...fields,
+});
+
+// Every picture: a drawn sky over a floor, 32 by 24 px (PNG).
+const PREVIEW = 'iVBORw0KGgoAAAANSUhEUgAAACAAAAAYCAIAAAAUMWhjAAAC5UlEQVR42rXNa8vSUAAA4P2cOe9TN9286/5FbjiHTpwyJ+rwgm4/51w453AiiCCIoAtFRMULERFBn7q93YM+5Z8YPN8f4erDn0QJL9//TpTw/N2vRAnP3v5MlPDkzY9ECY9ef0+U8ODqW6KE+6+uEyXce3GdKOHu86+JEu48+5Io4fbTz4kSbj3+lCjh5sOPiRJ+//2XqOQD8QYXBzxlcsni6SHP2Dw74jmH58e8MOFFl8tTXprxsscrc64suOpzdcmrAa+tuLbm+obXt7wR8uaOt/a8feCdI++eeO/M+xE3Yn4JmDhgKZNJFksPWcZm2RHLOSw/ZoUJK7pMnrLSjJU9VpkzZcFUn6lLVg1YbcW0NdM3rL5ljZA1d6y1Z+0D6xxZ98R6Z9aPmBGzS0DFAU2ZVLJoekgzNs2OaM6h+TEtTGjRpfKUlma07NHKnCoLqvpUXdJqQGsrqq2pvqH1LW2EtLmjrT1tH2jnSLsn2jvTfkSNmF4CIg5IyiSSRdJDkrFJdkRyDsmPSWFCii6Rp6Q0I2WPVOZEWRDVJ+qSVANSWxFtTfQNqW9JIyTNHWntSftAOkfSPZHemfQjYsTkEmBxgFMmliycHuKMjbMjnHNwfowLE1x0sTzFpRkue7gyx8oCqz5Wl7ga4NoKa2usb3B9ixshbu5wa4/bB9w54u4J9864H2EjxpcAiQOUMpFkofQQZWyUHaGcg/JjVJigoovkKSrNUNlDlTlSFkj1kbpE1QDVVkhbI32D6lvUCFFzh1p71D6gzhF1T6h3Rv0IGTG6BFAcwJQJJQumhzBjw+wI5hyYH8PCBBZdKE9haQbLHqzMobKAqg/VJawGsLaC2hrqG1jfwkYImzvY2sP2AXaOsHuCvTPsR9CI4SUA4gCkTCBZID0EGRtkRyDngPwYFCag6AJ5CkozUPZAZQ6UBVB9oC5BNQC1FdDWQN+A+hY0QtDcgdYetA+gcwTdE+idQT8CRgz+AxkZfks8A+eyAAAAAElFTkSuQmCC';
+
 export function createMockChatEngine(options: MockChatOptions = {}): MockChatEngine {
   let conversations = options.conversations ?? [];
   const threads = new Map(Object.entries(options.threads ?? {}));
@@ -76,6 +86,9 @@ export function createMockChatEngine(options: MockChatOptions = {}): MockChatEng
     if (id) threads.set(id, threads.get(id)!.map(item => (item.id === messageId && item.kind === 'message' ? { ...item, ...fields } : item)));
     publish();
   };
+  // A picture's bytes, for its preview and for the viewer; null for any other file.
+  const drawn = (fileId: string) => ([...threads.values()].some(items => items?.some(item => item.kind === 'message' && item.files.some(entry => entry.id === fileId && entry.picture)))
+    ? new Blob([Uint8Array.from(atob(PREVIEW), letter => letter.charCodeAt(0))], { type: 'image/png' }) : null);
   const record = <A extends unknown[], R>(name: string, run: (...args: A) => R) => (...args: A) => { calls.push([name, ...args]); return run(...args); };
 
   return {
@@ -90,10 +103,11 @@ export function createMockChatEngine(options: MockChatOptions = {}): MockChatEng
       if (!found) throw new Error('This person cannot be written to.');
       return found.id;
     }),
-    send: record('send', (conversationId: string, text: string, replyTo?: string | null, _mentions?: string[]) => {
+    send: record('send', (conversationId: string, text: string, replyTo?: string | null, _mentions?: string[], files: ChatFileToSend[] = []) => {
       const items = threads.get(conversationId) ?? [];
       const quoted = items.find((item): item is ChatThreadMessage => item.kind === 'message' && item.id === replyTo);
       threads.set(conversationId, [...items, message(`local-${++sent}`, true, 'Ada Example', new Date().toISOString(), text, {
+        files: files.map((item, index) => file(`local-${sent}-${index}`, item.name, item.blob.type, item.blob.size, { voice_seconds: item.voice_seconds ?? null, state: 'waiting' })),
         seq: null, delivery: 'sending', reply_to: quoted ? { id: quoted.id, sender_name: quoted.sender_name, text: quoted.text } : null,
       })]);
       conversations = conversations.map(conversation => (conversation.id === conversationId ? { ...conversation, last_message: { text, from_me: true, deleted: false } } : conversation));
@@ -102,7 +116,7 @@ export function createMockChatEngine(options: MockChatOptions = {}): MockChatEng
     edit: record('edit', (messageId: string, text: string) => change(messageId, { text, edited: true, edit_state: 'sending' })),
     delete: record('delete', async (messageId: string) => {
       if (options.deleteRefusal) throw new Error(options.deleteRefusal);
-      change(messageId, { text: null, deleted: true, reply_to: null });
+      change(messageId, { text: null, deleted: true, reply_to: null, files: [] });
     }),
     retry: record('retry', (messageId: string) => {
       const failed = threads.get(conversationOf(messageId) ?? '')?.find(item => item.id === messageId);
@@ -136,9 +150,13 @@ export function createMockChatEngine(options: MockChatOptions = {}): MockChatEng
     unfollow: record('unfollow', async (conversationId: string) => update(conversationId, {}, { follows: null })),
     leave: record('leave', async (conversationId: string) => { conversations = conversations.filter(item => item.id !== conversationId); publish(); }),
     setNotify: record('setNotify', async (conversationId: string, notify: ChatNotify) => update(conversationId, { notify })),
-    search: record('search', (_query: string) => []),
-    openFile: record('openFile', async (_messageId: string, _fileId: string) => new Blob()),
-    picturePreview: record('picturePreview', async (_messageId: string, _fileId: string) => null),
+    search: (query: string) => searchChats(query, conversations.map(item => ({ id: item.id, name: item.name, items: threads.get(item.id) ?? [] }))),
+    openFile: record('openFile', async (_messageId: string, fileId: string) => {
+      const answer = options.files?.[fileId];
+      return typeof answer === 'function' ? answer() : answer ?? drawn(fileId) ?? new Blob();
+    }),
+    // Not recorded: a picture asks for it as it is drawn.
+    picturePreview: async (_messageId: string, fileId: string) => drawn(fileId),
     sync: record('sync', async () => {}),
     restart: record('restart', () => {}),
     choosePassphrase: record('choosePassphrase', async (_passphrase: string) => { readiness = { state: 'ready' }; publish(); }),
@@ -153,6 +171,7 @@ export function createMockChatEngine(options: MockChatOptions = {}): MockChatEng
 const BLAIR = peer('user-blair', 'Blair Example', { online: true });
 const ALEX = 'Alex Example';
 const ROBIN = 'Robin Example';
+const FINLEY = 'Finley Example';
 const KATHERINE = 'Katherine Johnson-Example of the Accounting Office';
 const day = (date: string, time: string) => `2026-06-${date}T${time}:00.000Z`;
 const mine = (id: string, at: string, text: string | null, fields: Partial<ChatThreadMessage> = {}) => message(id, true, 'Ada Example', at, text, fields);
@@ -165,6 +184,7 @@ export const CHAT_CONVERSATIONS: ChatConversationSummary[] = [
     { role: 'manager', member_count: 6 }),
   direct({ id: 'chat-blair', peer: BLAIR, unread: 2, last_activity_at: day('15', '09:24'), last_message: { text: 'Room 2 is free until ten.', from_me: false, deleted: false } }),
   direct({ id: 'chat-alex', peer: peer('user-alex', 'Alex Example'), unread: 0, last_activity_at: day('14', '16:12'), last_message: { text: 'I will send the numbers tomorrow.', from_me: true, deleted: false } }),
+  direct({ id: 'chat-finley', peer: peer('user-finley', FINLEY), unread: 0, last_activity_at: day('13', '10:24'), last_message: { text: '', from_me: false, deleted: false } }),
   group({ id: 'chat-support', name: 'Support', unread: 0, notify: 'mentions', last_activity_at: day('12', '10:15'), last_message: { text: 'The new rota is in the calendar.', from_me: false, deleted: false } },
     { follows: { kind: 'group', id: 'grp-support', name: 'Support' }, member_count: 4 }),
   direct({ id: 'chat-katherine', peer: peer('user-katherine', KATHERINE, { can_write: false, reason: `${KATHERINE} has not opened UniHub since the update.` }),
@@ -215,6 +235,13 @@ export const CHAT_THREADS: Record<string, ChatThreadItem[]> = {
   'chat-alex': [
     message('a1', false, 'Alex Example', day('14', '16:10'), 'Do you have the ticket numbers for May?'),
     mine('a2', day('14', '16:12'), 'I will send the numbers tomorrow.', { delivery: 'delivered' }),
+  ],
+  // Files: a picture with its preview, a PDF and another file, a voice message, and an own file on its way.
+  'chat-finley': [
+    message('f1', false, FINLEY, day('13', '10:02'), 'The gate after this morning\'s delivery.', { files: [file('file-gate', 'Gate 13 June.jpg', 'image/jpeg', 2_411_724, { picture: { width: 1600, height: 900 } })] }),
+    message('f2', false, FINLEY, day('13', '10:05'), 'Delivery note and the plan for aisle 4.', { files: [file('file-note', 'Delivery note 4411.pdf', 'application/pdf', 188_416), file('file-stock', 'Stock list June.xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 48_230)] }),
+    message('f4', false, FINLEY, day('13', '10:24'), '', { files: [file('file-voice', 'Voice message.webm', 'audio/webm;codecs=opus', 233_472, { voice_seconds: 65 })] }),
+    mine('f5', day('15', '09:28'), 'The plan as we discussed it.', { seq: null, delivery: 'sending', files: [file('file-plan', 'Site plan.pdf', 'application/pdf', 5_662_310, { state: 'uploading', progress: 0.4 })] }),
   ],
   'chat-katherine': [
     message('k1', false, KATHERINE, day('02', '11:40'), 'The year-end close is on the shared drive, under Finance, in the folder for this year.'),

@@ -1,7 +1,7 @@
 import { Fragment, useContext, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useLocation } from 'react-router-dom';
 import { AtSign, Bell, BellOff, MonitorSmartphone, ArrowLeft, Users } from 'lucide-react';
-import type { ChatConversationSummary, ChatEngine, ChatNotify, ChatThreadMessage } from '@/lib/chat/types';
+import type { ChatConversationSummary, ChatEngine, ChatFileToSend, ChatNotify, ChatThreadFile, ChatThreadMessage } from '@/lib/chat/types';
 import { AuthContext } from '@/contexts/auth-context';
 import { useIsMobile } from '@/hooks/use-mobile';
 import { usePolicy } from '@/hooks/use-policies';
@@ -15,6 +15,7 @@ import { buttonVariants } from '@/components/ui/button-variants';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { EmptyState, LoadingState } from '@/components/ui/page-states';
 import { ChatComposer, type ComposerMode } from '@/components/chat/ChatComposer';
+import { ChatFileViewer } from '@/components/chat/ChatFileViewer';
 import { ChatMessage } from '@/components/chat/ChatMessage';
 import { ChatPeople } from '@/components/chat/ChatPeople';
 import { ChatRetentionLine } from '@/components/chat/ChatRetentionLine';
@@ -60,6 +61,10 @@ export function ChatThread({ engine, conversation, draft, onDraft }: Props) {
   // Stays at the newest message unless the person scrolled up to read.
   const atEnd = useRef(true);
   const focusField = useRef(false);
+  // Files dropped on the thread go to the composer.
+  const attach = useRef<(files: File[]) => void>(() => undefined);
+  const [dragging, setDragging] = useState(false);
+  const [viewing, setViewing] = useState<{ messageId: string; file: ChatThreadFile } | null>(null);
 
   const toEnd = useRef(() => { const box = scroller.current; if (box && atEnd.current) box.scrollTop = box.scrollHeight; }).current;
   useLayoutEffect(() => toEnd(), [items, toEnd]);
@@ -80,11 +85,31 @@ export function ChatThread({ engine, conversation, draft, onDraft }: Props) {
     return () => document.removeEventListener('visibilitychange', mark);
   }, [engine, conversation.id, conversation.unread, loaded]);
 
+  // A search result opens the chat at its message ("m" in the address): earlier messages are drawn as far back as it, and it is outlined for a moment.
+  const location = useLocation();
+  const target = new URLSearchParams(location.search).get('m');
+  const [found, setFound] = useState<{ id: string } | null>(null);
+  const targetAt = target && items ? items.findIndex(item => item.id === target) : -1;
+  useEffect(() => {
+    if (targetAt < 0) return;
+    setShown(now => Math.max(now, Math.ceil((items!.length - targetAt) / PAGE) * PAGE));
+    atEnd.current = false;
+    setFound({ id: target! });
+    // Once per opening, and once the device holds the message; not whenever a message arrives, since the person may have scrolled on.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [target, location.key, targetAt >= 0]);
+  useEffect(() => {
+    if (!found) return;
+    document.getElementById(`chat-message-${found.id}`)?.scrollIntoView({ block: 'center' });
+    const timer = setTimeout(() => setFound(null), 2500);
+    return () => clearTimeout(timer);
+  }, [found]);
+
   const choose = (next: ComposerMode) => { setMode(next); focusField.current = true; };
-  const send = (text: string, mentions: string[]) => {
+  const send = (text: string, mentions: string[], files: ChatFileToSend[]) => {
     try {
       if (mode?.kind === 'edit') engine.edit(mode.message.id, text);
-      else engine.send(conversation.id, text, mode?.message.id ?? null, ...(mentions.length ? [mentions] : []));
+      else engine.send(conversation.id, text, mode?.message.id ?? null, ...((files.length ? [mentions, files] : mentions.length ? [mentions] : []) as [string[]?, ChatFileToSend[]?]));
     } catch (error) {
       // The message was deleted meanwhile, on another device or by the time the change was typed.
       toast({ title: mode?.kind === 'edit' ? 'The change was not saved' : 'The message was not sent', description: error instanceof Error ? error.message : undefined, variant: 'destructive' });
@@ -119,10 +144,16 @@ export function ChatThread({ engine, conversation, draft, onDraft }: Props) {
   const left = visible.filter((item): item is ChatThreadMessage => item.kind === 'message' && !item.deleted && (item.delivery === 'sent' || item.delivery === 'delivered' || item.delivery === 'read'));
   const marked = new Set(left.filter((item, index) => deliveryLabel(item) !== (left[index + 1] && deliveryLabel(left[index + 1]))).map(item => item.id));
   const NotifyIcon = NOTIFY[conversation.notify].icon;
+  // A file whose message was deleted meanwhile leaves the viewer too.
+  const viewed = viewing && items?.some(item => item.kind === 'message' && item.id === viewing.messageId && item.files.some(file => file.id === viewing.file.id)) ? viewing : null;
 
   return (
-    <section aria-label={`Chat with ${peer.name}`} className={phone ? 'fixed inset-x-0 z-50 flex flex-col bg-background pt-[env(safe-area-inset-top,0px)]' : 'flex min-h-0 min-w-0 flex-1 flex-col'}
-      style={phone ? { top: 'var(--visible-top, 0px)', height: 'var(--visible-height, 100dvh)' } : undefined}>
+    <section aria-label={`Chat with ${peer.name}`} className={phone ? 'fixed inset-x-0 z-50 flex flex-col bg-background pt-[env(safe-area-inset-top,0px)]' : 'relative flex min-h-0 min-w-0 flex-1 flex-col'}
+      style={phone ? { top: 'var(--visible-top, 0px)', height: 'var(--visible-height, 100dvh)' } : undefined}
+      onDragOver={event => { if (peer.can_write && event.dataTransfer.types.includes('Files')) { event.preventDefault(); setDragging(true); } }}
+      onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDragging(false); }}
+      onDrop={event => { if (!peer.can_write || !event.dataTransfer.files.length) return; event.preventDefault(); setDragging(false); attach.current([...event.dataTransfer.files]); field.current?.focus(); }}>
+      {dragging && <p aria-hidden="true" className="pointer-events-none absolute inset-2 z-10 flex items-center justify-center rounded-lg border-2 border-dashed border-accent bg-background/90 text-sm font-medium">Drop the files to attach them</p>}
       {/* As high as its lines need: a chat can say more under its name. */}
       <header className="flex min-h-14 shrink-0 items-center gap-3 border-b border-border px-2 py-1.5 lg:px-4">
         <Button asChild variant="ghost" size="icon" className="lg:hidden"><Link to="/chat" aria-label="Back to chats"><ArrowLeft aria-hidden="true" /></Link></Button>
@@ -175,7 +206,7 @@ export function ChatThread({ engine, conversation, draft, onDraft }: Props) {
                           {item.user_id && item.user_id === user?.id ? 'You' : item.name} {{ 'device-added': 'added a device', joined: 'joined the chat', left: 'left the chat' }[item.kind]}
                         </li>
                       ) : (
-                        <ChatMessage message={item} turn={before?.kind === 'message' && !sameSender} named={(!!group || item.former_colleague) && (!sameSender || newDay)} avatar={!!group}
+                        <ChatMessage engine={engine} message={item} found={found?.id === item.id} onOpenFile={file => setViewing({ messageId: item.id, file })} turn={before?.kind === 'message' && !sameSender} named={(!!group || item.former_colleague) && (!sameSender || newDay)} avatar={!!group}
                           mentions={item.mentions.length ? members?.filter(member => item.mentions.includes(member.user_id)).map(member => ({ name: member.name, me: member.user_id === user?.id })) : undefined}
                           showDelivery={marked.has(item.id)} canWrite={peer.can_write} deleteLock={deleteLock} quotedOwn={!!item.reply_to && own.has(item.reply_to.id)}
                           onReply={() => choose({ kind: 'reply', message: item })} onEdit={() => choose({ kind: 'edit', message: item })}
@@ -190,7 +221,7 @@ export function ChatThread({ engine, conversation, draft, onDraft }: Props) {
       </div>
 
       {peer.can_write
-        ? <ChatComposer peerName={peer.name} mode={mode} draft={draft} people={group ? members?.filter(member => member.active && member.user_id !== user?.id) : undefined} onDraft={onDraft} onSend={send} onCancel={() => setMode(null)} fieldRef={field} />
+        ? <ChatComposer peerName={peer.name} mode={mode} draft={draft} people={group ? members?.filter(member => member.active && member.user_id !== user?.id) : undefined} onDraft={onDraft} onSend={send} onCancel={() => setMode(null)} fieldRef={field} attachRef={attach} />
         // The server's words: the person is deactivated, has Chat off, or has not opened UniHub since the update.
         : <p className="shrink-0 border-t border-border px-4 py-3 text-sm text-muted-foreground max-md:pb-[calc(0.75rem+env(safe-area-inset-bottom,0px))]">{peer.reason ?? `${peer.name} cannot be written to now.`}</p>}
 
@@ -206,6 +237,7 @@ export function ChatThread({ engine, conversation, draft, onDraft }: Props) {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+      <ChatFileViewer engine={engine} open={viewed} onClose={() => setViewing(null)} />
       {group && <ChatPeople engine={engine} conversation={conversation} members={members} open={people} onClose={() => setPeople(false)} />}
     </section>
   );

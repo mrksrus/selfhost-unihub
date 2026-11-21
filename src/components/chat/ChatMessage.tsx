@@ -1,15 +1,21 @@
 import { MoreHorizontal } from 'lucide-react';
-import type { ChatThreadMessage } from '@/lib/chat/types';
+import type { ChatEngine, ChatThreadFile, ChatThreadMessage } from '@/lib/chat/types';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { PolicyMenuItem } from '@/components/ui/policy-note';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { PeerAvatar } from '@/components/chat/ConversationList';
+import { MessageFiles } from '@/components/chat/ChatFiles';
 import { deliveryLabel, messageTime, textParts } from '@/components/chat/chat-state';
 
 interface Props {
+  engine: ChatEngine;
   message: ChatThreadMessage;
+  /** The message a search result opened the chat at: outlined for a moment. */
+  found: boolean;
+  /** Opens a picture or a PDF of the message in the viewer. */
+  onOpenFile: (file: ChatThreadFile) => void;
   /** The message before it is the other person's: a little more room between the two. */
   turn: boolean;
   /** The sender's name stands over it: the first of someone's messages in a group chat, and a former colleague's anywhere. */
@@ -36,7 +42,7 @@ interface Props {
 }
 
 /** One message: its bubble, what happened to it on the way, and its menu. */
-export function ChatMessage({ message, turn, named, avatar, mentions, showDelivery, canWrite, deleteLock, quotedOwn, onReply, onEdit, onDelete, onRetry, onMenuCloseAutoFocus }: Props) {
+export function ChatMessage({ engine, message, found, onOpenFile, turn, named, avatar, mentions, showDelivery, canWrite, deleteLock, quotedOwn, onReply, onEdit, onDelete, onRetry, onMenuCloseAutoFocus }: Props) {
   const mine = message.from_me;
   const gone = message.deleted || message.text === null;
   const time = messageTime(message.created_at);
@@ -54,7 +60,7 @@ export function ChatMessage({ message, turn, named, avatar, mentions, showDelive
   const readers = !onItsWay && showDelivery ? message.read_by : null;
 
   return (
-    <li className={cn('relative flex flex-col py-0.5', mine ? 'items-end' : 'items-start', turn && 'pt-2.5', avatar && !mine && 'pl-9')}>
+    <li id={`chat-message-${message.id}`} className={cn('relative flex flex-col py-0.5', mine ? 'items-end' : 'items-start', turn && 'pt-2.5', avatar && !mine && 'pl-9')}>
       {named && !mine && (
         // Read out with the message instead, so each message says once whose it is.
         <p aria-hidden="true" className="flex max-w-full items-baseline gap-1.5 px-1 pb-0.5 text-xs">
@@ -64,23 +70,24 @@ export function ChatMessage({ message, turn, named, avatar, mentions, showDelive
         </p>
       )}
       <div className={cn('group flex max-w-full items-center gap-1', mine && 'flex-row-reverse')}>
-        <div className={cn('min-w-0 max-w-[min(100%,36rem)] rounded-2xl px-3 py-2 text-sm', gone ? 'border border-border text-muted-foreground' : mine ? 'bg-accent/15' : 'bg-muted', message.mentions_me && !gone && 'ring-1 ring-inset ring-accent')}>
+        <div className={cn('min-w-0 max-w-[min(100%,36rem)] rounded-2xl px-3 py-2 text-sm', gone ? 'border border-border text-muted-foreground' : mine ? 'bg-accent/15' : 'bg-muted', message.mentions_me && !gone && 'ring-1 ring-inset ring-accent', found && 'ring-2 ring-accent')}>
           <span className="sr-only">{mine ? 'You' : `${message.sender_name}${message.former_colleague ? ', former colleague' : ''}`}: </span>
           {gone ? <p>{message.deleted ? 'Message deleted' : 'This message could not be read.'}</p> : <>
             {message.reply_to && (
               <p className="mb-1.5 border-l-2 border-accent pl-2 text-xs">
                 <span className="block font-medium">{quotedOwn ? 'You' : message.reply_to.sender_name}</span>
-                <span className="block truncate text-muted-foreground">{message.reply_to.text ?? 'Message deleted'}</span>
+                <span className="block truncate text-muted-foreground">{message.reply_to.text === null ? 'Message deleted' : message.reply_to.text || 'Files'}</span>
               </p>
             )}
-            <p className="whitespace-pre-wrap break-words">
+            {message.files.length > 0 && <MessageFiles engine={engine} messageId={message.id} files={message.files} onOpen={onOpenFile} />}
+            {message.text && <p className="whitespace-pre-wrap break-words">
               {textParts(message.text!, mentions).map((part, index) => part.mention
                 ? part.mention.me ? <mark key={index} className="rounded-sm bg-accent px-1 font-medium text-accent-foreground">{part.text}</mark>
                   : <span key={index} className="font-medium text-accent">{part.text}</span>
                 : part.href
                 ? <a key={index} href={part.href} target="_blank" rel="noopener noreferrer" className="rounded-sm text-accent underline underline-offset-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring touch:-my-3 touch:py-3">{part.text}</a>
                 : part.text)}
-            </p>
+            </p>}
           </>}
           <p className="mt-0.5 text-right text-[11px] tabular-nums text-muted-foreground">
             {message.edited && !gone && 'edited '}<time dateTime={message.created_at}>{time}</time>
@@ -116,6 +123,8 @@ export function ChatMessage({ message, turn, named, avatar, mentions, showDelive
             </Popover>
           ) : <span>{status}{failed && message.error ? `${/[.!?]$/.test(message.error) ? '.' : ':'} ${message.error}` : ''}</span>}
           {failed && <Button variant="outline" size="sm" className="text-foreground" onClick={onRetry}>Try again</Button>}
+          {/* Files take a while to go out: the message can be taken back meanwhile, which stops its uploads. */}
+          {message.delivery === 'sending' && message.files.length > 0 && <Button variant="outline" size="sm" className="text-foreground" onClick={onDelete}>Cancel</Button>}
         </p>
       )}
     </li>

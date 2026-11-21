@@ -9,6 +9,7 @@ import { PageBody, PageHeader, PageShell } from '@/components/layout/PageShell';
 import { Button } from '@/components/ui/button';
 import { EmptyState, ErrorState, LoadingState } from '@/components/ui/page-states';
 import { ChatPassphraseGate } from '@/components/chat/ChatPassphraseGate';
+import { ChatSearch } from '@/components/chat/ChatSearch';
 import { ChatThread } from '@/components/chat/ChatThread';
 import { ConversationList } from '@/components/chat/ConversationList';
 import { NewGroupDialog } from '@/components/chat/NewGroupDialog';
@@ -81,9 +82,9 @@ export default function ChatPage() {
                   Getting your earlier messages… {snapshot.restore.done.toLocaleString('en')}{snapshot.restore.total !== null && ` of ${snapshot.restore.total.toLocaleString('en')}`}
                 </p>
               )}
-              <div className="min-h-0 flex-1 overflow-y-auto pb-mobile-nav md:pb-0">
+              <ChatSearch engine={engine} conversations={conversations}>
                 <ConversationList conversations={conversations} activeId={activeId} />
-              </div>
+              </ChatSearch>
             </div>
             {active ? (
               <ChatThread key={active.id} engine={engine} conversation={active} draft={drafts.current.get(active.id) ?? ''} onDraft={text => { drafts.current.set(active.id, text); }} />

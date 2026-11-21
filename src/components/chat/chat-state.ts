@@ -54,6 +54,8 @@ export function lastMessageLine({ last_message: last }: ChatConversationSummary)
   if (!last) return 'No messages yet';
   if (last.deleted) return 'Message deleted';
   if (last.text === null) return 'Message could not be read';
+  // A message without text carries files.
+  if (!last.text) return last.from_me ? 'You sent a file' : 'File';
   return last.from_me ? `You: ${last.text}` : last.text;
 }
 
@@ -62,6 +64,9 @@ export function deliveryLabel({ delivery, read_by: readBy }: ChatThreadMessage) 
   if (readBy?.people.length) return `Read by ${readBy.people.length} of ${readBy.of}`;
   return delivery === 'sent' ? 'Sent' : delivery === 'delivered' ? 'Delivered' : delivery === 'read' ? 'Read' : null;
 }
+
+/** A length in minutes and seconds: of a voice message, or of the recording so far. */
+export const clock = (seconds: number) => `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, '0')}`;
 
 const LINK = /(https?:\/\/[^\s<>"]+[^\s<>".,:;!?)\]}'])/g;
 

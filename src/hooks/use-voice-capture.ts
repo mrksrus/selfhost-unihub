@@ -56,7 +56,10 @@ export function useVoiceCapture(onRecorded: (recording: VoiceRecording) => void)
       current.stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     } catch (error) {
       if (session.current === current) { session.current = null; setState('idle'); }
-      toast({ title: 'Could not start recording', description: error instanceof Error ? error.message : 'Microphone access failed', variant: 'destructive' });
+      const name = (error as { name?: string } | null)?.name;
+      toast({ title: 'Could not start recording', variant: 'destructive', description: name === 'NotAllowedError' || name === 'SecurityError'
+        ? 'UniHub may not use the microphone. Allow the microphone for this site in the browser, or for the app in Android\'s settings, then try again.'
+        : name === 'NotFoundError' ? 'No microphone was found on this device.' : error instanceof Error ? error.message : 'Microphone access failed' });
       return;
     }
     const stream = current.stream;

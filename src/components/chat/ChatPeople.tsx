@@ -38,6 +38,9 @@ export function ChatPeople({ engine, conversation, members, open, onClose }: Pro
   const scope = useSessionScope();
   const { toast } = useToast();
   const [name, setName] = useState(conversation.name);
+  // Someone else may have renamed the chat since the panel was last open.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { if (open) setName(conversation.name); }, [open]);
   const [adding, setAdding] = useState(false);
   const [asking, setAsking] = useState<Question | null>(null);
   // The question stays in the dialog while it closes.
@@ -138,7 +141,7 @@ export function ChatPeople({ engine, conversation, members, open, onClose }: Pro
             </div>
           ) : <Button variant="outline" className="text-destructive hover:text-destructive" disabled={busy} onClick={leave}>Leave chat</Button>}
         </div>
-        {adding && members && <AddPeopleDialog engine={engine} conversationId={conversation.id} chatName={conversation.name} already={members.map(member => member.user_id)} onClose={() => setAdding(false)} />}
+        {adding && members && <AddPeopleDialog engine={engine} conversationId={conversation.id} chatName={conversation.name} already={members.map(member => member.user_id)} retentionDays={conversation.retention_days} onClose={() => setAdding(false)} />}
         <AlertDialog open={!!asking} onOpenChange={next => { if (!next && !busy) setAsking(null); }}>
           <AlertDialogContent onCloseAutoFocus={event => { event.preventDefault(); (asker.current?.isConnected ? asker.current : panel.current)?.focus(); }}>
             <AlertDialogHeader>

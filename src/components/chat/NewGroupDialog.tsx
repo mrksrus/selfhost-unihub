@@ -148,13 +148,23 @@ export function NewGroupDialog({ engine, follow, onClose }: { engine: ChatEngine
 }
 
 /** More people for a group chat of chosen people; they read from the moment they join. */
-export function AddPeopleDialog({ engine, conversationId, chatName, already, onClose }: { engine: ChatEngine; conversationId: string; chatName: string; already: string[]; onClose: () => void }) {
+export function AddPeopleDialog({ engine, conversationId, chatName, already, retentionDays, onClose }: {
+  engine: ChatEngine; conversationId: string; chatName: string; already: string[]; /** After how many days the chat deletes its messages now; null while it keeps them. */ retentionDays: number | null; onClose: () => void;
+}) {
   const [picked, setPicked] = useState<Person[]>([]);
+  // A chat follows the shortest rule among its people: someone under a shorter one shortens it for everyone.
+  const shorter = picked.filter(person => person.retention_days !== null && (retentionDays === null || person.retention_days < retentionDays));
+  const days = Math.min(...shorter.map(person => person.retention_days!));
   return (
     <ChatDialog title={`Add people to ${chatName}`} description="They read what is written from the moment they join, not what was written before."
       action={picked.length > 1 ? `Add ${picked.length} people` : 'Add'} ready={picked.length > 0} onClose={onClose}
       run={async () => { await engine.addMembers(conversationId, picked.map(person => person.id)); onClose(); }}>
       <PeoplePicker engine={engine} picked={picked} onPicked={setPicked} already={already} />
+      {shorter.length > 0 && (
+        <p role="status" className="shrink-0 rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-sm">
+          For {shorter.filter(person => person.retention_days === days).map(nameOf).join(' and ')}, chat messages are deleted after {days} days. Once they are in this chat, it will delete messages older than {days} days for everyone, starting 24 hours after they are added.
+        </p>
+      )}
     </ChatDialog>
   );
 }

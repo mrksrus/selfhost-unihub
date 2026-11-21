@@ -1,6 +1,6 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, useLocation } from 'react-router-dom';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 import { SessionQueryProvider } from '@/components/SessionQueryProvider';
 import { Toaster } from '@/components/ui/toaster';
 import { passphraseStrength, textParts } from '@/components/chat/chat-state';
@@ -8,12 +8,14 @@ import { WrongPassphraseError } from '@/lib/chat/key-backup';
 import { useStartChat } from '@/components/chat/use-start-chat';
 import type { ChatEngine } from '@/lib/chat/types';
 import ChatPage from '@/pages/ChatPage';
-import { createFixtureChatEngine, createMockChatEngine, direct, message, peer } from './chat-mock-engine';
+import { saveFile } from '@/lib/platform';
+import { CHAT_CANDIDATES, CHAT_CONVERSATIONS, CHAT_THREADS, createFixtureChatEngine, createMockChatEngine, direct, message, peer } from './chat-mock-engine';
 
 // The engine is the screens' only source; the session and the router are the real ones.
 const state: { engine: ChatEngine | null } = { engine: null };
 vi.mock('@/hooks/use-chat-engine', () => ({ useChatEngine: () => state.engine }));
 vi.mock('@/hooks/use-modules', () => ({ useModules: () => ({ canAccess: () => true }) }));
+vi.mock('@/lib/platform', async original => ({ ...await original<typeof import('@/lib/platform')>(), saveFile: vi.fn(async () => undefined) }));
 
 function Where() {
   const location = useLocation();
@@ -37,7 +39,7 @@ function App({ user, at, children }: { user: string; at: string; children?: Reac
 }
 
 const openMenu = (name: RegExp) => fireEvent.pointerDown(screen.getByRole('button', { name }), { button: 0, ctrlKey: false });
-const field = (name: string) => screen.getByRole('textbox', { name: `Message to ${name}` }) as HTMLTextAreaElement;
+const field = (name: string) => screen.getByLabelText(`Message to ${name}`) as HTMLTextAreaElement;
 
 beforeEach(() => { globalThis.ResizeObserver ??= class { observe() {} unobserve() {} disconnect() {} }; });
 afterEach(() => { cleanup(); state.engine = null; });
@@ -259,6 +261,11 @@ describe('group chats', () => {
     fireEvent.change(input, { target: { value: 'Thanks @c' } });
     // Only active people whose name has the letters; the deactivated one is not offered.
     expect(within(screen.getByRole('listbox', { name: 'People to mention' })).getAllByRole('option').map(option => option.textContent)).toEqual(['Casey Example', 'Katherine Johnson-Example of the Accounting Office']);
+    expect(input).toHaveAttribute('role', 'combobox');
+    expect(input).toHaveAttribute('aria-expanded', 'true');
+    // Shift+Enter stays a new line: it takes nobody from the list.
+    expect(fireEvent.keyDown(input, { key: 'Enter', shiftKey: true })).toBe(true);
+    expect(input).toHaveValue('Thanks @c');
     fireEvent.keyDown(input, { key: 'ArrowDown' });
     expect(screen.getByRole('option', { name: /^Katherine/ })).toHaveAttribute('aria-selected', 'true');
     fireEvent.keyDown(input, { key: 'ArrowUp' });
@@ -299,6 +306,30 @@ describe('group chats', () => {
     expect(within(panel).queryByRole('button', { name: 'Remove Casey Example' })).not.toBeInTheDocument();
     fireEvent.click(within(panel).getByRole('button', { name: 'Close' }));
     await waitFor(() => expect(people).toHaveFocus());
+  });
+
+  it('the people panel shows the name the chat has when it opens, and says what adding someone under a shorter retention does', async () => {
+    const engine = createFixtureChatEngine({
+      conversations: CHAT_CONVERSATIONS.map(chat => (chat.id === 'chat-planning' ? { ...chat, retention_days: 90 as const } : chat)),
+      candidates: { ...CHAT_CANDIDATES, people: [{ id: 'user-finley', email: 'finley@example.com', full_name: 'Finley Example', retention_days: 30 }, { id: 'user-gale', email: 'gale@example.com', full_name: 'Gale Example', retention_days: 365 }] },
+    });
+    state.engine = engine;
+    render(<App user="A" at="/chat?c=chat-planning" />);
+    fireEvent.click(screen.getByRole('button', { name: 'People in this chat' }));
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Typed and left' } });
+    fireEvent.click(within(screen.getByRole('dialog', { name: 'Warehouse planning' })).getByRole('button', { name: 'Close' }));
+    // Renamed by someone else meanwhile.
+    await act(async () => { await engine.rename('chat-planning', 'Warehouse plans'); });
+    fireEvent.click(screen.getByRole('button', { name: 'People in this chat' }));
+    expect(screen.getByLabelText('Name')).toHaveValue('Warehouse plans');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add people' }));
+    const dialog = within(screen.getByRole('dialog', { name: 'Add people to Warehouse plans' }));
+    // A year is longer than the chat's 90 days: nothing changes for the chat.
+    fireEvent.click(await dialog.findByRole('checkbox', { name: /^Gale Example/ }));
+    expect(dialog.queryByText(/for everyone/)).not.toBeInTheDocument();
+    fireEvent.click(dialog.getByRole('checkbox', { name: /^Finley Example/ }));
+    expect(dialog.getByText(/it will delete messages older than 30 days for everyone, starting 24 hours after they are added/)).toHaveTextContent(/^For Finley Example, chat messages are deleted after 30 days\./);
   });
 
   const leaveChat = () => {
@@ -363,6 +394,167 @@ describe('group chats', () => {
       expect(screen.getByText('Loading the people…')).toBeInTheDocument();
     } finally { vi.useRealTimers(); }
   });
+});
+
+describe('files, voice messages and search', () => {
+  const picture = (name: string) => new File(['picture'], name, { type: 'image/png' });
+  const sends = (engine: { calls: unknown[][] }) => engine.calls.filter(([name]) => name === 'send');
+  beforeEach(() => {
+    URL.createObjectURL = vi.fn(() => 'blob:shown');
+    URL.revokeObjectURL = vi.fn();
+    Element.prototype.scrollIntoView = vi.fn();
+    vi.mocked(saveFile).mockClear();
+  });
+
+  it('files wait above the field until the message is sent: picked, pasted and dropped, removed one by one, ten at most', () => {
+    const engine = createFixtureChatEngine();
+    state.engine = engine;
+    render(<App user="A" at="/chat?c=chat-alex" />);
+    const names = () => within(screen.getByRole('list', { name: 'Files to send' })).getAllByRole('listitem').map(item => item.querySelector('span span')!.textContent);
+    const pick = (files: File[]) => fireEvent.change(screen.getByLabelText('Choose files to send'), { target: { files } });
+    pick([picture('one.png'), new File(['abc'], 'notes.txt', { type: 'text/plain' })]);
+    fireEvent.paste(field('Alex Example'), { clipboardData: { files: [picture('pasted.png')], types: ['Files'], getData: () => '' } });
+    // Cells copied from a spreadsheet come with a picture of themselves: they stay text, for the field to take.
+    expect(fireEvent.paste(field('Alex Example'), { clipboardData: { files: [picture('cells.png')], types: ['text/html', 'text/plain', 'Files'], getData: () => '12\t34' } })).toBe(true);
+    fireEvent.drop(screen.getByRole('region', { name: 'Chat with Alex Example' }), { dataTransfer: { files: [picture('dropped.png')], types: ['Files'] } });
+    expect(names()).toEqual(['one.png', 'notes.txt', 'pasted.png', 'dropped.png']);
+    fireEvent.click(screen.getByRole('button', { name: 'Remove notes.txt' }));
+    expect(names()).toEqual(['one.png', 'pasted.png', 'dropped.png']);
+
+    pick(Array.from({ length: 8 }, (_, index) => picture(`more-${index}.png`)));
+    expect(names()).toHaveLength(10);
+    expect(screen.getByText('A message has at most 10 files.')).toBeInTheDocument();
+    expect(sends(engine)).toEqual([]);
+
+    // Files alone are a message: no text is needed.
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    const [[, chat, text, reply, mentions, files]] = sends(engine) as [[string, string, string, null, string[], { name: string }[]]];
+    expect([chat, text, reply, mentions]).toEqual(['chat-alex', '', null, []]);
+    expect(files.map(file => file.name)).toEqual(['one.png', 'pasted.png', 'dropped.png', ...Array.from({ length: 7 }, (_, index) => `more-${index}.png`)]);
+    expect(screen.queryByRole('list', { name: 'Files to send' })).not.toBeInTheDocument();
+    expect(screen.queryByText('A message has at most 10 files.')).not.toBeInTheDocument();
+  });
+
+  it('the recorder waits for the microphone, counts, discards and sends; ten minutes end it as a file to send; a refused microphone says so', async () => {
+    const stopped = vi.fn();
+    class Recorder {
+      static isTypeSupported = (type: string) => type.startsWith('audio/webm');
+      state = 'inactive';
+      mimeType = 'audio/webm;codecs=opus';
+      ondataavailable: ((event: { data: Blob }) => void) | null = null;
+      onstop: (() => void) | null = null;
+      start() { this.state = 'recording'; }
+      stop() { this.state = 'inactive'; this.ondataavailable?.({ data: new Blob(['sound']) }); this.onstop?.(); }
+    }
+    let allow!: () => void;
+    const getUserMedia = vi.fn(() => new Promise((resolve, reject) => { allow = () => resolve({ getTracks: () => [{ stop: stopped }] }); void reject; }));
+    vi.stubGlobal('MediaRecorder', Recorder);
+    Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: { getUserMedia } });
+    vi.useFakeTimers();
+    try {
+      const engine = createFixtureChatEngine();
+      state.engine = engine;
+      render(<App user="A" at="/chat?c=chat-alex" />);
+      const record = async () => { fireEvent.click(screen.getByRole('button', { name: 'Record a voice message' })); };
+      const pass = (seconds: number) => act(async () => { await vi.advanceTimersByTimeAsync(seconds * 1000); });
+
+      await record();
+      expect(screen.getByText('Waiting for the microphone…')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Send the voice message' })).toBeDisabled();
+      await act(async () => { allow(); });
+      await pass(3);
+      expect(screen.getByRole('timer')).toHaveTextContent('0:03');
+      fireEvent.click(screen.getByRole('button', { name: 'Discard the recording' }));
+      expect(stopped).toHaveBeenCalledTimes(1);
+      expect(field('Alex Example')).toHaveFocus();
+      expect(sends(engine)).toEqual([]);
+
+      await record();
+      await act(async () => { allow(); });
+      await pass(5);
+      fireEvent.click(screen.getByRole('button', { name: 'Send the voice message' }));
+      expect(sends(engine)).toEqual([['send', 'chat-alex', '', null, [], [{ blob: expect.any(Blob), name: 'Voice message.webm', voice_seconds: 5 }]]]);
+      expect(screen.queryByRole('list', { name: 'Files to send' })).not.toBeInTheDocument();
+
+      // Nobody pressed Send: the recording that ended by itself is not sent by itself.
+      await record();
+      await act(async () => { allow(); });
+      await pass(601);
+      expect(within(screen.getByRole('list', { name: 'Files to send' })).getByRole('listitem')).toHaveTextContent('Voice message.webm10:00');
+      expect(screen.getByText(/The recording stopped at 10 minutes/)).toBeInTheDocument();
+      expect(sends(engine)).toHaveLength(1);
+
+      getUserMedia.mockImplementationOnce(() => Promise.reject(new DOMException('Permission denied', 'NotAllowedError')));
+      await record();
+      await act(async () => {});
+      expect(screen.getByText(/UniHub may not use the microphone\. Allow the microphone for this site/)).toBeInTheDocument();
+      expect(field('Alex Example')).toBeInTheDocument();
+    } finally { vi.useRealTimers(); vi.unstubAllGlobals(); }
+  });
+
+  it('a file that arrives after its chat was left is not saved, a picture\'s address is given back, and a deleted message closes its picture', async () => {
+    let answer!: (blob: Blob) => void;
+    const sheet = new Blob(['rows']);
+    const engine = createFixtureChatEngine({ files: { 'file-stock': () => new Promise<Blob>(resolve => { answer = resolve; }), 'file-gate': () => new Promise<Blob>(() => {}) } });
+    state.engine = engine;
+    render(<App user="A" at="/chat?c=chat-finley" />);
+    const save = () => fireEvent.click(screen.getByRole('button', { name: 'Save Stock list June.xlsx' }));
+    await waitFor(() => expect(URL.createObjectURL).toHaveBeenCalledTimes(1));
+    save();
+    expect(screen.getByText('Getting it… 0%')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('link', { name: /^Blair Example/ }));
+    await act(async () => { answer(sheet); });
+    expect(saveFile).not.toHaveBeenCalled();
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:shown');
+
+    // The same file asked for in its chat is saved under its name.
+    fireEvent.click(screen.getByRole('link', { name: /^Finley Example/ }));
+    save();
+    await act(async () => { answer(sheet); });
+    expect(saveFile).toHaveBeenCalledWith(sheet, 'Stock list June.xlsx');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open the picture Gate 13 June.jpg' }));
+    expect(screen.getByRole('dialog', { name: 'Gate 13 June.jpg' })).toHaveTextContent('Getting the file…');
+    await act(async () => { await engine.delete('f1'); });
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+  });
+
+  it('search puts what it finds in place of the chats, the arrows move between the field and the results, Escape brings the chats back, and a message opens its chat there', async () => {
+    const old = Array.from({ length: 250 }, (_, index) => message(`o${index}`, false, 'Blair Example', new Date(Date.UTC(2026, 4, 1, 8, index)).toISOString(), index === 3 ? 'The forklift licence is renewed.' : `Line ${index}`));
+    state.engine = createFixtureChatEngine({ threads: { ...CHAT_THREADS, 'chat-blair': old } });
+    render(<App user="A" at="/chat" />);
+    const search = screen.getByRole('searchbox', { name: 'Search chats and messages' });
+    search.focus();
+    fireEvent.change(search, { target: { value: 'plan' } });
+    const results = within(await screen.findByRole('region', { name: 'Search results' }));
+    expect(screen.queryByRole('list', { name: 'Chats' })).not.toBeInTheDocument();
+    const [chat, first] = results.getAllByRole('link');
+    expect(chat).toHaveTextContent('Warehouse planning');
+    expect(results.getByText('Search looks through the chats on this device. The server cannot read them.')).toBeInTheDocument();
+    fireEvent.keyDown(search, { key: 'ArrowDown' });
+    expect(chat).toHaveFocus();
+    fireEvent.keyDown(chat, { key: 'ArrowDown' });
+    expect(first).toHaveFocus();
+    fireEvent.keyDown(first, { key: 'ArrowUp' });
+    fireEvent.keyDown(chat, { key: 'ArrowUp' });
+    expect(search).toHaveFocus();
+    fireEvent.keyDown(search, { key: 'Escape' });
+    expect(search).toHaveValue('');
+    expect(search).toHaveFocus();
+    expect(screen.getByRole('list', { name: 'Chats' })).toBeInTheDocument();
+
+    // A file's name is found like a text.
+    fireEvent.change(search, { target: { value: 'xlsx' } });
+    expect(await screen.findByRole('link', { name: /Finley Example.*Stock list June\.xlsx/ })).toBeInTheDocument();
+    fireEvent.change(search, { target: { value: 'FORKLIFT' } });
+    const hit = await screen.findByRole('link', { name: /forklift/ });
+    expect(within(hit).getByText('forklift').tagName).toBe('MARK');
+    fireEvent.click(hit);
+    expect(screen.getByTestId('where')).toHaveTextContent('/chat?c=chat-blair&m=o3');
+    // The message is older than the 200 a chat draws at first: the earlier ones are drawn as far back as it.
+    const found = await screen.findByText('The forklift licence is renewed.', { selector: 'ol p' });
+    await waitFor(() => expect((Element.prototype.scrollIntoView as Mock).mock.contexts.at(-1)).toBe(found.closest('li')));
+  }, 20_000);
 });
 
 describe('message text', () => {

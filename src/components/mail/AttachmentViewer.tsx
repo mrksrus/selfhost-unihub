@@ -285,7 +285,7 @@ function ViewerContent({ attachments, initialId }: { attachments: EmailAttachmen
   );
 }
 
-function ImagePreview({ src, alt, fileLine, download }: { src: string; alt: string; fileLine: string; download: ReactNode }) {
+export function ImagePreview({ src, alt, fileLine, download }: { src: string; alt: string; fileLine: string; download: ReactNode }) {
   const [failed, setFailed] = useState(false);
   if (failed) return <EmptyState icon={FileQuestion} title="Could not show this image" description={<>{fileLine}<br />This browser cannot display its format.</>} action={download} className="h-full px-4" />;
   return (
@@ -341,7 +341,7 @@ interface PdfPreviewProps {
  * (Android Chrome) do not offer inside a page. Each page gets pdf.js's text
  * layer so text such as an IBAN can be selected and copied.
  */
-function PdfPreview({ blob, zoom, onFitScale, onPages, download }: PdfPreviewProps) {
+export function PdfPreview({ blob, zoom, onFitScale, onPages, download }: PdfPreviewProps) {
   const scroller = useRef<HTMLDivElement>(null);
   const pageElements = useRef<(HTMLDivElement | null)[]>([]);
   const position = useRef(0);
