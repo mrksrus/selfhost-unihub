@@ -52,7 +52,7 @@ test('a group chat of three: all write, a mention is marked for the one it names
     // Casey mentions Blair from the list "@" opens. Blair, with the list in front, sees the "@" there and the mention marked in the chat; for Alex it is not marked.
     await b.goto(new URL('/chat', b.url()).href);
     await shows(chatRow(b, chat), 60_000);
-    const field = c.getByRole('textbox', { name: `Message to ${chat}` });
+    const field = c.getByLabel(`Message to ${chat}`, { exact: true });
     await field.pressSequentially(`@${blair.name.slice(0, 4)}`);
     await c.getByRole('option', { name: blair.name, exact: true }).click();
     await field.pressSequentially(`the gate is open ${run}`);

@@ -33,25 +33,28 @@ export async function removePeople(people: Person[]) {
   for (const person of people) ok(await admin('DELETE', `/api/admin/users/${person.id}`, { current_password: signInPassword }), `remove ${person.email}`);
 }
 
-/** The person's server session as browser cookies. */
-export async function cookiesOf(person: Person) {
-  return (await signIn(person.email)).cookie.split('; ').map((pair) => {
+/** The person's server session as browser cookies; `device` names a sign-in of its own, which the server sees as another device. */
+export async function cookiesOf(person: Person, device?: string) {
+  return (await signIn(person.email, device ? { fresh: true, userAgent: `UniHub e2e ${device}` } : {})).cookie.split('; ').map((pair) => {
     const at = pair.indexOf('=');
     return { name: pair.slice(0, at), value: pair.slice(at + 1), url: stack.url };
   });
 }
 
+/** Chromium answers the microphone with a generated tone and asks nobody. */
+export const FAKE_MICROPHONE = ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream'];
+
 /** A second browser, signed in as the person, with the desktop target's window. */
-export async function secondBrowser(person: Person): Promise<{ browser: Browser; page: Page }> {
-  const browser = await chromium.launch();
-  const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, colorScheme: 'dark', timezoneId: 'UTC' });
-  await context.addCookies(await cookiesOf(person));
+export async function secondBrowser(person: Person, { args = [] as string[], device = undefined as string | undefined } = {}): Promise<{ browser: Browser; page: Page }> {
+  const browser = await chromium.launch({ args });
+  const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, colorScheme: 'dark', timezoneId: 'UTC', permissions: args.length ? ['microphone'] : [] });
+  await context.addCookies(await cookiesOf(person, device));
   return { browser, page: await context.newPage() };
 }
 
 /** A browser of the person's own with Chat open and their passphrase chosen; they have no chat yet. */
-export async function chatBrowser(person: Person) {
-  const opened = await secondBrowser(person);
+export async function chatBrowser(person: Person, args: string[] = []) {
+  const opened = await secondBrowser(person, { args });
   await opened.page.goto(`${stack.url}${chatWithHook}`);
   await choosePassphrase(opened.page);
   await shows(opened.page.getByText('No chats yet', { exact: true }), 60_000);
@@ -62,9 +65,16 @@ export async function chatBrowser(person: Person) {
 export const chatRow = (page: Page, chat: string) => page.getByRole('list', { name: 'Chats' }).getByRole('link', { name: new RegExp(`^${escape(chat)}`) });
 export const messagesOf = (page: Page, chat: string) => page.getByRole('list', { name: `Messages with ${chat}` });
 export async function write(page: Page, chat: string, text: string) {
-  await page.getByRole('textbox', { name: `Message to ${chat}` }).fill(text);
+  await page.getByLabel(`Message to ${chat}`, { exact: true }).fill(text);
   await page.getByRole('button', { name: 'Send', exact: true }).click();
   await shows(messagesOf(page, chat).getByText(text, { exact: true }));
+}
+
+/** The person starts the 1:1 chat from the other's entry in the company directory. */
+export async function startChat(page: Page, withPerson: Person) {
+  await page.goto(`${stack.url}/contacts?book=company&contact=${withPerson.id}`);
+  await page.getByRole('button', { name: 'Message', exact: true }).click();
+  await page.waitForURL(/\/chat\?c=/, { timeout: 60_000 });
 }
 
 /** Whether the server still serves the person the chat's messages. */
