@@ -50,9 +50,9 @@ export = defineRoutes({
     return { ...await addKeyPackages(userId, getAuthTokenFromRequest(req), body) } satisfies ChatDeviceResponse;
   } },
   'GET /api/chat/conversations/:id/devices': { auth: 'user', module: 'chat', handler: async (req: Request, userId: string) => {
-    return { devices: await conversationDevices(userId, req.params.id) } satisfies ChatDevicesResponse;
+    return { devices: await conversationDevices(userId, req.params.id.toLowerCase()) } satisfies ChatDevicesResponse;
   } },
   'POST /api/chat/conversations/:id/key-packages': { auth: 'user', module: 'chat', restoreSection: null, body: { kind: 'none' }, handler: async (req: Request, userId: string) => {
-    return { key_packages: await claimKeyPackages(userId, getAuthTokenFromRequest(req), req.params.id) } satisfies ChatKeyPackageClaimResponse;
+    return { key_packages: await claimKeyPackages(userId, getAuthTokenFromRequest(req), req.params.id.toLowerCase()) } satisfies ChatKeyPackageClaimResponse;
   } },
 });
