@@ -28,8 +28,10 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
   keep their name, marked "former colleague".
 - Reference pictures: `chat-group-*` and `chat-people-*` (Wide and Phone)
   are new; `chat-wide-*`, `chat-earlier-wide-*`, `chat-list-phone-*` and
-  `chat-thread-phone-*` gain the group chats in the list and the bell in
-  the chat's header.
+  `chat-thread-phone-*` gain the group chats in the list, "New group" and
+  the bell in the chat's header; `chat-passphrase-*` and `settings-chat-*`
+  change only in the navigation's Chat count (4 instead of 2, from the
+  group chat's unread messages).
 
 - **Three chat policies** on Server › Policies, for everyone or per group:
   who members may add to a group chat (the people of their own groups, or

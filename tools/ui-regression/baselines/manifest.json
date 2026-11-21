@@ -111,68 +111,100 @@
       "bytes": 105512
     },
     "chat-earlier-wide-dark.png": {
-      "sha256": "b0049ae2bd1af01d503490b5f6d0cce3d4486cd66f0f79dfd0c5fd9b641b0606",
-      "bytes": 121285
+      "sha256": "21325ed6bc57b3edd90b3ede40d9fb4824ad367cfb3333fb3ebd50df2803faad",
+      "bytes": 136551
     },
     "chat-earlier-wide-light.png": {
-      "sha256": "5b525838d1589974af0d5d6809b52bf06b1624b4ba803c446648c5c2e4d8a32d",
-      "bytes": 121859
+      "sha256": "109414856c2c3893bc857dab88304d6f656d727c475ea9cd124dd7db20570b97",
+      "bytes": 137788
+    },
+    "chat-group-phone-dark.png": {
+      "sha256": "406ea3438f4611698126645f6af77c91356d651df00f431f830047db71e9a268",
+      "bytes": 67974
+    },
+    "chat-group-phone-light.png": {
+      "sha256": "cf0144f024a7663b1889f3345868957f6008c9fd5c0615b8e9255ff4d1bec9ab",
+      "bytes": 68816
+    },
+    "chat-group-wide-dark.png": {
+      "sha256": "11695e471ab83c98c10001b7f0452cba30653a4baef300949d10bf18d53df87b",
+      "bytes": 140070
+    },
+    "chat-group-wide-light.png": {
+      "sha256": "9f5ce5e2b192b576cb69a5e6a7bbe0dc3a20d64eef54c9441e3cded401d58b94",
+      "bytes": 140952
     },
     "chat-list-phone-dark.png": {
-      "sha256": "b44371b80ff5caf769cb3780becf5b47f1cfaa9d749c196cfaa8ee5730851f11",
-      "bytes": 45196
+      "sha256": "700819ecf1598ebc89ad3ef05c9a3be2b8ec72cbaecc8e7632cfa071ebfe70ac",
+      "bytes": 58553
     },
     "chat-list-phone-light.png": {
-      "sha256": "a72e9a9940f5d2a8bf90d1dfec430537a225bc627e1a6b6679ddd0f6e63f41ac",
-      "bytes": 46955
+      "sha256": "1205a2339d2aebbc8b67ac53ec81b42014dc8ea22e98b08879d999e815c75e5b",
+      "bytes": 61754
     },
     "chat-passphrase-choose-phone-dark.png": {
-      "sha256": "d3b0605fc22d5885ad022d4aace937c265d3ab4165e339878108c0d3d8bc5bb6",
-      "bytes": 52495
+      "sha256": "e8cd3faa3ce6f1abff589fd081f0e68c009b5f091d5642905a5d5f253940739b",
+      "bytes": 52514
     },
     "chat-passphrase-choose-phone-light.png": {
-      "sha256": "62dd8f7deab5016b925a57288670f699c377193a007a5c4556cc902d29ada676",
-      "bytes": 55726
+      "sha256": "bc405e3f4e50e25597dd78ac80f52317c89248cfe513af901796485f1e31b98a",
+      "bytes": 55732
     },
     "chat-passphrase-choose-wide-dark.png": {
-      "sha256": "46db2518cdf6d9e712550125d12e5e349b81bf71d1a9fb7386810f80d1856c25",
-      "bytes": 76034
+      "sha256": "383611b9d1ea29b27141151f886fb7c7747eb4e5073d5d7baae8a4f8cd3d1fdd",
+      "bytes": 76026
     },
     "chat-passphrase-choose-wide-light.png": {
-      "sha256": "685acda9caf1b3fc189dbdd66f185083bc08b86509dbe31fafad79fe3511b882",
-      "bytes": 78132
+      "sha256": "9adeec1a2ca881c3f37a7a9283efd340aae4c803a26b3822e4b2e147d20757cd",
+      "bytes": 78130
     },
     "chat-passphrase-enter-phone-dark.png": {
-      "sha256": "6db59b82bb65da641d34388dc60058b51a6b181cd99aea6c294d8ce7bcc434e7",
-      "bytes": 48886
+      "sha256": "ba10caae74fa7c9eb9791d8088d71d76a3aa448bea63405c2604a53651f28380",
+      "bytes": 48907
     },
     "chat-passphrase-enter-phone-light.png": {
-      "sha256": "1738b3409495d26e2c9e9ec224c8c4beacf0f64a1a6e8a18aff4a949cf7cd4e6",
-      "bytes": 50796
+      "sha256": "55c3842bd774d82161aa315df89a4829603a957ffac4785a370cd5165336e683",
+      "bytes": 50805
     },
     "chat-passphrase-enter-wide-dark.png": {
-      "sha256": "7307ab19473bced466587689bc70c74f302afc0bf2bfb5fdd49c8bac0bece226",
-      "bytes": 70461
+      "sha256": "e5d53f12bb73a1eb396edb2927fa00813e494d5491669d0ba01adc56c6868d4c",
+      "bytes": 70454
     },
     "chat-passphrase-enter-wide-light.png": {
-      "sha256": "d90168055c3797e86fe0fa71ef317253aa6a8f66956e2ec38f509a43f60caf25",
-      "bytes": 71394
+      "sha256": "78a9f32d198962ad631ea5b5ff9dfb7700cce03f0c424b07ed552b142c8bb861",
+      "bytes": 71391
+    },
+    "chat-people-phone-dark.png": {
+      "sha256": "e622a6c05ecd96d44a9b3bf2393ef33eb724cc6109c0cd8d2c8b83b4704d0ef3",
+      "bytes": 47341
+    },
+    "chat-people-phone-light.png": {
+      "sha256": "f73253ce4e5c6f54a2b232b2ef22abe4ec70ce79d2213986f7af3529de7f739a",
+      "bytes": 50958
+    },
+    "chat-people-wide-dark.png": {
+      "sha256": "0d9b8249d0787aef9b8306d87b383c0e2d35aedce98bad36f258c5e9931ed3f2",
+      "bytes": 145919
+    },
+    "chat-people-wide-light.png": {
+      "sha256": "6e1b93f4540581c7c3f7e32dbb156037915db499967d711ddd9a7f20a5a92bd1",
+      "bytes": 149815
     },
     "chat-thread-phone-dark.png": {
-      "sha256": "b1200362393c9b909bdd7ba2f6e14b1ab59029e94f62dacf64c60757525918f8",
-      "bytes": 60041
+      "sha256": "9bad00e5813451273e10fe33e8c91e5cc9c04889f5565f72bf78160723bec8a9",
+      "bytes": 60324
     },
     "chat-thread-phone-light.png": {
-      "sha256": "d528d64ff8362f04b738c03c989af571fef32ec5da42397f5222ab16ef9e676f",
-      "bytes": 61840
+      "sha256": "ffd9d3fe2605b91b660a699263bfa538a4dbbfe3e6cc942a27626987c43a85fd",
+      "bytes": 62206
     },
     "chat-wide-dark.png": {
-      "sha256": "27f25777a9b936c8082cac0c23361de0e7f373e1339d0d713442a96fce99a102",
-      "bytes": 114912
+      "sha256": "e8d1323e5be815bc8de0f312c6d7deafc1cee56667d827ef4e007cba65554111",
+      "bytes": 130391
     },
     "chat-wide-light.png": {
-      "sha256": "8c41b2e51c825e27ed49afed223355bf7ec93621eab6a56eecabbde1736db549",
-      "bytes": 116135
+      "sha256": "3cfcbf56d07d3cf71720bfac201132bc8ed25e7e79e5e473267420470b51ded6",
+      "bytes": 132330
     },
     "company-entry-phone-dark.png": {
       "sha256": "e26268da61f4eb330ca87e8006e99db1f5acd00919148f5809fdc68e2e544785",
@@ -407,20 +439,20 @@
       "bytes": 160642
     },
     "settings-chat-phone-dark.png": {
-      "sha256": "cc52d05db0be87c6ebdffc7cb8f7b98b262db80a72052c20862a2d12714394cb",
-      "bytes": 67504
+      "sha256": "2a02dfc57e9a5e2a7a1f742f2bc72bb6bba25e5125a62f2db71e838b420269bf",
+      "bytes": 67536
     },
     "settings-chat-phone-light.png": {
-      "sha256": "eb4803e2799e2365f56d1d5db1b3a23914db559ef91f863a820db255e4f5ad44",
-      "bytes": 71638
+      "sha256": "24bcc71c48b47ac95356f81962a08986317a0703f35f427e4a2802f97c2b9812",
+      "bytes": 71644
     },
     "settings-chat-wide-dark.png": {
-      "sha256": "9051ecb418dd6e90f8685c03fdbb06d477cc384d307167a92b7d969f6aa2ec0d",
-      "bytes": 141818
+      "sha256": "960026385c40ebb8fdb7f9490fd2dbaee548f96a36bbde966d6f9a1b84d0baaf",
+      "bytes": 141806
     },
     "settings-chat-wide-light.png": {
-      "sha256": "20664e9714b8059b4267854b088126ea4f7329981100a86fd1f31d47d57f619b",
-      "bytes": 148817
+      "sha256": "2cbfedc8f0e48d345d779241bda37d6739bd97073d2efea57989e5dc7f36b96b",
+      "bytes": 148806
     },
     "settings-pages-wide-dark.png": {
       "sha256": "037a9e0fa8fc03f7875540db3e7cda27f2ce7f7108c9412e6024219096acdbac",
@@ -1470,6 +1502,73 @@
         "chat-wide-light.png",
         "devices-wide-dark.png",
         "devices-wide-light.png"
+      ],
+      "removed": []
+    },
+    {
+      "date": "2026-11-21T00:30:38.782Z",
+      "reason": "0.34.0 group chats: new pictures of a group chat and its people (Wide and Phone). The chat pictures gain the group chats in the list and the bell in the chat's header, and every picture with Chat on counts 4 unread in the navigation instead of 2. Content within the accepted Chat design (P-27); the integrator decides.",
+      "source": {
+        "commit": "56ff7f14a103b1d281b46692bd9446357169d41c",
+        "branch": "feat/0.34.0-p5-screens",
+        "dirty": false,
+        "digest": "ab794e162b650bb6aed2e78890757b9f1d6d59109a478552a92b4ec81115aec1"
+      },
+      "render": {
+        "playwright": "1.64.0",
+        "browser": "chromium-headless-shell 156.0.8078.4",
+        "browserArgs": [
+          "--font-render-hinting=none",
+          "--disable-lcd-text",
+          "--force-color-profile=srgb",
+          "--disable-gpu",
+          "--disable-skia-runtime-opts",
+          "--num-raster-threads=1",
+          "--disable-partial-raster"
+        ],
+        "platform": "linux-x64",
+        "fonts": {
+          "@fontsource/inter": "5.3.0",
+          "@fontsource/jetbrains-mono": "5.3.0"
+        },
+        "fontconfig": "isolated",
+        "deviceScaleFactor": 1
+      },
+      "host": {
+        "node": "v26.12.1",
+        "ci": false
+      },
+      "added": [
+        "chat-group-phone-dark.png",
+        "chat-group-phone-light.png",
+        "chat-group-wide-dark.png",
+        "chat-group-wide-light.png",
+        "chat-people-phone-dark.png",
+        "chat-people-phone-light.png",
+        "chat-people-wide-dark.png",
+        "chat-people-wide-light.png"
+      ],
+      "changed": [
+        "chat-earlier-wide-dark.png",
+        "chat-earlier-wide-light.png",
+        "chat-list-phone-dark.png",
+        "chat-list-phone-light.png",
+        "chat-passphrase-choose-phone-dark.png",
+        "chat-passphrase-choose-phone-light.png",
+        "chat-passphrase-choose-wide-dark.png",
+        "chat-passphrase-choose-wide-light.png",
+        "chat-passphrase-enter-phone-dark.png",
+        "chat-passphrase-enter-phone-light.png",
+        "chat-passphrase-enter-wide-dark.png",
+        "chat-passphrase-enter-wide-light.png",
+        "chat-thread-phone-dark.png",
+        "chat-thread-phone-light.png",
+        "chat-wide-dark.png",
+        "chat-wide-light.png",
+        "settings-chat-phone-dark.png",
+        "settings-chat-phone-light.png",
+        "settings-chat-wide-dark.png",
+        "settings-chat-wide-light.png"
       ],
       "removed": []
     }
