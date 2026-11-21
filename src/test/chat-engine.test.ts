@@ -9,11 +9,11 @@ import type { ChatThreadMessage } from '@/lib/chat/types';
 chatDeliveryHooks();
 
 describe('the chat engine', { timeout: 60_000 }, () => {
-  it('Alex and Blair write on three devices; a device added later reads new messages at once and old ones after the passphrase', async () => {
+  it('Alex and Blair write on three devices; a device added later reads new messages and old ones after the passphrase', async () => {
     const { alex, blair, conversation } = await pair();
     const blair2 = open(BLAIR, 'b2');
     await settled(blair2);
-    expect(blair2.engine.snapshot().readiness.state).toBe('enter-passphrase');
+    expect(blair2.engine.snapshot().readiness.state).toBe('waiting');
     await blair2.as(engine => engine.enterPassphrase(PASSPHRASES[BLAIR]));
 
     await send(alex, conversation, 'hello blair');
@@ -31,22 +31,19 @@ describe('the chat engine', { timeout: 60_000 }, () => {
     expect(message(alex, conversation, 'hello blair')?.delivery).toBe('delivered');
     expect(blair.engine.snapshot().conversations[0]).toMatchObject({ peer: { name: 'Alex Example' }, last_message: { text: 'hi alex, from my second browser', from_me: true } });
 
-    // Blair's third browser, after both wrote: new messages at once, the old ones with the passphrase.
+    // Blair's third browser, after both wrote: the new messages once it joined with the passphrase, the old ones from the archive.
     const blair3 = open(BLAIR, 'b3');
     await settled(blair3);
-    await send(alex, conversation, 'blair has a new browser');
-    await blair3.as(engine => engine.sync());
-    expect(texts(blair3, conversation)).toEqual(['(unreadable)', '(unreadable)', 'blair has a new browser']);
-    expect(alex.engine.thread(conversation)!.some(item => item.kind === 'device-added' && item.name === 'Blair Example')).toBe(true);
-
     // A copy put under another message's id is dropped on restore.
     const copies = [...server.archive.values()].filter(copy => copy.user === BLAIR);
     const [first, second] = [copies.find(copy => server.messages.find(item => item.id === copy.message)?.seq === 1)!, copies.find(copy => server.messages.find(item => item.id === copy.message)?.seq === 2)!];
     second.sealed = first.sealed;
-    // The connection breaks while the history is read: the key is kept, and the next sync reads the history.
+    // The connection breaks while the history is read: the key is kept, the device joined, and the next sync reads the history.
     server.state.failArchive = true;
     await expect(blair3.as(engine => engine.enterPassphrase(PASSPHRASES[BLAIR]))).rejects.toThrow();
-    expect(texts(blair3, conversation)).toEqual(['(unreadable)', '(unreadable)', 'blair has a new browser']);
+    expect(blair3.engine.snapshot()).toMatchObject({ readiness: { state: 'ready' }, holds_history_key: true });
+    await send(alex, conversation, 'blair has a new browser');
+    expect(alex.engine.thread(conversation)!.some(item => item.kind === 'device-added' && item.name === 'Blair Example')).toBe(true);
     await blair3.as(engine => engine.sync());
     expect(texts(blair3, conversation)).toEqual(['hello blair', '(unreadable)', 'blair has a new browser']);
     expect(blair3.engine.snapshot()).toMatchObject({ readiness: { state: 'ready' }, holds_history_key: true, restore: null });
@@ -56,6 +53,7 @@ describe('the chat engine', { timeout: 60_000 }, () => {
     const { alex, blair, conversation } = await pair();
     const blair2 = open(BLAIR, 'b2');
     await settled(blair2);
+    await blair2.as(engine => engine.enterPassphrase(PASSPHRASES[BLAIR]));
     await send(alex, conversation, 'to both browsers');
     await send(alex, conversation, 'to be deleted');
     for (const on of [blair, blair2]) await on.as(engine => engine.sync());
@@ -79,9 +77,11 @@ describe('the chat engine', { timeout: 60_000 }, () => {
     // Blair removes the second browser (Settings › Devices); it still holds its keys and, here, still reaches the server.
     [...server.devices.values()].find(device => device.device === `${BLAIR}:b2`)!.device = null;
     await send(alex, conversation, 'after the removal');
-    for (const on of [blair, blair2]) await on.as(engine => engine.sync());
+    await blair.as(engine => engine.sync());
     expect(texts(blair, conversation).at(-1)).toBe('after the removal');
-    expect(texts(blair2, conversation).at(-1)).toBe('(unreadable)');
+    // It has no chat device in Chat any more, so the server refuses it what it fetches.
+    await expect(blair2.as(engine => engine.sync())).rejects.toMatchObject({ code: 'CHAT_DEVICE_WAITING' });
+    expect(texts(blair2, conversation)).not.toContain('after the removal');
   });
 
   it('two devices that make a group at once converge, and messages written offline arrive in order', async () => {

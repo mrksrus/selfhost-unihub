@@ -1,13 +1,14 @@
 // The chat routes as the engine calls them (api/src/routes/chat*.ts,
 // contracts/chat.ts). Every call throws ApiError on a refusal and answers the
-// route's data. The device routes are called from lib/chat/device.ts.
+// route's data. Enrolling and key packages are called from lib/chat/device.ts.
 import { api, type ApiResponse } from '@/lib/api';
 import { ApiError, unwrap } from '@/lib/api-error';
 import type {
   ChatAccount, ChatAccountResponse, ChatArchiveCopy, ChatArchiveResponse, ChatConversation, ChatConversationResponse, ChatConversationsResponse,
   ChatDevicesResponse, ChatGroupCreateRequest, ChatKeyBackup, ChatKeyPackageClaimResponse, ChatMarksRequest, ChatMarksResponse, ChatMessage,
   ChatMessageCreateRequest, ChatMessageDeletedResponse, ChatMessageResponse, ChatMessagesResponse, ChatCandidatesResponse, ChatConversationUpdatedResponse,
-  ChatGroupChatCreateRequest, ChatMembersResponse, ChatNotify, ChatNotifyResponse, ChatAttachmentResponse,
+  ChatGroupChatCreateRequest, ChatMembersResponse, ChatNotify, ChatNotifyResponse, ChatAttachmentResponse, ChatDeviceResponse, ChatChallengeResponse,
+  ChatApprovalsResponse,
 } from '../../api/src/contracts/chat';
 
 const data = async <T>(response: Promise<ApiResponse<T>>) => unwrap(await response)!;
@@ -21,6 +22,16 @@ export const chatApi = {
     (await data(api.put<ChatAccountResponse>('/chat/account/key-backup', { current_password, history_public, key_backup }))).account!,
   newKey: async (current_password: string, history_public: string, key_backup: ChatKeyBackup) =>
     (await data(api.post<ChatAccountResponse>('/chat/account/new-key', { current_password, history_public, key_backup }))).account!,
+
+  // This device joining Chat (lib/chat/pairing.ts), and a joined one answering others' requests.
+  device: () => data(api.get<ChatDeviceResponse>('/chat/devices/current')),
+  challenge: () => data(api.post<ChatChallengeResponse>('/chat/devices/current/challenge')),
+  prove: (value: string) => data(api.post<ChatDeviceResponse>('/chat/devices/current/proof', { value })),
+  askApproval: (public_key: string) => data(api.post<ChatDeviceResponse>('/chat/devices/current/approval', { public_key })),
+  approvals: async () => (await data(api.get<ChatApprovalsResponse>('/chat/devices/approvals'))).approvals,
+  approve: (chatDeviceId: string, public_key: string, sealed_key: string) =>
+    data(api.post(`/chat/devices/${encodeURIComponent(chatDeviceId)}/approve`, { public_key, sealed_key })),
+  dropApproval: (chatDeviceId: string) => data(api.delete(`/chat/devices/${encodeURIComponent(chatDeviceId)}/approval`)),
 
   conversations: async (): Promise<ChatConversation[]> => (await data(api.get<ChatConversationsResponse>('/chat/conversations'))).conversations,
   start: async (user_id: string) => (await data(api.post<ChatConversationResponse>('/chat/conversations', { user_id }))).conversation,

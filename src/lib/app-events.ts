@@ -36,6 +36,10 @@ export interface AppEvents {
   'unihub:app-lock-required': AppLockRequiredDetails;
   /** The live stream said a chat changed (its id), or reconnected after events may have been lost (null). */
   'unihub:chat-changed': string | null;
+  /** The live stream said a chat device of this person asked for an approval, was answered or joined. */
+  'unihub:chat-device': undefined;
+  /** This device joined Chat: the live stream connects again, since the server sends chat hints only to a stream opened after that. */
+  'unihub:chat-joined': undefined;
   /** The live stream said a chat partner came online or left. */
   'unihub:chat-presence': { user_id: string; online: boolean };
   /** The API refused a request with 403 TWO_FACTOR_REQUIRED (lib/api.ts): show the two-factor set-up prompt. */

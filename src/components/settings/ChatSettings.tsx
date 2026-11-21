@@ -81,7 +81,7 @@ export default function ChatSettings() {
           <SettingsRow label="This device has your chat history" description="A new passphrase needs your account password, not the old passphrase.">
             <Button variant="outline" onClick={() => setDialog('change')}>Set a new passphrase…</Button>
           </SettingsRow>
-        ) : state === 'enter-passphrase' ? (
+        ) : state === 'enter-passphrase' || state === 'waiting' ? (
           <>
             <SettingsRow label="This device does not have your earlier messages" description="Enter the passphrase you chose on another device.">
               <Button asChild variant="outline"><Link to="/chat">Enter passphrase</Link></Button>

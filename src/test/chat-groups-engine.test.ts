@@ -39,6 +39,7 @@ describe('the chat engine in group chats', { timeout: 120_000 }, () => {
     const [alex, blair, casey] = [await person(ALEX, 'a1'), await person(BLAIR, 'b1'), await person(CASEY, 'c1')];
     const [alex2, blair2] = [open(ALEX, 'a2'), open(BLAIR, 'b2')];
     await Promise.all([settled(alex2), settled(blair2)]);
+    for (const [on, userId] of [[alex2, ALEX], [blair2, BLAIR]] as const) await on.as(engine => engine.enterPassphrase(`${userId} chat passphrase`));
     const everyone = [alex, alex2, blair, blair2, casey];
     const chat = await planning(...everyone);
 
@@ -122,6 +123,7 @@ describe('the chat engine in group chats', { timeout: 120_000 }, () => {
     const [alex, blair, casey] = [await person(ALEX, 'a1'), await person(BLAIR, 'b1'), await person(CASEY, 'c1')];
     const spare = open(BLAIR, 'b2');
     await settled(spare);
+    await spare.as(engine => engine.enterPassphrase(`${BLAIR} chat passphrase`));
     spare.engine.stop();
     const chat = await planning(alex, blair, casey);
     await send(alex, chat, 'before');

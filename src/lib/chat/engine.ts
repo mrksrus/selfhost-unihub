@@ -6,19 +6,24 @@
 // and restores from it after the passphrase. One tab per person runs the MLS
 // device and talks to the server for it (a Web Lock); the others read the
 // store, put what they send in the shared outbox and hear of changes through
-// a BroadcastChannel.
+// a BroadcastChannel. A new device waits and fetches no chat until it joins
+// (pairing.ts); any tab can join it, and the others learn it from the store.
 import { AppLockRequired, hasCode } from '@/lib/api-error';
-import { onAppEvent } from '@/lib/app-events';
+import { emitAppEvent, onAppEvent } from '@/lib/app-events';
 import { chatApi, unreachable } from '@/lib/chat-api';
-import type { ChatAccount, ChatConversation, ChatMember, ChatMessage, ChatNotify, ChatSender, ChatWelcome } from '../../../api/src/contracts/chat';
+import { fetchDevices } from '@/lib/devices-api';
+import type {
+  ChatAccount, ChatApproval, ChatConversation, ChatDeviceName, ChatDeviceResponse, ChatDeviceSignedInDetails, ChatMember, ChatMessage, ChatNotify, ChatSender, ChatWelcome,
+} from '../../../api/src/contracts/chat';
 import { concat, fromBase64Url, toBase64Url } from './bytes';
-import { startDevice, type ChatDevice } from './device';
+import { noteDevice, startDevice, type ChatDevice } from './device';
 import { createHistoryKey, unwrapHistoryKey, wrapHistoryKey } from './key-backup';
 import { MlsError, MlsUnavailableError, type MlsDevice } from './mls';
+import { approve, askApproval, openApproval, pairingCode, prove } from './pairing';
 import { open, seal, type SealKey } from './seal';
 import { MAX_FILES, MAX_FILE_BYTES, PREVIEW_MAX_BYTES, downloadFile, fileRef, outgoingFiles, parseFiles, renewed, uploadExpired, uploadFile, type ChatFileRef, type OutgoingFile } from './files';
 import { searchChats } from './search';
-import { ChatStore } from './store';
+import { ChatStore, type ChatDeviceRecord } from './store';
 import type {
   ChatDeliveryState, ChatEngine, ChatEngineSnapshot, ChatFileToSend, ChatReadiness, ChatThreadFile, ChatThreadItem, ChatThreadMessage, ChatThreadNotice,
 } from './types';
@@ -31,6 +36,8 @@ const STALE_ATTEMPTS = 3;
 const MAX_MENTIONS = 20;
 const DAY = 86_400_000;
 const PREFIX = 'unihub-chat:';
+// A waiting device looks for the answer to its request this often; the hint chat.device usually comes first.
+const ANSWER_POLL_MS = 10_000;
 
 interface Person { id: string; name: string }
 
@@ -158,6 +165,17 @@ class Engine implements ChatEngine {
   private readonly uploads = new Map<string, AbortController>();
   private readonly progress = new Map<string, number>();
   private readonly previewLoads = new Map<string, Promise<Blob>>();
+  /** The store holds a device the server enrolled; nothing is fetched before. */
+  private enrolled = false;
+  /** This device has not joined Chat (keys/waiting). */
+  private waiting = false;
+  private requestedAt: string | null = null;
+  private approvers: ChatDeviceName[] = [];
+  private code: string | null = null;
+  private poll: ReturnType<typeof setTimeout> | undefined;
+  /** Requests of the person's waiting devices, with the code made from the key the history is sealed to. */
+  private approvals: { approval: ChatApproval; code: string; signed_in_at: string | null }[] = [];
+  private newKeyRefused: ChatDeviceName[] | null = null;
 
   constructor(private readonly me: Person) {}
 
@@ -176,6 +194,7 @@ class Engine implements ChatEngine {
       const later = (id: string | null = null) => void this.sync(id).catch(() => undefined);
       this.stops.push(
         onAppEvent('unihub:chat-changed', later),
+        onAppEvent('unihub:chat-device', () => later()),
         onAppEvent('unihub:chat-presence', ({ user_id, online }) => {
           this.server = this.server.map(item => item.kind === 'direct' && item.peer.user_id === user_id && item.peer.online !== null ? { ...item, peer: { ...item.peer, online } } : item);
           for (const [id, list] of this.memberLists) this.setMembers(id, list.map(member => member.user_id === user_id && member.online !== null ? { ...member, online } : member));
@@ -200,6 +219,7 @@ class Engine implements ChatEngine {
   stop() {
     this.stopped = true;
     this.lock.abort();
+    clearTimeout(this.poll);
     this.uploads.forEach(upload => upload.abort());
     this.stops.forEach(stop => stop());
     this.channel?.close();
@@ -213,9 +233,9 @@ class Engine implements ChatEngine {
     try {
       this.device = await startDevice(this.store!, this.me.id);
       if (this.stopped) return this.device.free();
-      // A device enrolled again holds no group any more, and its cursors say so.
-      this.cursors = new Map((await this.store!.all<Cursor>('cursors')).map(cursor => [cursor.conversation_id, cursor]));
-      this.changed();
+      // A device enrolled again holds no group any more, and its cursors say so; it may wait now.
+      await this.load();
+      this.channel?.postMessage('changed');
       await this.sync();
     } catch (error) {
       this.fail(error);
@@ -241,8 +261,13 @@ class Engine implements ChatEngine {
   /** Reads everything the device keeps (at the start, and when another tab changed it). */
   private async load() {
     const store = this.store!;
-    const [messages, outbox, cursors, historyKey, account, restore] = await Promise.all([store.all<Stored>('messages'), store.all<Outgoing>('outbox'),
-      store.all<Cursor>('cursors'), store.historyKey(), store.get<ChatAccount | null>('keys', 'account'), store.get<boolean>('keys', 'restore')]);
+    const [messages, outbox, cursors, historyKey, account, restore, record, waiting] = await Promise.all([store.all<Stored>('messages'), store.all<Outgoing>('outbox'),
+      store.all<Cursor>('cursors'), store.historyKey(), store.get<ChatAccount | null>('keys', 'account'), store.get<boolean>('keys', 'restore'),
+      store.get<ChatDeviceRecord>('keys', 'device'), store.get<boolean>('keys', 'waiting')]);
+    const joining = this.loaded && (this.enrolled !== !!record?.chat_device_id || this.waiting !== !!waiting);
+    this.enrolled = !!record?.chat_device_id;
+    if (this.waiting && !waiting) emitAppEvent('unihub:chat-joined');
+    this.waiting = !!waiting;
     this.restorePending = !!restore;
     this.messages = new Map(messages.map(record => [record.id, record]));
     this.outbox = outbox;
@@ -252,6 +277,8 @@ class Engine implements ChatEngine {
     this.loaded = true;
     this.threads.clear();
     this.changed();
+    // Another tab enrolled or joined this device: fetch what that opens.
+    if (joining) void this.sync().catch(() => undefined);
   }
 
   // --- Snapshots -------------------------------------------------------------------------
@@ -272,8 +299,9 @@ class Engine implements ChatEngine {
 
   private readiness(): ChatReadiness {
     if (this.problem) return this.problem;
-    if (!this.loaded || this.account === undefined || (this.leading && !this.device)) return { state: 'starting' };
+    if (!this.loaded || this.account === undefined || (this.leading && !this.device) || !this.enrolled) return { state: 'starting' };
     if (!this.account) return { state: 'choose-passphrase' };
+    if (this.waiting) return { state: 'waiting', approvers: this.approvers, code: this.code };
     return this.historyKey ? { state: 'ready' } : { state: 'enter-passphrase' };
   }
 
@@ -292,6 +320,9 @@ class Engine implements ChatEngine {
       }),
       holds_history_key: !!this.historyKey,
       restore: this.restoring,
+      approvals: this.historyKey && !this.waiting
+        ? this.approvals.map(({ approval: { chat_device_id, device, requested_at }, code, signed_in_at }) => ({ chat_device_id, device, requested_at, code, signed_in_at })) : [],
+      new_key_refused: this.newKeyRefused,
     };
     return this.snap;
   }
@@ -412,7 +443,13 @@ class Engine implements ChatEngine {
     if (this.stopped || !this.store) return;
     try {
       await this.setAccount(await chatApi.account());
+      if (!this.enrolled) return;
+      if (this.waiting && this.account) await this.note(await chatApi.device());
+      await this.joinChat();
+      if (this.waiting) return this.account ? await this.waitForAnswer() : undefined;
       await this.setConversations(await chatApi.conversations());
+      // Requests are read again on a sync for any chat (a start, a reconnect, the hint chat.device), not for one chat's hint.
+      if (this.historyKey && this.membersDue.has(null)) await this.loadApprovals();
       if (!this.device) return;
       await this.dropGone();
       for (const conversation of this.server) await this.fetchConversation(conversation);
@@ -977,6 +1014,8 @@ class Engine implements ChatEngine {
     await this.store!.keepHistoryKey(key);
     this.historyKey = key;
     await this.setAccount(account);
+    // A waiting device joins with the key it now holds; the next sync tries again when this fails.
+    await this.joinChat().catch(() => undefined);
     this.channel?.postMessage('changed');
     void this.sync().catch(() => undefined);
   }
@@ -1036,6 +1075,82 @@ class Engine implements ChatEngine {
     }
   }
 
+  // --- Joining and approving ------------------------------------------------------------
+
+  /** Takes what the server says of this device; the other tabs learn a change from the store. */
+  private async note(answer: ChatDeviceResponse) {
+    await noteDevice(this.store!, answer);
+    this.requestedAt = answer.approval_requested_at;
+    if (this.waiting === (answer.state === 'waiting')) return;
+    this.waiting = !this.waiting;
+    if (!this.waiting) {
+      [this.code, this.newKeyRefused] = [null, null];
+      emitAppEvent('unihub:chat-joined');
+    }
+    clearTimeout(this.poll);
+    this.channel?.postMessage('changed');
+    this.changed();
+  }
+
+  /** Takes the history key an approval handed over, and proves a held one while waiting. */
+  private async joinChat() {
+    const store = this.store!;
+    const sealed = await store.get<string>('keys', 'sealed');
+    if (sealed) {
+      // One sealed to another one-time key, or of another history key, is not taken; the device joined anyway and can take the passphrase.
+      const key = this.account ? await openApproval(store, this.account, sealed).catch(() => null) : null;
+      await store.write([], transaction => {
+        const keys = transaction.objectStore('keys');
+        keys.delete('sealed');
+        keys.delete('pairing');
+        if (key) { keys.put(key, 'history'); keys.put(true, 'restore'); }
+      });
+      if (key) [this.historyKey, this.restorePending] = [key, true];
+      this.channel?.postMessage('changed');
+      this.changed();
+    }
+    if (this.waiting && this.historyKey) await this.note(await prove(this.historyKey));
+  }
+
+  /** While waiting with an account: who can approve, the code of an open request, and the next look for its answer. */
+  private async waitForAnswer() {
+    this.approvers = (await fetchDevices()).filter(device => device.chat && !device.chat_waiting && !device.current)
+      .map(({ id, kind, app_version, user_agent }) => ({ id, kind, app_version, user_agent }));
+    const pairing = this.requestedAt ? await this.store!.get<SealKey>('keys', 'pairing') : undefined;
+    this.code = pairing ? await pairingCode(pairing.publicKey) : null;
+    clearTimeout(this.poll);
+    if (this.code && !this.stopped) this.poll = setTimeout(() => void this.sync().catch(() => undefined), ANSWER_POLL_MS);
+    this.changed(null);
+  }
+
+  private async loadApprovals() {
+    const approvals = await chatApi.approvals();
+    // The name is the asking device's own user agent; when it signed in is the server's.
+    const signedIn = new Map(approvals.length ? (await fetchDevices()).map(device => [device.id, device.created_at]) : []);
+    this.approvals = await Promise.all(approvals.map(async approval => ({ approval, code: await pairingCode(fromBase64Url(approval.public_key)),
+      signed_in_at: signedIn.get(approval.device.id) ?? null })));
+    this.changed(null);
+  }
+
+  async askApproval() {
+    await this.note(await askApproval(this.store!));
+    await this.waitForAnswer();
+  }
+
+  async approve(chatDeviceId: string) {
+    if (!this.historyKey) throw new Error('This device does not hold your chat history key. Approve on a device that shows your earlier messages.');
+    // The key whose code the person compared, never one fetched since.
+    const found = this.approvals.find(item => item.approval.chat_device_id === chatDeviceId);
+    if (!found) throw new Error('This request is no longer open. Ask again on the new device.');
+    await approve(this.historyKey, found.approval);
+    await this.loadApprovals();
+  }
+
+  async dropApproval(chatDeviceId: string) {
+    await chatApi.dropApproval(chatDeviceId);
+    await this.loadApprovals();
+  }
+
   private async currentAccount() {
     const account = await chatApi.account();
     await this.setAccount(account);
@@ -1070,7 +1185,16 @@ class Engine implements ChatEngine {
 
   async startNewKey(currentPassword: string, passphrase: string) {
     const key = await createHistoryKey();
-    await this.keepKey(key, await chatApi.newKey(currentPassword, toBase64Url(key.publicKey), await wrapHistoryKey(key, passphrase)));
+    try {
+      await this.keepKey(key, await chatApi.newKey(currentPassword, toBase64Url(key.publicKey), await wrapHistoryKey(key, passphrase)));
+      this.newKeyRefused = null;
+    } catch (error) {
+      if (hasCode(error, 'CHAT_DEVICE_SIGNED_IN')) {
+        this.newKeyRefused = (error.details as ChatDeviceSignedInDetails | undefined)?.devices ?? [];
+        this.changed(null);
+      }
+      throw error;
+    }
   }
 }
 

@@ -3,17 +3,21 @@
 // screens read snapshots and call actions. Snapshots keep their identity
 // until something in them changes, so they can feed useSyncExternalStore.
 import type {
-  ChatCandidatesResponse, ChatFollow, ChatMember, ChatNotify, ChatPeer, ChatRetentionDays, ChatRole,
+  ChatCandidatesResponse, ChatDeviceName, ChatFollow, ChatMember, ChatNotify, ChatPeer, ChatRetentionDays, ChatRole,
 } from '../../../api/src/contracts/chat';
 
-export type { ChatCandidatesResponse, ChatFollow, ChatMember, ChatNotify, ChatPeer, ChatRetentionDays, ChatRole };
+export type { ChatCandidatesResponse, ChatDeviceName, ChatFollow, ChatMember, ChatNotify, ChatPeer, ChatRetentionDays, ChatRole };
 
 /**
  * Whether Chat can be used on this device now:
  * - `starting`: the module loads, the device enrols or the store opens;
  * - `unsupported`: the browser has WebAssembly or storage switched off (`reason` says which);
- * - `choose-passphrase`: the person has no chat account yet (first Chat open);
- * - `enter-passphrase`: the account exists and this device does not hold the history key;
+ * - `choose-passphrase`: the person has no chat account yet (first Chat open); a device waits
+ *   until then, and choosing the passphrase sets Chat up and joins it;
+ * - `waiting`: the account exists and this device has not joined Chat, so it gets nothing of it. It joins with the
+ *   passphrase (enterPassphrase) or an approval from one of `approvers`, the person's
+ *   devices in Chat (askApproval; `code` is shown while the request is open, ten minutes);
+ * - `enter-passphrase`: the device joined (before devices waited) but does not hold the history key;
  * - `ready`;
  * - `failed`: starting failed (`reason`); `restart()` tries again.
  */
@@ -21,9 +25,17 @@ export type ChatReadiness =
   | { state: 'starting' }
   | { state: 'unsupported'; reason: string }
   | { state: 'choose-passphrase' }
+  | { state: 'waiting'; approvers: ChatDeviceName[]; code: string | null }
   | { state: 'enter-passphrase' }
   | { state: 'ready' }
   | { state: 'failed'; reason: string };
+
+/**
+ * A waiting device of the person asks this one to let it into Chat; `code` is the one that device shows.
+ * `device` is named from that device's own user agent, which it chooses; `signed_in_at` is when the server
+ * saw it sign in (null when it is no longer in the device list).
+ */
+export interface ChatApprovalRequest { chat_device_id: string; device: ChatDeviceName; requested_at: string; code: string; signed_in_at: string | null }
 
 /** The history being read from the archive after the passphrase; `total` is unknown until the server said it. */
 export interface ChatRestoreProgress { done: number; total: number | null }
@@ -166,6 +178,10 @@ export interface ChatEngineSnapshot {
   /** Whether this device holds the history key, so a new passphrase needs only the account password. */
   holds_history_key: boolean;
   restore: ChatRestoreProgress | null;
+  /** Open requests to answer, latest first; only on a device that holds the history key, which it hands over. */
+  approvals: ChatApprovalRequest[];
+  /** startNewKey was refused while these devices are in Chat: the passphrase or an approval there, or signing them out first. */
+  new_key_refused: ChatDeviceName[] | null;
 }
 
 export interface ChatEngine {
@@ -225,6 +241,12 @@ export interface ChatEngine {
   enterPassphrase(passphrase: string): Promise<void>;
   /** A new passphrase from a device that holds the key; the account password is asked, not the old passphrase. */
   changePassphrase(currentPassword: string, passphrase: string): Promise<void>;
-  /** A new history key when no device holds the old one and its passphrase is forgotten: the archive sealed to the old key is lost. */
+  /** A new history key when no device holds the old one and its passphrase is forgotten: the archive sealed to the old key is lost. Refused while another device is in Chat (`new_key_refused`). */
   startNewKey(currentPassword: string, passphrase: string): Promise<void>;
+  /** A waiting device asks the person's devices in Chat to approve it; asking again starts a new code and ten minutes. */
+  askApproval(): Promise<void>;
+  /** Lets a waiting device of the person in, handing it the history; rejects on a device without the history key. */
+  approve(chatDeviceId: string): Promise<void>;
+  /** "This was not me": the request goes; the device keeps waiting and can be signed out from the device list. */
+  dropApproval(chatDeviceId: string): Promise<void>;
 }

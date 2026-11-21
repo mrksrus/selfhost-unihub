@@ -9,6 +9,8 @@ import { afterEach, beforeAll, expect, vi } from 'vitest';
 import type { ChatAccount, ChatConversation, ChatMessage } from '../../api/src/contracts/chat';
 import { startChatEngine } from '@/lib/chat/engine';
 import { loadMls } from '@/lib/chat/mls';
+import { seal } from '@/lib/chat/seal';
+import { fromBase64Url, toBase64Url } from '@/lib/chat/bytes';
 import type { ChatEngine, ChatThreadMessage } from '@/lib/chat/types';
 
 // Chat's engine against an in-memory delivery service that keeps the
@@ -141,7 +143,15 @@ export const BLAIR = 'blair';
 // --- The delivery service -----------------------------------------------------------------
 
 const PASSWORD = 'account password';
-interface Device { id: string; user_id: string; device: string | null; packages: string[]; last_resort: string; preview: { p256dh: string; auth: string } | null }
+interface Device {
+  id: string; user_id: string; device: string | null; packages: string[]; last_resort: string; preview: { p256dh: string; auth: string } | null;
+  /** Every new device waits until it joins; `pair` is its request for an approval and, once approved, the sealed history key. */
+  joined: boolean; challenge: string | null; pair: { public_key: string; sealed: string | null; at: number } | null;
+}
+// The routes a waiting device may use; every other chat route answers it 403 CHAT_DEVICE_WAITING.
+const OPEN_TO_WAITING = ['GET /chat/account', 'POST /chat/account', 'POST /chat/account/new-key', 'POST /chat/devices', 'GET /chat/devices/current',
+  'POST /chat/devices/current/key-packages', 'POST /chat/devices/current/challenge', 'POST /chat/devices/current/proof', 'POST /chat/devices/current/approval'];
+const APPROVAL_MS = 10 * 60_000;
 interface Conversation {
   id: string; people: string[]; current: string | null; last_seq: number; marks: Map<string, { read: number; delivered: number }>;
   /** A group chat's name and managers; a person's seq from which they read. */
@@ -165,10 +175,14 @@ function deliveryService() {
 
   const ok = (data: unknown) => ({ data });
   const refuse = (status: number, code: string, details?: unknown) => ({ error: code, status, code, details });
-  const valid = (people: string[]) => [...devices.values()].filter(device => device.device !== null && people.includes(device.user_id));
+  const valid = (people: string[]) => [...devices.values()].filter(device => device.device !== null && device.joined && people.includes(device.user_id));
+  const name = (device: Device) => ({ id: device.device!, kind: 'web' as const, app_version: null, user_agent: null });
+  const asking = (device: Device) => !device.joined && device.device !== null && !!device.pair && !device.pair.sealed && Date.now() - device.pair.at < APPROVAL_MS;
   const own = (browser: Browser) => [...devices.values()].find(device => device.device === `${browser.userId}:${browser.device}`);
   const same = (a: string[], b: string[]) => a.length === b.length && a.every(item => b.includes(item));
   const stale = (conversation: Conversation) => refuse(409, 'CHAT_GROUP_STALE', { current_group_id: conversation.current });
+  const current = (device: Device) => ({ chat_device_id: device.id, key_packages: device.packages.length, state: device.joined ? 'joined' : 'waiting',
+    approval_requested_at: asking(device) ? new Date(device.pair!.at).toISOString() : null, sealed_key: null });
   const marksOf = (conversation: Conversation, userId: string) => conversation.marks.get(userId) ?? { read: 0, delivered: 0 };
   const view = (conversation: Conversation, userId: string): ChatConversation => {
     const mine = marksOf(conversation, userId);
@@ -215,32 +229,73 @@ function deliveryService() {
     const [, conversationId, rest] = /^\/chat\/conversations\/([^/]+)(\/.*)?$/.exec(route) ?? [];
     const conversation = conversationId ? conversations.get(conversationId) : undefined;
     if (conversationId && !conversation?.people.includes(me)) return refuse(404, 'CONVERSATION_NOT_FOUND');
-    const key = `${method} ${conversationId ? `/chat/conversations/:id${rest?.replace(/^\/members\/.+/, '/members/:userId') ?? ''}` : route.replace(/\/chat\/(groups|messages|attachments)\/[^/]+/, '/chat/$1/:id')}`;
+    const key = `${method} ${conversationId ? `/chat/conversations/:id${rest?.replace(/^\/members\/.+/, '/members/:userId') ?? ''}` : route.replace(/\/chat\/(groups|messages|attachments)\/[^/]+/, '/chat/$1/:id')
+      .replace(/^\/chat\/devices\/(?!current|approvals)[^/]+\//, '/chat/devices/:id/')}`;
     const target = route.split('/')[3];
+    if (key.includes(' /chat/') && !OPEN_TO_WAITING.includes(key) && !mine?.joined) return refuse(403, 'CHAT_DEVICE_WAITING');
+    const asked = devices.get(target);
     switch (key) {
+      case 'GET /devices':
+        return ok({ devices: [...devices.values()].filter(device => device.user_id === me && device.device !== null)
+          .map(device => ({ ...name(device), current: device === mine, chat: true, chat_waiting: !device.joined, created_at: '2026-01-02T03:04:05.000Z' })) });
+      case 'POST /chat/devices/current/challenge': {
+        const value = crypto.getRandomValues(new Uint8Array(40));
+        mine!.challenge = toBase64Url(value);
+        return ok({ sealed: toBase64Url(await seal({ publicKey: fromBase64Url(accounts.get(me)!.history_public), auth: new Uint8Array(16) }, value)) });
+      }
+      case 'POST /chat/devices/current/proof':
+        if (!mine!.challenge || body.value !== mine!.challenge) return refuse(403, 'CHAT_PROOF_INVALID');
+        mine!.joined = true;
+        return ok(current(mine!));
+      case 'POST /chat/devices/current/approval':
+        if (!mine!.joined) mine!.pair = { public_key: body.public_key as string, sealed: null, at: Date.now() };
+        return ok(current(mine!));
+      case 'GET /chat/devices/approvals':
+        return ok({ approvals: [...devices.values()].filter(device => device.user_id === me && asking(device))
+          .map(device => ({ chat_device_id: device.id, device: name(device), public_key: device.pair!.public_key, requested_at: new Date(device.pair!.at).toISOString() })) });
+      case 'POST /chat/devices/:id/approve':
+        if (asked?.user_id !== me || !asking(asked) || asked.pair!.public_key !== body.public_key) return refuse(404, 'CHAT_APPROVAL_NOT_FOUND');
+        asked.joined = true;
+        asked.pair!.sealed = body.sealed_key as string;
+        return ok({ approved: true });
+      case 'DELETE /chat/devices/:id/approval':
+        if (asked?.user_id !== me || !asking(asked)) return refuse(404, 'CHAT_APPROVAL_NOT_FOUND');
+        asked.pair = null;
+        return ok({ dropped: true });
       case 'GET /chat/account': return ok({ account: accounts.get(me) ?? null });
       case 'POST /chat/account':
         if (accounts.has(me)) return refuse(409, 'CHAT_ACCOUNT_EXISTS');
         accounts.set(me, { ...body, updated_at: '' } as unknown as ChatAccount);
+        if (mine) mine.joined = true;
         return ok({ account: accounts.get(me) });
       case 'PUT /chat/account/key-backup':
       case 'POST /chat/account/new-key':
         if (body.current_password !== PASSWORD) return refuse(403, 'PASSWORD_INCORRECT');
-        if (key.endsWith('new-key')) for (const [id, copy] of archive) if (copy.user === me) archive.delete(id);
+        if (key.endsWith('new-key')) {
+          const others = valid([me]).filter(device => device !== mine);
+          if (others.length) return refuse(409, 'CHAT_DEVICE_SIGNED_IN', { devices: others.map(name) });
+          for (const [id, copy] of archive) if (copy.user === me) archive.delete(id);
+          if (mine) mine.joined = true;
+        }
         accounts.set(me, { history_public: body.history_public, key_backup: body.key_backup, updated_at: '' } as ChatAccount);
         return ok({ account: accounts.get(me) });
       case 'POST /chat/devices': {
         if (mine) mine.device = null;
         const device: Device = { id: crypto.randomUUID(), user_id: me, device: `${me}:${browser.device}`, packages: body.key_packages as string[],
-          last_resort: body.last_resort as string, preview: body.preview as Device['preview'] };
+          last_resort: body.last_resort as string, preview: body.preview as Device['preview'], joined: false, challenge: null, pair: null };
         devices.set(device.id, device);
-        return ok({ chat_device_id: device.id, key_packages: device.packages.length });
+        return ok(current(device));
       }
-      case 'GET /chat/devices/current':
-        return mine ? ok({ chat_device_id: mine.id, key_packages: mine.packages.length }) : refuse(404, 'CHAT_DEVICE_NOT_ENROLLED');
+      case 'GET /chat/devices/current': {
+        if (!mine) return refuse(404, 'CHAT_DEVICE_NOT_ENROLLED');
+        const answer = { ...current(mine), sealed_key: mine.pair?.sealed ?? null };
+        // The sealed key is handed out once.
+        if (mine.pair?.sealed) mine.pair = null;
+        return ok(answer);
+      }
       case 'POST /chat/devices/current/key-packages':
         mine!.packages.push(...body.key_packages as string[]);
-        return ok({ chat_device_id: mine!.id, key_packages: mine!.packages.length });
+        return ok(current(mine!));
       case 'GET /chat/conversations':
         return ok({ conversations: [...conversations.values()].filter(item => item.people.includes(me)).map(item => view(item, me)) });
       case 'POST /chat/conversations': {

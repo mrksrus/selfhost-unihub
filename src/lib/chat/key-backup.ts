@@ -41,15 +41,19 @@ export async function unwrapHistoryKey(account: ChatAccount, passphrase: string)
   if (backup.format !== 1 || backup.rounds < ROUNDS) throw new Error('This key backup has a format this app does not know.');
   const wrapped = fromBase64Url(backup.wrapped);
   const unwrapping = await passphraseKey(passphrase, fromBase64Url(backup.salt), backup.rounds, 'unwrapKey');
-  let key: SealKey;
+  let privateKey: CryptoKey;
   try {
-    const privateKey = await crypto.subtle.unwrapKey('jwk', wrapped.slice(12), unwrapping, { name: 'AES-GCM', iv: wrapped.slice(0, 12) },
+    privateKey = await crypto.subtle.unwrapKey('jwk', wrapped.slice(12), unwrapping, { name: 'AES-GCM', iv: wrapped.slice(0, 12) },
       { name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits']);
-    key = { privateKey, publicKey: fromBase64Url(account.history_public), auth: HISTORY_AUTH };
   } catch {
     throw new WrongPassphraseError();
   }
-  // A backup of another key would open nothing the account's devices seal.
-  await open(key, await seal(key, new Uint8Array(1))).catch(() => { throw new Error('This key backup does not belong to your chat history key.'); });
+  return historyKeyOf(account, privateKey);
+}
+
+/** The account's history key from its private half; throws for the half of another key, which would open nothing the account's devices seal. */
+export async function historyKeyOf(account: ChatAccount, privateKey: CryptoKey): Promise<SealKey> {
+  const key = { privateKey, publicKey: fromBase64Url(account.history_public), auth: HISTORY_AUTH };
+  await open(key, await seal(key, new Uint8Array(1))).catch(() => { throw new Error('This key does not belong to your chat history key.'); });
   return key;
 }

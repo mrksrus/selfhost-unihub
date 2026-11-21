@@ -62,7 +62,7 @@ export default function ChatPage() {
       {!engine || !snapshot || readiness.state === 'starting' ? <PageBody width="reading"><LoadingState label="Opening Chat…" /></PageBody>
         : readiness.state === 'unsupported' ? <PageBody width="reading"><EmptyState icon={MessageCircleOff} title="Chat cannot run in this browser" description={readiness.reason} /></PageBody>
         : readiness.state === 'failed' ? <PageBody width="reading"><ErrorState title="Chat could not start" error={lock.method.appUpdateForChat ? `${readiness.reason} ${UPDATE_APP_TO_LOCK_CHAT}` : readiness.reason} onRetry={() => engine.restart()} /></PageBody>
-        : readiness.state !== 'ready' && !waiting ? <PageBody width="reading"><ChatPassphraseGate engine={engine} state={readiness.state} onLater={() => setLater(engine)} /></PageBody>
+        : readiness.state !== 'ready' && !waiting ? <PageBody width="reading"><ChatPassphraseGate engine={engine} state={readiness.state === 'waiting' ? 'enter-passphrase' : readiness.state} onLater={readiness.state === 'waiting' ? undefined : () => setLater(engine)} /></PageBody>
         : conversations.length === 0 && !activeId && !waiting ? (
           <PageBody width="reading">
             <EmptyState icon={MessageCircle} title="No chats yet" action={newChat || undefined}

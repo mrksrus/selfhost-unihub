@@ -111,8 +111,25 @@ export async function enrol(store: ChatStore, userId: string): Promise<ChatDevic
     key_packages: packages.map(toBase64Url),
     last_resort: toBase64Url(lastResort),
   };
-  await device.enrolled(unwrap(await api.post<ChatDeviceResponse>('/chat/devices', request))!.chat_device_id);
+  const answer = unwrap(await api.post<ChatDeviceResponse>('/chat/devices', request))!;
+  await noteDevice(store, answer);
+  await device.enrolled(answer.chat_device_id);
   return device;
+}
+
+/**
+ * Keeps what the server says of this device: whether it waits to join Chat
+ * (`keys`/`waiting`; absent for a joined device and for one enrolled before
+ * devices waited, which all joined), and the history key an approval handed
+ * over, which the server gives out once (`keys`/`sealed`, until it is opened).
+ */
+export function noteDevice(store: ChatStore, answer: ChatDeviceResponse) {
+  return store.write([], transaction => {
+    const keys = transaction.objectStore('keys');
+    if (answer.state === 'waiting') keys.put(true, 'waiting');
+    else keys.delete('waiting');
+    if (answer.sealed_key) keys.put(answer.sealed_key, 'sealed');
+  });
 }
 
 /**
@@ -127,6 +144,7 @@ export async function startDevice(store: ChatStore, userId: string): Promise<Cha
     try {
       const current = unwrap(await api.get<ChatDeviceResponse>('/chat/devices/current'))!;
       if (current.chat_device_id === stored.id) {
+        await noteDevice(store, current);
         await stored.topUp(current.key_packages);
         return stored;
       }

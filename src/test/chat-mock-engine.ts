@@ -76,7 +76,7 @@ export function createMockChatEngine(options: MockChatOptions = {}): MockChatEng
   let sent = 0;
   let readiness = options.readiness ?? { state: 'ready' as const };
   const publish = () => {
-    snapshot = { readiness, conversations, holds_history_key: readiness.state === 'ready', restore: options.restore ?? null };
+    snapshot = { readiness, conversations, holds_history_key: readiness.state === 'ready', restore: options.restore ?? null, approvals: [], new_key_refused: null };
     for (const subscriber of [...subscribers]) subscriber();
   };
   publish();
@@ -163,6 +163,9 @@ export function createMockChatEngine(options: MockChatOptions = {}): MockChatEng
     enterPassphrase: record('enterPassphrase', async (_passphrase: string) => { readiness = { state: 'ready' }; publish(); }),
     changePassphrase: record('changePassphrase', async (_password: string, _passphrase: string) => {}),
     startNewKey: record('startNewKey', async (_password: string, _passphrase: string) => { readiness = { state: 'ready' }; publish(); }),
+    askApproval: record('askApproval', async () => {}),
+    approve: record('approve', async (_chatDeviceId: string) => {}),
+    dropApproval: record('dropApproval', async (_chatDeviceId: string) => {}),
   };
 }
 
