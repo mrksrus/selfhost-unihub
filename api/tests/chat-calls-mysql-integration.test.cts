@@ -42,11 +42,9 @@ test('chat calls: ringing, the first answer, signals, endings and entries, busy,
   await call(oldPhone, 'POST', '/api/notifications/android/devices', { keys: pushKeys().keys });
   const laptop = await signIn('member');
   const [a1, desk, lap, phoneChat, oldChat] = [await enrol(alex), await enrol(blair), await enrol(laptop), await enrol(phone), await enrol(oldPhone)];
-  // Blair chooses a passphrase: a device enrolled after it waits.
-  await call(blair, 'POST', '/api/chat/account', { history_public: Buffer.concat([Buffer.from([4]), crypto.randomBytes(64)]).toString('base64url'),
-    key_backup: { format: 1, salt: random(16), rounds: 600000, wrapped: random(60) } });
+  // A device that has not joined Chat yet.
   const tablet = await signIn('member');
-  await enrol(tablet);
+  await enrol(tablet, undefined, { waiting: true });
   const pages = { desk: await stream(blair, '/api/events'), laptop: await stream(laptop, '/api/events'), tablet: await stream(tablet, '/api/events'), alex: await stream(alex, '/api/events') };
 
   // The phone's notifications as the app opens them (RFC 8291).
