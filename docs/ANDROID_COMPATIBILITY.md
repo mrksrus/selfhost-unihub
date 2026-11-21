@@ -90,20 +90,19 @@ needs a current WebView; phones update theirs through the Play Store.
 
 ## Current window
 
-As recorded in `android/support-window.json` for 0.33.0. The CI table is the
+As recorded in `android/support-window.json` for 0.34.0. The CI table is the
 evidence; this table is what it is checked against.
 
 | App | Android 10 | Android 16 | Android 17 |
 | --- | --- | --- | --- |
+| 0.34.0 | starts and connects | starts and connects | starts and connects |
 | 0.33.0 | starts and connects | starts and connects | starts and connects |
 | 0.32.0 | starts and connects | starts and connects | starts and connects |
 | 0.31.0 | starts and connects | starts and connects | starts and connects |
-| 0.30.3 | starts and connects | starts and connects | starts and connects |
 
-All four apps put contacts on the phone and sync them both ways. The 0.31.0 app
-also puts the shared books on the phone (read-only, one way) when the server
-lists `contacts-books`, and opens `mailto:` links in the composer; the 0.30.3
-app never sees a shared book. The 0.32.0 app adds the Calendar and ToDo
+All four apps put contacts on the phone and sync them both ways, put the
+shared books on the phone (read-only, one way) when the server lists
+`contacts-books`, and open `mailto:` links in the composer. The 0.32.0 app adds the Calendar and ToDo
 home-screen widgets, which read `GET /api/widgets` only from a server that
 lists `calendar-widgets`. The 0.33.0 app shows a chat message's text in its
 notification, refuses screenshots while Chat is open and can lock Chat; older
@@ -116,11 +115,12 @@ that needs the session (`/api/backup/jobs/<id>/download`): each app
 fetches exactly that address inside its own process with the WebView's
 cookie and saves it to Downloads, and refuses any other address that needs
 the session; the cookie never goes to the download manager or another app.
-The 0.30.3 app is the 0.29.0 app with a new version; the 0.31.0 app adds
-the shared books and email links above, the 0.32.0 app the widgets, the 0.33.0 app the chat previews, the screenshot block in Chat and the Chat lock. All four speak bridge level 3 and lock with the phone's own unlock
-([App lock](APP_LOCK.md)); the page offers the UniHub PIN only to apps below
-that level, which have left the window. From 0.34.0 the app speaks bridge
-level 4 and also hands a chat file the page decrypted to Android's Open with
+The 0.32.0 app adds the widgets to the 0.31.0 app, the 0.33.0 app the chat
+previews, the screenshot block in Chat and the Chat lock. The apps up to
+0.33.0 speak bridge level 3, the 0.34.0 app level 4; all four lock with the
+phone's own unlock ([App lock](APP_LOCK.md)), and the page offers the UniHub
+PIN only to apps below level 3, which have left the window. The 0.34.0 app
+also hands a chat file the page decrypted to Android's Open with
 and Share sheets; the page offers those two only from level 4, so the apps up
 to 0.33.0 save chat files and show them in the page's viewers. Every app's contacts sync sends
 `X-Background-Sync: 1`, and the contacts routes stay open to it while a device

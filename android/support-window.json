@@ -22,10 +22,20 @@
   ],
   "releases": [
     {
+      "version": "0.34.0",
+      "apk": {
+        "versionCode": 34000,
+        "sha256": null,
+        "signing": "release"
+      },
+      "shell": "supported",
+      "note": "From this app the bridge speaks level 4: `saveFileStart` takes a target, and a file the page decrypted (a chat's) goes to Android's Open with or Share sheet. The page offers the two only from level 4; older apps save chat files to Downloads."
+    },
+    {
       "version": "0.33.0",
       "apk": {
         "versionCode": 33000,
-        "sha256": null,
+        "sha256": "f929edcb12cc48df8c472d8d179a3fdcf01fd946c88772a2f5439ce22fee2d73",
         "signing": "release"
       },
       "shell": "supported",
@@ -50,15 +60,6 @@
       },
       "shell": "supported",
       "note": "From this app the contacts sync also looks for `contacts-books`: only then does it read GET /api/address-books/phone and put shared books on the phone, read-only and one way. Older apps never see a shared book, so /api/contacts must keep leaving book rows out."
-    },
-    {
-      "version": "0.30.3",
-      "apk": {
-        "versionCode": 30003,
-        "sha256": "14fb10113527dc0b0582222e0b77efda29a80bfdb93cc3778b7166a36935cbe3",
-        "signing": "release"
-      },
-      "shell": "supported"
     }
   ],
   "handshake": {

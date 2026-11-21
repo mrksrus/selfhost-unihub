@@ -885,7 +885,8 @@ create or share wait until the maintainer has seen the whole interface.
 #### P-44 Chat is always end-to-end encrypted
 
 Accepted, 2026-11-15 (maintainer, for 0.33.0); changed 2026-11-18. Built in
-0.33.0 for chats between two people ([Chat](docs/CHAT.md)).
+0.33.0 for chats between two people and in 0.34.0 for group chats
+([Chat](docs/CHAT.md), [P-46](#p-46-group-chats-chat-files-chat-retention-and-people-who-leave)).
 
 There is no server-readable mode. The encryption is MLS through OpenMLS, in
 a small wrapper of UniHub's own built to WebAssembly and run in the page, in
@@ -942,6 +943,39 @@ with an interval and an end), keep their own time zone, and are changed or
 deleted for one date or all; each date keeps its own ToDo state, checklist
 and reminders. In ToDo's "Later" a repeating item shows once, at its next
 date, for local and synced series alike. Personal backups keep the series.
+
+#### P-46 Group chats, chat files, chat retention and people who leave
+
+Accepted, 2026-11-18 (maintainer, for 0.34.0). Built in 0.34.0
+([Chat](docs/CHAT.md)).
+
+A member starts a group chat with the people in their own groups, or with
+anyone when the administrator's rule allows it; an administrator with anyone.
+A chat that follows an organisation group is made by one of that group's
+managers or an administrator and changes with the group; only an
+administrator makes one that follows everyone. A chat holds at most 100
+people. Someone who joins reads from then on; someone removed reads nothing
+new, and UniHub removes the chat from their devices at the next sync. Each
+person chooses per chat what notifies them: everything, mentions, or nothing.
+
+Files and voice messages (up to 10 minutes) are encrypted on the device; an
+administrator sets the largest file (50 MB unless changed, never above
+100 MB), and a file counts toward its sender's storage. Search looks only at
+the device's own copies.
+
+An administrator sets chat messages to be kept or deleted after 30, 90, 180
+or 365 days, for everyone and per group; a chat follows the shortest time
+among its people, and this deletes even while people may not delete for good.
+**A rule that would delete existing messages starts 24 hours after it is set,
+with warnings before and during; only the owner can skip the wait.** This is
+the one rule whose purpose is to delete; changing any other rule still
+deletes nothing.
+
+A person who leaves keeps their name on their messages, marked as a former
+colleague; a 1:1 chat with them becomes read-only; deleting a person removes
+nothing from other people's chats. The server sees chat names, members,
+times, file sizes and who was mentioned, never the content, and nobody
+outside a chat can read it ([P-44](#p-44-chat-is-always-end-to-end-encrypted)).
 
 ## Open decisions and conflicts
 
