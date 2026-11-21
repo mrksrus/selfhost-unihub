@@ -59,7 +59,7 @@ email) a `UniHubAndroid` object that takes JSON messages:
 
 | Message | What the app does |
 | --- | --- |
-| `saveFileStart`, `saveFileChunk`, `saveFileEnd`, `saveFileAbort` | Saves a file the page made (an attachment, an export, a recording) to Downloads, in pieces of 1.5 MB that the app confirms one by one. A WebView cannot download `blob:` links. |
+| `saveFileStart`, `saveFileChunk`, `saveFileEnd`, `saveFileAbort` | Saves a file the page made (an attachment, an export, a recording) to Downloads, in pieces of 1.5 MB that the app confirms one by one. A WebView cannot download `blob:` links. From bridge level 4 (0.34.0) `saveFileStart` takes a `target`: `save` (Downloads, also when it names none), or `open` and `share`, which hand the finished file to Android's Open with or Share sheet as [below](#files-for-other-apps); any other target is refused. |
 | `download` | Downloads a file the server streams (backups, the app update) with Android's download manager, which never gets the app's session. From the 0.28.0 app the request it starts with must be a [download ticket](#files-for-other-apps) URL or the public app update (`/downloads/unihub.apk` exactly: no query, fragment, user info or encoded alias) of the server's own address; a page of a server before 0.28 passes a backup address that needs the session (`/api/backup/jobs/<id>/download` exactly), which the app fetches inside its own process with the WebView's cookie and saves to Downloads through MediaStore (`FileActions.saveLegacyBackup`), never through the download manager; anything else is refused with "Could not save the file". The download manager follows redirects without asking the app, so this check covers the first request only and relies on those two endpoints never redirecting, which they do not; a redirect would still carry no cookie, and an update is installed only when it is signed by the installed app's signers. Earlier apps add the session cookie to the ticket URL; the server ignores it. For the app update (`/downloads/unihub.apk`) the app opens Android's installer itself when the download completes, at once while it is on screen, otherwise from its "UniHub update downloaded" notification or when it is next opened (`AppUpdate.kt`). Opened from the download manager's own notification, Android would count the download manager as the source and refuse it. Android asks once to allow UniHub to install apps (`REQUEST_INSTALL_PACKAGES`). The installer gets only a copy in the app's cache that is this app, signed with the installed app's key, in a version not older than the installed one (`UpdateCheck.kt`); anything else is deleted, also from Downloads, and the app says that nothing was installed. |
 | `fileAction` (`action`: `open`, `save`, `share`; `url`, `name`, `mime`, with an `id`) | "Open with…", "Save to Downloads" and "Share" for a server file, by a [download ticket](#files-for-other-apps) URL; answers with the same `id` and `ok` or an `error` once Android has the file. From bridge level 2 (0.25.0). |
 | `changeServer` | Forgets the server and shows the connect screen. |
@@ -68,8 +68,9 @@ email) a `UniHubAndroid` object that takes JSON messages:
 | `appLock` (`action`: `method`, `authenticate`, `configure`, `state`, `release`, `lock`; with an `id`) | The [app lock](#app-lock): `method` answers how the phone can unlock (`biometric`, `device_credential` or `pin` when it has no screen lock) and what the app can do; `authenticate` asks the phone's own lock and answers `ok`, `cancelled`, `lockout`, `unavailable` or `pin`; `configure` takes the page's lock settings and the screenshot policy, sent at every start; `state` answers whether a return is due and whether the cover is up; `release` takes the cover down once the page shows its lock screen or (`unlocked: true`) what it unlocked; `lock` locks at once. The app also tells the page `{type: "appLock", event: "locked" \| "unlocked"}` without an id. From bridge level 3 (0.29.0). |
 
 The bridge level says which messages the app understands: apps up to 0.24
-send none and count as level 1 (everything above except `fileAction` and
-`appLock`), 0.25.0 is level 2 and 0.29.0 level 3. The page offers a feature only to apps whose level has it, so a
+send none and count as level 1 (everything above except `fileAction`,
+`appLock` and the `target` of `saveFileStart`), 0.25.0 is level 2, 0.29.0
+level 3 and 0.34.0 level 4. The page offers a feature only to apps whose level has it, so a
 development build needs no version number of its own.
 
 Links to other sites, `mailto:` and `tel:` open in the matching phone app
@@ -126,6 +127,23 @@ cleans up whenever it is opened or comes back to the front, and refuses an
 older copy at once) and all at once whenever the page shows the sign-in page
 (signing out, a session ended elsewhere) or the app leaves the server. A ticket works once, so a download
 that breaks off is started again from the page.
+
+A chat file has no ticket: only the page can decrypt it ([Chat](CHAT.md)).
+From 0.34.0 the app offers **Open with…** and **Share** beside Save on a
+chat's file, its picture and PDF viewer and a voice message the page cannot
+play. The page decrypts the file and sends it through the bridge as it sends
+a file to Downloads, with the target `open` or `share`; the session never
+leaves the page and the app decrypts nothing. The name and the type are
+the sender's choice: the app makes the name one file name of at most 200
+characters with no path in it, writes the copy only into its cache folder
+for shared copies, and hands Android's sheet the type if it is well formed
+(else the extension's). The copy is kept and deleted like the copies above,
+and a hand-over that breaks off or ends with the session leaves none.
+UniHub declares no activity for files, so the sheet never offers UniHub
+itself, and the chosen app gets read access to that one copy. Chat's
+screenshot block stays on; handing a file to another app is the person's
+own act. An app before 0.34.0 saves chat files and shows them in the page's
+viewers only.
 
 Backups (Settings → Backup and restore, a mail account's backup) download the
 same way from 0.28.0: the page asks for a `backup-archive` ticket and passes

@@ -119,7 +119,10 @@ the session; the cookie never goes to the download manager or another app.
 The 0.30.3 app is the 0.29.0 app with a new version; the 0.31.0 app adds
 the shared books and email links above, the 0.32.0 app the widgets, the 0.33.0 app the chat previews, the screenshot block in Chat and the Chat lock. All four speak bridge level 3 and lock with the phone's own unlock
 ([App lock](APP_LOCK.md)); the page offers the UniHub PIN only to apps below
-that level, which have left the window. Every app's contacts sync sends
+that level, which have left the window. From 0.34.0 the app speaks bridge
+level 4 and also hands a chat file the page decrypted to Android's Open with
+and Share sheets; the page offers those two only from level 4, so the apps up
+to 0.33.0 save chat files and show them in the page's viewers. Every app's contacts sync sends
 `X-Background-Sync: 1`, and the contacts routes stay open to it while a device
 falls short of a required lock or of required two-factor authentication.
 When an administrator forbids contacts on the phone, the server answers the

@@ -33,6 +33,10 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
   refused with the limit. Files are fetched only when opened.
 - **Voice messages**, up to 10 minutes, from the microphone beside the
   field; the other person sees the length and plays it with a tap.
+- **Open with and Share for chat files in the Android app** (a new app):
+  beside Save on a file, in the picture and PDF viewer, and on a voice
+  message the page cannot play. The page decrypts the file and hands it to
+  Android's sheet; an older app saves chat files and shows them in the page.
 - **Search in Chat**, above the chats: chats by name and messages by text
   and file name, on this device only. A result opens its chat at that
   message.
