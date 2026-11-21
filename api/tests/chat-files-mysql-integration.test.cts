@@ -61,6 +61,7 @@ test('chat files: limits, who fetches, one message each, deletion, the sweep and
   assert.deepEqual(await refused(blair, 'GET', `/api/chat/attachments/${file}`), [404, 'CHAT_ATTACHMENT_NOT_FOUND']);
   assert.deepEqual((await fetched(alex, file)).bytes, bytes);
   assert.deepEqual([(await upload(casey, chat, bytes)).status], [404]);
+  assert.deepEqual([(await upload(alex, `${chat}%20`, bytes)).status], [404], 'only the stored spelling of a chat id names a folder');
 
   // ── Tied to one message of its uploader in this chat, at most ten, never by an edit ──
   assert.deepEqual(await refused(blair, 'POST', `/api/chat/conversations/${chat}/messages`, message(g1, { attachments: [file] })), [400, 'CHAT_ATTACHMENT_INVALID'], 'not hers');

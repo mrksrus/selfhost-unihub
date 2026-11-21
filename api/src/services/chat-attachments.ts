@@ -42,6 +42,8 @@ const COLUMNS = 'id, conversation_id, message_id, uploader_user_id, size_bytes, 
 async function storeAttachment(userId: string, conversationId: string, rawId: string | null, body: UploadBody): Promise<ChatAttachment> {
   if (!rawId || !UUID.test(rawId)) throw badRequest('CHAT_ATTACHMENT_INVALID', 'Invalid file id');
   const id = rawId.toLowerCase();
+  // The id names a folder: only the stored spelling, not one the database would also match.
+  if (!UUID.test(conversationId)) throw notFound('CONVERSATION_NOT_FOUND', 'Conversation not found');
   await assertCan(userId, { kind: 'conversation', id: conversationId }, 'member');
   const limit = (await resolvePolicy(userId, 'chat.attachment_max_mb')).value;
   if (body.size > limit * MB) {
@@ -127,10 +129,15 @@ async function deleteMessageFiles(messageId: string) {
   await removeFiles(await withTransaction(cx => dropAttachments(cx, 'message_id = ?', [messageId])));
 }
 
-/** Uploads no message named within a day, and files of messages deleted meanwhile; answers how many went. */
+/**
+ * Uploads no message named within a day, and files of messages deleted
+ * meanwhile; answers how many went. The second condition is read on the
+ * locked rows, so an upload a post named in this moment stays.
+ */
 async function sweepChatFiles() {
   const files = await withTransaction(cx => dropAttachments(cx, `id IN (SELECT id FROM (SELECT a.id FROM chat_attachments a LEFT JOIN chat_messages m ON m.id = a.message_id
-    WHERE (a.message_id IS NULL AND a.created_at < UTC_TIMESTAMP() - INTERVAL 1 DAY) OR (a.message_id IS NOT NULL AND m.ciphertext IS NULL) LIMIT ${SWEEP_BATCH}) due)`, []));
+    WHERE (a.message_id IS NULL AND a.created_at < UTC_TIMESTAMP() - INTERVAL 1 DAY) OR (a.message_id IS NOT NULL AND m.ciphertext IS NULL) LIMIT ${SWEEP_BATCH}) due)
+    AND (message_id IS NULL OR message_id IN (SELECT id FROM chat_messages WHERE ciphertext IS NULL))`, []));
   await removeFiles(files);
   return files.length;
 }
