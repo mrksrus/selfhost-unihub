@@ -290,7 +290,7 @@ class Engine implements ChatEngine {
   /** What the server last said of a person: a direct chat's peer, a member or a sender. */
   private person(userId: string | null, conversation?: ChatConversation) {
     if (!userId) return undefined;
-    return this.people.get(userId) ?? (conversation?.kind === 'direct' && conversation.peer.user_id === userId ? { name: conversation.peer.name, active: true } : undefined);
+    return this.people.get(userId) ?? (conversation?.kind === 'direct' && conversation.peer.user_id === userId ? conversation.peer : undefined);
   }
 
   private nameOf(userId: string | null, conversation?: ChatConversation) {
