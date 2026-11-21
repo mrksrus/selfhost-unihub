@@ -133,6 +133,29 @@ export async function withChat(page: Page, engine: Record<string, unknown> = {})
   await page.route(url => url.pathname === '/api/modules', route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(MODULES_WITH_CHAT) }));
 }
 
+/** Puts two files above the field of the open chat, a picture and a document, and waits for the pictures to be drawn. */
+export async function attachChatFiles(page: Page) {
+  // The smallest PNG there is: one grey pixel.
+  const pixel = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAAAAAA6fptVAAAACklEQVR4nGNoAAAAggCBd81ytgAAAABJRU5ErkJggg==', 'base64');
+  await page.getByLabel('Choose files to send').setInputFiles([
+    { name: 'Rack labels.png', mimeType: 'image/png', buffer: pixel },
+    { name: 'Rota week 25.pdf', mimeType: 'application/pdf', buffer: Buffer.from('%PDF-1.4 synthetic') },
+  ]);
+  await expect(page.getByRole('list', { name: 'Files to send' }).getByRole('listitem')).toHaveCount(2);
+  await chatPicturesDrawn(page);
+}
+
+/** Waits until the open chat has drawn its pictures (a preview arrives after the message). */
+export async function chatPicturesDrawn(page: Page) {
+  await expect.poll(() => page.evaluate(() => { const images = [...document.querySelectorAll<HTMLImageElement>('section img')]; return images.length > 0 && images.every(image => image.complete && image.naturalWidth > 0); }),
+    { message: 'pictures still loading' }).toBe(true);
+}
+
+/** Answers the microphone with a silent track, so the recorder runs without a device; the fixed clock keeps its time at 0:00. */
+export async function silentMicrophone(page: Page) {
+  await page.addInitScript(() => { navigator.mediaDevices.getUserMedia = async () => new AudioContext().createMediaStreamDestination().stream; });
+}
+
 /** Opens a new event on the Calendar page and gives it a custom repeat rule, with the dialog scrolled to its top (0.32). */
 export async function customRepeat(page: Page) {
   await page.getByRole('button', { name: 'New event' }).first().click();

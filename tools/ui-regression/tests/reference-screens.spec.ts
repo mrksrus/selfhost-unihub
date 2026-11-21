@@ -20,11 +20,12 @@
 // and a custom repeat rule (Phone), and Chat with an open chat at
 // its newest and at its first messages (Wide), the list and an open chat
 // (Phone), and the chat passphrase chosen and entered and Settings -> Chat
-// (Wide and Phone), and a group chat and its people (Wide and Phone), and the
-// save dialog of a shorter chat retention and a retention that waits on
-// Server -> Policies (Wide and Phone), each in Dark Default and Light Default.
-// One hundred and thirty pictures; see docs/UI_BASELINES.md.
-import { customRepeat, expect, expectBaseline, sharedCalendars, test, THEMES, VIEWPORTS, withChat, type Page } from '../support/test.ts';
+// (Wide and Phone), and a group chat and its people, files in a chat, the
+// voice recorder and chat search (Wide and Phone), and the save dialog of a
+// shorter chat retention and a retention that waits on Server -> Policies
+// (Wide and Phone), each in Dark Default and Light Default.
+// One hundred and forty-two pictures; see docs/UI_BASELINES.md.
+import { chatPicturesDrawn, customRepeat, expect, expectBaseline, sharedCalendars, silentMicrophone, test, THEMES, VIEWPORTS, withChat, type Page } from '../support/test.ts';
 import { CURRENT_DEVICE_LOCKED, POLICIES_ADMIN_APP_LOCK, POLICIES_ADMIN_RETENTION, POLICIES_EFFECTIVE_APP_LOCK, POLICIES_EFFECTIVE_TWO_FACTOR, RETENTION_WAITING, USER } from '../support/fixtures.ts';
 
 // The app lock's state is this browser's (a PIN record in IndexedDB
@@ -236,6 +237,35 @@ for (const theme of THEMES) {
         await expect(page.getByRole('dialog', { name: 'Warehouse planning' }).getByRole('button', { name: 'Leave chat' })).toBeVisible();
         await settle();
         await expectBaseline(page, `chat-people-wide-${theme}.png`);
+      });
+
+      // Files in a chat with the fixed engine: a picture by its preview, a PDF and another file, a voice message and an own file on its way with Cancel.
+      test(`chat files (wide, ${theme})`, async ({ page, open, settle }) => {
+        await withChat(page);
+        await open('/chat?c=chat-finley');
+        await chatPicturesDrawn(page);
+        await settle();
+        await expectBaseline(page, `chat-files-wide-${theme}.png`);
+      });
+
+      test(`chat recorder (wide, ${theme})`, async ({ page, open, settle }) => {
+        await withChat(page);
+        await silentMicrophone(page);
+        await open('/chat?c=chat-finley');
+        await page.getByRole('button', { name: 'Record a voice message' }).click();
+        await expect(page.getByRole('timer')).toHaveText('0:00');
+        await settle();
+        await expectBaseline(page, `chat-recorder-wide-${theme}.png`);
+      });
+
+      // What the device finds for "plan": a chat by its name, then messages by their text, the newest first.
+      test(`chat search (wide, ${theme})`, async ({ page, open, settle }) => {
+        await withChat(page);
+        await open('/chat?c=chat-planning');
+        await page.getByRole('searchbox', { name: 'Search chats and messages' }).fill('plan');
+        await expect(page.getByRole('region', { name: 'Search results' })).toBeVisible();
+        await settle();
+        await expectBaseline(page, `chat-search-wide-${theme}.png`);
       });
 
       // 0.31: a shared address book the person manages, with a contact open, and its share dialog.
@@ -571,6 +601,35 @@ for (const theme of THEMES) {
         await expect(page.getByRole('dialog', { name: 'Warehouse planning' }).getByRole('button', { name: 'Leave chat' })).toBeVisible();
         await settle();
         await expectBaseline(page, `chat-people-phone-${theme}.png`);
+      });
+
+      // Files in a chat with the fixed engine: a picture by its preview, a PDF and another file, a voice message and an own file on its way with Cancel.
+      test(`chat files (phone, ${theme})`, async ({ page, open, settle }) => {
+        await withChat(page);
+        await open('/chat?c=chat-finley');
+        await chatPicturesDrawn(page);
+        await settle();
+        await expectBaseline(page, `chat-files-phone-${theme}.png`);
+      });
+
+      test(`chat recorder (phone, ${theme})`, async ({ page, open, settle }) => {
+        await withChat(page);
+        await silentMicrophone(page);
+        await open('/chat?c=chat-finley');
+        await page.getByRole('button', { name: 'Record a voice message' }).click();
+        await expect(page.getByRole('timer')).toHaveText('0:00');
+        await settle();
+        await expectBaseline(page, `chat-recorder-phone-${theme}.png`);
+      });
+
+      // What the device finds for "plan": a chat by its name, then messages by their text, the newest first.
+      test(`chat search (phone, ${theme})`, async ({ page, open, settle }) => {
+        await withChat(page);
+        await open('/chat');
+        await page.getByRole('searchbox', { name: 'Search chats and messages' }).fill('plan');
+        await expect(page.getByRole('region', { name: 'Search results' })).toBeVisible();
+        await settle();
+        await expectBaseline(page, `chat-search-phone-${theme}.png`);
       });
 
       test(`contact detail (phone, ${theme})`, async ({ page, open }) => {

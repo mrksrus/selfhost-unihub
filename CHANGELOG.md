@@ -26,6 +26,23 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
   the bell in the chat's header.
 - **Former colleagues.** Messages of someone who was deactivated or deleted
   keep their name, marked "former colleague".
+- **Files in a chat.** The paperclip, a paste or a drop attaches up to ten
+  files to a message. A picture shows its preview and opens in a viewer, a
+  PDF opens in the reader, anything else is saved. A file on its way shows
+  how far it is and can be cancelled; one above the administrator's limit is
+  refused with the limit. Files are fetched only when opened.
+- **Voice messages**, up to 10 minutes, from the microphone beside the
+  field; the other person sees the length and plays it with a tap.
+- **Search in Chat**, above the chats: chats by name and messages by text
+  and file name, on this device only. A result opens its chat at that
+  message.
+- Adding someone to a group chat whose own chat messages are deleted sooner
+  says, before it is confirmed, that the chat will then delete older
+  messages for everyone, starting 24 hours later.
+- Reference pictures: `chat-files-*`, `chat-recorder-*` and `chat-search-*`
+  (Wide and Phone) are new; every picture with the chats or an open chat
+  gains the search field, the paperclip and the microphone, and a chat with
+  files in the list.
 - Reference pictures: `chat-group-*` and `chat-people-*` (Wide and Phone)
   are new; `chat-wide-*`, `chat-earlier-wide-*`, `chat-list-phone-*` and
   `chat-thread-phone-*` gain the group chats in the list, "New group" and

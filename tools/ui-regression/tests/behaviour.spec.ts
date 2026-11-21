@@ -7,7 +7,7 @@ import type { Page } from '@playwright/test';
 import { POLICIES_EFFECTIVE_TWO_FACTOR, RETENTION_WAITING, RICH_TASK, TASKS } from '../support/fixtures.ts';
 import { touchViolations } from '../support/geometry.ts';
 import { expectOnlyKnown, KNOWN_DEFECTS } from '../support/known-defects.ts';
-import { customRepeat, expect, pointerIsCoarse, sharedCalendars, test, THEMES, VIEWPORTS, withChat } from '../support/test.ts';
+import { attachChatFiles, customRepeat, expect, pointerIsCoarse, sharedCalendars, silentMicrophone, test, THEMES, VIEWPORTS, withChat } from '../support/test.ts';
 
 // Synthetic files for the composer's attachments.
 const SYNTHETIC_PDF = { name: 'quarterly-report.pdf', mimeType: 'application/pdf', buffer: Buffer.from('%PDF-1.4 synthetic') };
@@ -333,6 +333,22 @@ test.describe('P-11 touch targets are big enough and never overlap', () => {
     // The dialog has grown to its size: a button measured while it opens is a hair under 40 px.
     await settle();
     expectOnlyKnown(await touchViolations(page, '[role="dialog"]'), []);
+  });
+
+  test('Chat: files in a chat with two waiting to be sent, the recorder and search results', async ({ page, open, settle }) => {
+    await withChat(page);
+    await silentMicrophone(page);
+    await open('/chat?c=chat-finley');
+    await attachChatFiles(page);
+    await settle();
+    expectOnlyKnown(await touchViolations(page, 'section[aria-label="Chat with Finley Example"]'), []);
+    await page.getByRole('button', { name: 'Record a voice message' }).click();
+    await expect(page.getByRole('timer')).toHaveText('0:00');
+    expectOnlyKnown(await touchViolations(page, 'section[aria-label="Chat with Finley Example"]'), []);
+    await open('/chat');
+    await page.getByRole('searchbox', { name: 'Search chats and messages' }).fill('plan');
+    await expect(page.getByRole('region', { name: 'Search results' })).toBeVisible();
+    expectOnlyKnown(await touchViolations(page), []);
   });
 
   test('Chat: the passphrase chosen and entered, the new-key dialog and Settings › Chat', async ({ page, open, settle }) => {
