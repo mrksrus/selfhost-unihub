@@ -66,6 +66,9 @@ Alpine packages. These are separate components with their respective licenses.
 The build records installed package versions in `/app/licenses/alpine-packages.txt`
 and FFmpeg's own license report in `/app/licenses/ffmpeg-license.txt`.
 
+coturn, the relay for calls, is BSD-3-Clause; its license text is in
+`licenses/third-party/coturn-BSD-3-Clause.txt`.
+
 The 0.10 release build uses Alpine 3.24 and FFmpeg 8.1.2-r0. That FFmpeg binary is
 built with `--enable-gpl` and `--enable-version3`, including x264/x265 support;
 its GPL terms apply independently of UniHub's license. UniHub invokes FFmpeg as

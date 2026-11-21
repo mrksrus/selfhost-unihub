@@ -73,6 +73,65 @@ fi
 # same files as UNIHUB_API_UID, so a secret file must be readable by that user too.
 node /app/api/src/database-readiness.js || true
 
+# The relay for calls (coturn) runs beside the API once it has a shared secret;
+# its configuration, which holds the secret, exists only in the temp area.
+turn_secret="${TURN_SECRET:-}"
+if [ -n "${TURN_SECRET_FILE:-}" ]; then
+  turn_secret="$(cat -- "$TURN_SECRET_FILE")" || turn_secret=
+  [ -n "$turn_secret" ] || echo "WARNING: TURN_SECRET_FILE ($TURN_SECRET_FILE) could not be read or is empty; the relay for calls is off." >&2
+fi
+if [ -z "$turn_secret" ]; then
+  [ -z "${TURN_URLS:-}" ] || echo "WARNING: TURN_URLS is set without TURN_SECRET or TURN_SECRET_FILE; the relay for calls is off and calls between different networks fail." >&2
+else
+  [ -n "${TURN_URLS:-}" ] || echo "WARNING: TURN_SECRET is set without TURN_URLS; the relay for calls runs but devices are not told about it." >&2
+  # The first address devices are told, without scheme, query and port.
+  turn_realm="${TURN_URLS%%,*}"; turn_realm="${turn_realm#*:}"; turn_realm="${turn_realm%%\?*}"
+  case "$turn_realm" in \[*) turn_realm="${turn_realm%%]*}"; turn_realm="${turn_realm#[}" ;; *) turn_realm="${turn_realm%%:*}" ;; esac
+  case "$turn_realm" in ''|*[!A-Za-z0-9.:-]*) turn_realm=unihub ;; esac
+  turn_user=
+  if [ "$(id -u)" = 0 ]; then
+    # coturn drops to the API user by name after binding its ports.
+    turn_user="$(awk -F: -v id="${UNIHUB_API_UID:-}" '$3 == id { print $1; exit }' /etc/passwd)"
+    turn_group="$(awk -F: -v id="${UNIHUB_API_GID:-$UNIHUB_API_UID}" '$3 == id { print $1; exit }' /etc/group)"
+    [ -n "$turn_user" ] && [ -n "$turn_group" ] || { echo "WARNING: no account in the image has UNIHUB_API_UID/GID; the relay for calls is off." >&2; turn_secret=; }
+  fi
+  # The secret and the address end up in a config line: nothing that could start another one.
+  case "$turn_secret" in =*|*[!A-Za-z0-9+/=._~-]*) echo "WARNING: TURN_SECRET may hold only letters, digits and + / = . _ ~ - (openssl rand -base64 48); the relay for calls is off." >&2; turn_secret= ;; esac
+  case "${TURN_EXTERNAL_IP:-}" in *[!0-9A-Fa-f.:/]*) echo "WARNING: TURN_EXTERNAL_IP is not an IP address; the relay for calls is off." >&2; turn_secret= ;; esac
+fi
+if [ -n "$turn_secret" ]; then
+  turn_dir=/tmp/unihub-turn
+  rm -rf "$turn_dir" && mkdir -m 700 -p "$turn_dir" || exit 1
+  # Peers the relay never sends to: this network, loopback, link-local,
+  # multicast and reserved, IPv4-compatible IPv6, and every address of the
+  # container itself. Ranges stay prefix-aligned, as coturn compares IPv6 ranges byte by byte.
+  turn_denied="0.0.0.0-0.255.255.255 127.0.0.0-127.255.255.255 169.254.0.0-169.254.255.255 224.0.0.0-255.255.255.255
+    ::-::ffff:ffff fe80::-feff:ffff:ffff:ffff:ffff:ffff:ffff:ffff ff00::-ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff
+    $(awk '/\/32 host LOCAL/ { print last } { last = $2 }' /proc/net/fib_trie 2>/dev/null | sort -u)
+    $(sed 's/^\(....\)\(....\)\(....\)\(....\)\(....\)\(....\)\(....\)\(....\) .*/\1:\2:\3:\4:\5:\6:\7:\8/' /proc/net/if_inet6 2>/dev/null)"
+  # Private networks and carrier-grade NAT, unless everyone calls from one private network or VPN.
+  [ "${TURN_ALLOW_PRIVATE_PEERS:-}" = true ] || turn_denied="$turn_denied 10.0.0.0-10.255.255.255
+    172.16.0.0-172.31.255.255 192.168.0.0-192.168.255.255 100.64.0.0-100.127.255.255 fc00::-fdff:ffff:ffff:ffff:ffff:ffff:ffff:ffff"
+  (
+    umask 077 && exec > "$turn_dir/turnserver.conf" || exit 1
+    printf '%s\n' listening-port=3478 min-port=49160 max-port=49200 use-auth-secret "static-auth-secret=$turn_secret" \
+      "realm=$turn_realm" fingerprint no-tcp-relay no-tls no-dtls cli=0 no-multicast-peers no-dynamic-ip-list \
+      no-dynamic-realms user-quota=8 total-quota=40 log-file=stdout "pidfile=$turn_dir/turnserver.pid" userdb=:memory:
+    [ -z "${TURN_EXTERNAL_IP:-}" ] || echo "external-ip=$TURN_EXTERNAL_IP"
+    [ -z "$turn_user" ] || printf '%s\n' "proc-user=$turn_user" "proc-group=$turn_group"
+    for peer in $turn_denied; do echo "denied-peer-ip=$peer"; done
+  ) || exit 1
+  echo "✓ Starting the relay for calls on port 3478..."
+  supervisor_pid=$$
+  # The relay's end stops the supervisor (the PID this script hands over by
+  # exec), which ends the container for its restart policy.
+  (
+    turnserver -c "$turn_dir/turnserver.conf"
+    echo 'The relay for calls stopped; restarting the container.' >&2
+    while kill -TERM "$supervisor_pid" 2>/dev/null; do sleep 5; done
+  ) &
+fi
+
 # The supervisor exits if either service dies, allowing the existing Docker
 # restart policy to recover the whole app. It also forwards shutdown signals.
 export UNIHUB_API_START_DELAY_SECONDS
