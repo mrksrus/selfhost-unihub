@@ -471,9 +471,11 @@ Safety checks:
   `409 RESTORE_IN_PROGRESS` while a restore runs for that user
 
 The storage overview returns aggregate counts and byte totals for mail
-attachments, raw mail archives, recordings, and generated backup archives. It also
-splits those byte totals per user account. It does not return message subjects,
-filenames, contact records, or backup contents.
+attachments, raw mail archives, recordings, generated backup archives and
+chat files. It also splits those byte totals per user account; chat files
+count toward the person who sent them, and those of deleted people are one
+"former colleagues" total on the Chat files row. It does not return message
+subjects, filenames, contact records, or backup contents.
 
 ## Roles and the owner
 
@@ -877,6 +879,29 @@ calendar on or off, which decides from a read that changes nothing. A backup
 younger than `backup.server_retention_days`, or one still being made, is
 refused with the date from which it can be deleted
 (`services/backup-policy.ts`); a failed or cancelled one can go at once.
+
+**A shorter chat retention on the Policies page.** `chat.retention_days` is
+the one rule whose purpose is to delete ([Chat](CHAT.md#files-and-retention-server)
+has the server's side). When a save makes it shorter for Everyone or a
+group, the save dialog first shows the server's count of the messages and
+files older than the new time and in how many chats, says that deleting
+starts 24 hours later (up to an hour more, until the hourly job has seen
+the rule), that a device that is switched off deletes its copies when it is
+next opened, that an earlier instance backup still holds the encrypted
+messages and that this deletes even where people may not delete for good,
+and asks for the typed word DELETE besides the password. The word is the
+page's own safeguard; the server checks the password. Under the rule the
+page then shows the change that waits. Right after the save it offers
+"Undo", which saves the value the page had loaded, because the server does
+not keep the earlier value. On a later visit it shows the server's date and
+how many chats wait, and says that a longer time set before then keeps what
+is younger than it and that "Never" keeps everything. The server counts a
+chat as waiting only once the hourly job has seen the rule, so for up to an
+hour after a save, or after an Undo, a later visit does not show the change
+or still shows it. "Apply now…" is offered to the owner alone. Settings ›
+Chat tells each person how long their messages are kept and how large a
+file they may send, and a chat under a retention says so under its header,
+with the date while its 24 hours run.
 
 **The final check.** The boundary's answer, and a service's early checks, can
 be older than what holds when the step acts: an administrator's save, a module

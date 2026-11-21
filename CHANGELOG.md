@@ -46,6 +46,18 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
   joins; before saving, the administrator sees how many messages and files
   it would delete; only the owner can start it at once, with their password,
   and that is written to the activity log.
+- **A shorter chat retention asks twice.** Saving one on Server › Policies
+  needs the typed word DELETE besides the password. The page then shows
+  the change that waits, with its date and "Undo"; the owner also has
+  "Apply now…". A chat under a retention says so under its header, with the
+  date during the 24 hours, and Settings › Chat says how long your messages
+  are kept and how large a file you can send.
+- **Reference pictures.** Eight new pictures with fixed synthetic data: the
+  save dialog of a shorter chat retention and a retention that waits (Wide
+  and Phone, dark and light). The four Settings › Chat pictures gain
+  "Messages and files", and the Policies page and a group's Rules view say
+  in their first paragraph which rule deletes: added content within the
+  accepted design.
 
 ## 0.33.0
 
