@@ -1,4 +1,4 @@
-import { useContext, useEffect, useState, type FormEvent } from 'react';
+import { useContext, useEffect, useRef, useState, type FormEvent } from 'react';
 import { UserPlus } from 'lucide-react';
 import type { ChatConversationSummary, ChatEngine, ChatMember } from '@/lib/chat/types';
 import { AuthContext } from '@/contexts/auth-context';
@@ -40,6 +40,15 @@ export function ChatPeople({ engine, conversation, members, open, onClose }: Pro
   const [name, setName] = useState(conversation.name);
   const [adding, setAdding] = useState(false);
   const [asking, setAsking] = useState<Question | null>(null);
+  // The question stays in the dialog while it closes.
+  const asked = useRef(asking);
+  if (asking) asked.current = asking;
+  const panel = useRef<HTMLDivElement>(null);
+  // What opened the panel gets the focus back when it closes.
+  const opener = useRef<HTMLElement | null>(null);
+  // The button that asked: the focus returns to it, or to the panel when the answer removed it (a removed person's row).
+  const asker = useRef<HTMLElement | null>(null);
+  const ask = (question: Question) => { asker.current = document.activeElement as HTMLElement | null; setAsking(question); };
   const [busy, setBusy] = useState(false);
   // The engine does not say that loading failed: after a while the wait is offered again.
   const [slow, setSlow] = useState(false);
@@ -62,18 +71,18 @@ export function ChatPeople({ engine, conversation, members, open, onClose }: Pro
     event.preventDefault();
     void act({ run: () => engine.rename(conversation.id, name.trim()), failed: 'Could not rename the chat' });
   };
-  const remove = (member: ChatMember) => setAsking({
+  const remove = (member: ChatMember) => ask({
     title: `Remove ${member.name} from ${conversation.name}?`, action: 'Remove', failed: `Could not remove ${member.name}`,
     description: `${member.name} reads nothing written from now on, and the chat goes from their devices when they next open UniHub. They keep nothing in UniHub. A copy they made elsewhere cannot be taken back.`,
     run: () => engine.removeMember(conversation.id, member.user_id),
   });
-  const leave = () => setAsking({
+  const leave = () => ask({
     title: `Leave ${conversation.name}?`, action: 'Leave chat', failed: 'Could not leave the chat',
     description: 'You read nothing written from now on, and the chat with its messages goes from your devices. If a manager adds you again, you read only what is written after that.',
     // The page goes back to the list once the chat is gone from it.
     run: () => engine.leave(conversation.id),
   });
-  const unfollow = () => setAsking({
+  const unfollow = () => ask({
     title: `Stop following ${follows}?`, action: 'Stop following', failed: 'Could not stop following',
     description: 'The chat keeps the people it has now. From then on its managers add and remove people, and anyone can leave.',
     run: () => engine.unfollow(conversation.id),
@@ -82,7 +91,8 @@ export function ChatPeople({ engine, conversation, members, open, onClose }: Pro
   return (
     <Sheet open={open} onOpenChange={next => { if (!next) onClose(); }}>
       {/* The focus goes to the panel, not into the name field: on a phone that would open the keyboard over the people. */}
-      <SheetContent className="flex w-full flex-col gap-0 p-0 sm:max-w-sm" onOpenAutoFocus={event => { event.preventDefault(); (event.currentTarget as HTMLElement).focus(); }}>
+      <SheetContent ref={panel} className="flex w-full flex-col gap-0 p-0 sm:max-w-sm" onCloseAutoFocus={event => { event.preventDefault(); opener.current?.focus(); }}
+        onOpenAutoFocus={event => { opener.current = document.activeElement as HTMLElement | null; event.preventDefault(); (event.currentTarget as HTMLElement).focus(); }}>
         <SheetHeader className="shrink-0 space-y-1 border-b border-border py-3 pl-4 pr-12 text-left">
           <SheetTitle className="truncate text-base">{conversation.name}</SheetTitle>
           <SheetDescription>{group.member_count} {group.member_count === 1 ? 'person' : 'people'}{follows && `, follows ${follows}`}</SheetDescription>
@@ -130,14 +140,14 @@ export function ChatPeople({ engine, conversation, members, open, onClose }: Pro
         </div>
         {adding && members && <AddPeopleDialog engine={engine} conversationId={conversation.id} chatName={conversation.name} already={members.map(member => member.user_id)} onClose={() => setAdding(false)} />}
         <AlertDialog open={!!asking} onOpenChange={next => { if (!next && !busy) setAsking(null); }}>
-          <AlertDialogContent>
+          <AlertDialogContent onCloseAutoFocus={event => { event.preventDefault(); (asker.current?.isConnected ? asker.current : panel.current)?.focus(); }}>
             <AlertDialogHeader>
-              <AlertDialogTitle>{asking?.title}</AlertDialogTitle>
-              <AlertDialogDescription>{asking?.description}</AlertDialogDescription>
+              <AlertDialogTitle>{asked.current?.title}</AlertDialogTitle>
+              <AlertDialogDescription>{asked.current?.description}</AlertDialogDescription>
             </AlertDialogHeader>
             <AlertDialogFooter>
               <AlertDialogCancel disabled={busy}>Cancel</AlertDialogCancel>
-              <AlertDialogAction disabled={busy} onClick={event => { event.preventDefault(); if (asking) void act(asking); }}>{asking?.action}</AlertDialogAction>
+              <AlertDialogAction disabled={busy} onClick={event => { event.preventDefault(); if (asking) void act(asking); }}>{asked.current?.action}</AlertDialogAction>
             </AlertDialogFooter>
           </AlertDialogContent>
         </AlertDialog>

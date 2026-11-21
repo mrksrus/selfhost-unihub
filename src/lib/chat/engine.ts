@@ -333,7 +333,8 @@ class Engine implements ChatEngine {
       const item: ChatThreadMessage = {
         kind: 'message', id: record.id, seq, sender_user_id: sender,
         sender_name: fromMe ? this.me.name : known?.active ? known.name : (record as Stored).sender_name,
-        former_colleague: !fromMe && (!sender || known?.active === false), from_me: fromMe, mentions, mentions_me: !fromMe && mentions.includes(this.me.id),
+        // A deleted person's messages on this device still name them; in the chat with them the peer says they are gone.
+        former_colleague: !fromMe && (!sender || known?.active === false || (conversation?.kind === 'direct' && conversation.peer.user_id === null)), from_me: fromMe, mentions, mentions_me: !fromMe && mentions.includes(this.me.id),
         text: record.text, reply_to: null, edited: false, deleted: 'deleted' in record && record.deleted,
         unreadable: 'unreadable' in record && record.unreadable, created_at: record.created_at,
         delivery: !fromMe ? null : sending ? (sending.error ? 'failed' : 'sending') : this.delivery(conversation, seq!),

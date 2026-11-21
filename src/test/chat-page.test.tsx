@@ -280,6 +280,27 @@ describe('group chats', () => {
     expect(sent(engine)).toEqual([['send', 'chat-planning', 'Thanks @Casey Example and @bl', null, ['user-casey']]]);
   });
 
+  it('removing someone hands the focus to the people panel, since their row is gone; Cancel and closing the panel hand it back to their buttons', async () => {
+    const engine = createFixtureChatEngine();
+    state.engine = engine;
+    render(<App user="A" at="/chat?c=chat-planning" />);
+    const people = screen.getByRole('button', { name: 'People in this chat' });
+    people.focus();
+    fireEvent.click(people);
+    const panel = screen.getByRole('dialog', { name: 'Warehouse planning' });
+    const remove = (name: string) => { const button = within(panel).getByRole('button', { name: `Remove ${name}`, hidden: true }); button.focus(); fireEvent.click(button); return button; };
+    const kept = remove('Alex Example');
+    fireEvent.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(kept).toHaveFocus());
+    remove('Casey Example');
+    fireEvent.click(within(screen.getByRole('alertdialog', { name: 'Remove Casey Example from Warehouse planning?' })).getByRole('button', { name: 'Remove' }));
+    await waitFor(() => expect(panel).toHaveFocus());
+    expect(engine.calls).toContainEqual(['removeMember', 'chat-planning', 'user-casey']);
+    expect(within(panel).queryByRole('button', { name: 'Remove Casey Example' })).not.toBeInTheDocument();
+    fireEvent.click(within(panel).getByRole('button', { name: 'Close' }));
+    await waitFor(() => expect(people).toHaveFocus());
+  });
+
   const leaveChat = () => {
     fireEvent.click(screen.getByRole('button', { name: 'People in this chat' }));
     fireEvent.click(screen.getByRole('button', { name: 'Leave chat' }));

@@ -81,8 +81,10 @@ test('a group chat of three: all write, a mention is marked for the one it names
     await shows(ask.getByText(/They keep nothing in UniHub\. A copy they made elsewhere cannot be taken back\./));
     await ask.getByRole('button', { name: 'Remove', exact: true }).click();
     await ask.waitFor({ state: 'hidden', timeout: 30_000 });
-    await expect.poll(() => panel.getByRole('button', { name: `Remove ${casey.name}`, exact: true }).count(), { timeout: 30_000 }).toBe(0);
-    await a.keyboard.press('Escape');
+    // The panel is in reach again once the question is gone: Casey is no longer in it.
+    await panel.getByRole('button', { name: `Remove ${blair.name}`, exact: true }).waitFor({ state: 'visible', timeout: 30_000 });
+    expect(await panel.getByRole('button', { name: `Remove ${casey.name}`, exact: true }).count(), 'Casey is gone from the people').toBe(0);
+    await panel.getByRole('button', { name: 'Close', exact: true }).click();
     await panel.waitFor({ state: 'hidden' });
     await shows(c.getByText('No chats yet', { exact: true }), 90_000);
 

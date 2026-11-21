@@ -1,4 +1,4 @@
-import { useState, type FormEvent, type ReactNode } from 'react';
+import { useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { Loader2 } from 'lucide-react';
@@ -70,6 +70,8 @@ function ChatDialog({ title, description, action, ready, run, onClose, children 
   const scope = useSessionScope();
   const [pending, setPending] = useState(false);
   const [refusal, setRefusal] = useState<string | null>(null);
+  // The button that opened it gets the focus back.
+  const opener = useRef(document.activeElement as HTMLElement | null);
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     if (!ready || pending) return;
@@ -81,7 +83,7 @@ function ChatDialog({ title, description, action, ready, run, onClose, children 
   };
   return (
     <Dialog open onOpenChange={open => { if (!open && !pending) onClose(); }}>
-      <DialogContent className="flex max-h-[calc(100dvh-1rem-env(safe-area-inset-top,0px)-env(safe-area-inset-bottom,0px))] flex-col">
+      <DialogContent className="flex max-h-[calc(100dvh-1rem-env(safe-area-inset-top,0px)-env(safe-area-inset-bottom,0px))] flex-col" onCloseAutoFocus={event => { event.preventDefault(); opener.current?.focus(); }}>
         <form onSubmit={submit} className="flex min-h-0 flex-1 flex-col gap-4">
           <DialogHeader className="shrink-0">
             <DialogTitle>{title}</DialogTitle>
