@@ -19,7 +19,8 @@ import { chatWithHook, choosePassphrase, confirmRules, keepScreen, secondBrowser
 // job deletes nothing during the 24 hours and the right rows after them is
 // proven against the real database (chat-retention-mysql-integration).
 
-const NOTICE = 'Your administrator changed the data rules';
+// The second title is a person's first notice, on a server whose rules were never changed before.
+const NOTICE = /^(Your administrator changed the data rules|Rules on this server)$/;
 const LINE = 'Messages older than 30 days are deleted here';
 
 // The one thing this test writes past the app: its clock. Forty days cannot
@@ -136,7 +137,9 @@ test('a shorter chat retention for a group: the count, the typed word and the pa
     const again = await chooseThirtyDays();
     await again.getByLabel('Type DELETE to confirm', { exact: true }).fill('DELETE');
     await again.getByLabel('Your password', { exact: true }).fill(dialogPassword());
-    await again.getByRole('button', 'Save changes', { exact: true }).tap();
+    const saveAgain = again.getByRole('button', 'Save changes', { exact: true });
+    await expect(saveAgain).toBeEnabled();
+    await saveAgain.tap();
     await expect(undoButton).toBeVisible();
     await screen.getByRole('button', 'Apply now…').tap();
     const apply = screen.getByRole('dialog', 'Start deleting now?');
