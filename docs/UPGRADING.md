@@ -5,6 +5,26 @@
 For a new installation, use [Installation](INSTALLATION.md). This page includes
 version-specific upgrade guidance. Preserve existing data and keys when upgrading.
 
+## 0.34.0 Group chats
+
+**Make a database backup first**, as before every upgrade. One automatic
+database upgrade runs at the first start: **step 32** adds the table
+`chat_attachments`, empty, and new columns to two chat tables (a group
+chat's name and retention, each person's notification choice per chat). It
+changes no existing row and takes moments, not minutes. Going back to
+0.33.x means restoring that backup: 0.33.x does not know step 32 and
+refuses to start ("Database upgrade history is unknown or out of order").
+Personal backups stay **data schema 8** and still carry no chats; the
+instance backup gains the file root `chat` for chat files.
+
+- **Reverse proxy.** A file sent in a chat is one upload of up to 100 MB. A
+  proxy in front of UniHub must allow request bodies of at least 101 MB on
+  `/api/chat/conversations/<id>/attachments`, and should not buffer them,
+  or larger chat files fail
+  ([Installation](INSTALLATION.md#1-prepare-your-server-and-browser-address)
+  has the two lines for Nginx Proxy Manager). UniHub's own Nginx needs no
+  change.
+
 ## 0.33.0 Chat
 
 **Make a database backup first**, as before every upgrade. One automatic

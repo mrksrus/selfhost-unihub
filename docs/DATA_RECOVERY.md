@@ -249,7 +249,7 @@ The old installation's sessions and credentials of the moment:
   the next message of each chat makes a new group. Messages newer than the
   backup exist only on the devices that hold them; older ones come back from
   the archive with each person's chat passphrase
-  ([Chat](CHAT.md#limits-of-this-version)).
+  ([Chat](CHAT.md#backups)).
 - **Setup links** (`invites`) are deleted. A link is a credential and is
   never resurrected: the administrator makes a new one for anyone who had
   not set up their account yet.
@@ -375,8 +375,8 @@ table and requires every chat device to come back removed.
 0.34.0 adds `chat_attachments` (upgrade step 32), also in no personal
 backup, and the instance backup's file root `chat`. A chat file is
 removed after its row, through the file removal gate: with its message,
-by retention and when an upload was never sent. Retention
-([Chat](CHAT.md#files-and-retention-server)) deletes messages, copies and
+by retention, with a chat nobody is in and when an upload was never sent.
+Retention ([Chat](CHAT.md#retention)) deletes messages, copies and
 files after its 24-hour wait even while deleting for good is forbidden;
 instance backups made before still hold them as ciphertext until they are
 removed. The drill also seeds a group chat with a retention and a file, and

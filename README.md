@@ -52,16 +52,16 @@ Outlook, Apple, WhatsApp and the rest.
 
 ## What you can do
 
-Built and released today (0.33):
+Built and released today (0.34):
 
 | Feature | What to expect |
 | --- | --- |
 | Mail | Read and send mail with attachments, folders, search, conversations, templates, snooze, scheduled send and a signature per account. Download mode can optionally delete downloaded mail from the provider. Sync mode follows the server's read, star and folder changes, sends yours back with visible pending and failure states, and keeps messages that vanish from the server. [Mail modes](docs/MAIL_MODES.md) |
 | Contacts | Contacts with every vCard field, vCard and Google/Outlook CSV import and export, and duplicate merging that can be undone. The **company directory** lists everyone in the organisation; **shared address books** are shared with people or groups for reading or editing. [Contacts](docs/CONTACTS.md) |
 | Calendar and ToDo | Local calendars inside UniHub, shared with people or groups, group and organisation calendars, repeating events, plus two-way sync with CalDAV servers such as Stalwart, Nextcloud, iCloud and Fastmail, including recurring events; Google and Microsoft calendars as read-only subscriptions. Tasks with subtasks, reminders, your own order and default lists. [Calendar](docs/CALENDAR.md) |
-| Chat | 1:1 chats with colleagues on the web and in the Android app, always end-to-end encrypted: replies, edits, deleting for both, delivery and read state, presence. A chat passphrase brings the history to a new phone or browser; nobody else can read or restore a chat. [Chat](docs/CHAT.md) |
+| Chat | 1:1 and group chats with colleagues on the web and in the Android app, always end-to-end encrypted, files and voice messages included: replies, edits, deleting for everyone, mentions, delivery and read state, presence, and search on the device. A group chat can follow an organisation group and change with it. A chat passphrase brings the history to a new phone or browser; nobody else can read or restore a chat. An administrator can have chat messages deleted after a set time. [Chat](docs/CHAT.md) |
 | Recordings and Music | Record in the browser or import audio, then organise, play and download it; Music keeps chords and lyrics with a recording. |
-| People, groups and rules | Add people with a one-time setup link, put them in groups with managers, and set rules for everyone or a group: required two-factor authentication, password length, session lifetime, modules, notification detail, app lock, phone contacts, offline copies and data safety. One owner manages the administrators; an activity log records sign-ins and administrative actions. [Administration](docs/AUTH_ADMIN_SETTINGS.md) |
+| People, groups and rules | Add people with a one-time setup link, put them in groups with managers, and set rules for everyone or a group: required two-factor authentication, password length, session lifetime, modules, notification detail, app lock, phone contacts, offline copies, data safety and chat (who members may add, the largest file, how long messages are kept). One owner manages the administrators; an activity log records sign-ins and administrative actions. [Administration](docs/AUTH_ADMIN_SETTINGS.md) |
 | Optional modules | Reorder, hide or disable modules and their background work. Disabling a module keeps its data. [Modules](docs/MODULES.md) |
 | Bin, backups and imports (ALPHA) | Deleted items wait in a bin for as long as each person chooses, within the administrator's rules. Password-protected account backups that also open outside UniHub (off until an administrator allows them), and an encrypted whole-server backup for administrators. Backup and restore are experimental: do not use them as your only backup. |
 | App lock | Lock the whole app or chosen modules on a device with a fingerprint, face or the phone's PIN in the Android app, or a UniHub PIN in a browser; administrators can require it. It protects an unlocked device, not the server. [App lock](docs/APP_LOCK.md) |
@@ -72,7 +72,6 @@ Planned, one theme per version ([Road to 1.0](docs/ROADMAP.md); nothing below is
 
 | Version | Planned |
 | --- | --- |
-| 0.34 | Group chats, encrypted attachments and voice messages, mentions and retention rules. |
 | 0.35 | Encrypted 1:1 voice calls between UniHub users that ring like phone calls on Android, and calls in the browser. |
 | 0.36 | Video, screen sharing in the browser and group calls through an optional self-hosted media server. |
 | 1.0 | Stabilisation, a security review and a documented threat model; stable formats for the whole 1.x line. |
@@ -90,7 +89,7 @@ that change details.
 
 | | Who runs the server | End-to-end encrypted | Notifications travel through | Administration | Source code |
 | --- | --- | --- | --- | --- | --- |
-| **UniHub today** | You | Chat messages (not against a server changed to attack its users, see [Chat](docs/CHAT.md#what-the-encryption-protects)); calls are planned to be | Android app: its own connection to your server. Browser: the browser's push service, encrypted for the device | People, groups, roles, rules, activity log | Source-available ([PolyForm Noncommercial](LICENSE)) |
+| **UniHub today** | You | Chat messages and files (not against a server changed to attack its users, see [Chat](docs/CHAT.md#what-the-encryption-protects)); calls are planned to be | Android app: its own connection to your server. Browser: the browser's push service, encrypted for the device | People, groups, roles, rules, activity log | Source-available ([PolyForm Noncommercial](LICENSE)) |
 | WhatsApp-style messengers | The company (Meta for WhatsApp) | Messages and calls | Google's or Apple's push service | None for most users | Closed |
 | Signal | Signal Foundation | Messages and calls | Google's or Apple's push service; on Android without Google services, Signal's own connection | None | Open source |
 | Slack or Teams-style team chat | The vendor | Not for messages | Google's or Apple's push service | Yes | Closed |
@@ -116,7 +115,7 @@ What UniHub protects today, and how:
 | Notifications | Encrypted for each device as Web Push does (RFC 8291), in the browser and the Android app; how much they show is set on the server and by the app lock | The device; the push service sees that a notification was sent, when and how large, but not its content |
 | Account backups (ALPHA) | AES-256 ZIP (WinZip AE-2) with a random 256-bit recovery password | You with the password, and the server, which keeps that password sealed with its backup key (by default the same `ENCRYPTION_KEY`) |
 | Whole-server backup (ALPHA) | AES-256-GCM with a key of its own from the deployment's settings; never offered for download | Whoever holds that key |
-| Chat messages | End-to-end encrypted on the devices with MLS (OpenMLS); the server stores ciphertext and sees who writes to whom and when. The history is kept under a key protected by each person's chat passphrase | The devices of the two people in the chat. Not the server's database, backups or administrators, as long as the chat passphrase is not easy to guess; no recovery key exists. It does not protect against a server someone changed to attack its users, because every client loads its code from the server ([Chat](docs/CHAT.md#what-the-encryption-protects)) |
+| Chat messages, files and voice messages | End-to-end encrypted on the devices with MLS (OpenMLS); each file with a key of its own that travels inside the message. The server stores ciphertext and sees who is in which chat, the names of group chats, who was mentioned, the size of each file, and when ([what the server sees](docs/CHAT.md#what-the-server-sees)). The history is kept under a key protected by each person's chat passphrase | The devices of the people in the chat. Not the server's database, backups or administrators, as long as the chat passphrase is not easy to guess; no recovery key exists. It does not protect against a server someone changed to attack its users, because every client loads its code from the server ([Chat](docs/CHAT.md#what-the-encryption-protects)) |
 | On a phone or computer | The offline copy and Chat's messages sit in the browser's or app's storage; the app lock is a gate, not encryption | The device; rely on its own encryption |
 
 Planned: 1:1 calls (0.35) are encrypted between the two devices, also
@@ -172,7 +171,8 @@ pin `ghcr.io/mrksrus/selfhost-unihub:0.15.1` to stay on MySQL for now.
 The published deployment uses **two containers: UniHub and MariaDB 11.8 LTS**. You need
 Docker with Compose, persistent storage for both containers, and an HTTPS reverse
 proxy for normal browser access. A reverse proxy is the service that accepts your
-HTTPS address and forwards requests to UniHub's internal HTTP port.
+HTTPS address and forwards requests to UniHub's internal HTTP port; it must let
+chat uploads of 101 MB through ([Installation](docs/INSTALLATION.md#1-prepare-your-server-and-browser-address)).
 
 For a **new installation**, first collect:
 

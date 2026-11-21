@@ -21,7 +21,8 @@ without Linux capabilities, and listens on the port chosen in the form.
 the page opened as `http://NAS-IP:port` loads but cannot keep you signed in.
 Put an HTTPS reverse proxy in front of the app's port (Nginx Proxy Manager,
 Caddy, Traefik, a tunnel) with a certificate your devices trust. A public
-domain or Internet access is not required; private DNS works. See
+domain or Internet access is not required; private DNS works. The proxy
+must let chat uploads of 101 MB through. See
 [Prepare your server and browser address](INSTALLATION.md#1-prepare-your-server-and-browser-address).
 
 ## The form

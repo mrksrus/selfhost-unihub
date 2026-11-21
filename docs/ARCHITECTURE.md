@@ -379,9 +379,14 @@ runs the API without it.
 ### Download tickets
 
 Whatever fetches a file outside the page (the Android app's Open with, Save
-and Share; later the system downloader, backup downloads and chat
-attachments) gets a download ticket instead of the session cookie (F9;
-`api/src/services/file-tickets.ts`, contract `api/src/contracts/files.ts`):
+and Share; later the system downloader and backup downloads) gets a download
+ticket instead of the session cookie (F9;
+`api/src/services/file-tickets.ts`, contract `api/src/contracts/files.ts`).
+Chat files are the exception: the server has only their ciphertext, so the
+page fetches a chat file with its own session, decrypts it and hands the
+plain file to the Android app through the bridge; nothing outside the page
+fetches it and no ticket exists for it ([Chat](CHAT.md#files-and-voice-messages)).
+Tickets work like this:
 
 - `POST /api/files/tickets` `{ kind, id }` (signed in, CSRF token) answers
   `{ url, expires_at, filename, content_type, size }`. The kind names its
@@ -663,6 +668,13 @@ As built:
 - **Keys.** MLS state and keys are bytes in the module's memory and in the
   device's IndexedDB store; only the browser's preview key is a
   non-extractable WebCrypto key.
+- **Files** are encrypted in the page (RFC 8188 `aes128gcm`, a random key
+  per file, the key inside the message) and uploaded as one request each;
+  the server stores the ciphertext under `chat/` of the uploads volume.
+- **Metadata.** The server sees who is in which chat, a group chat's name
+  (plain text), who was mentioned in a message (for the notification),
+  files' sizes and uploaders, and when; the full list is in
+  [Chat](CHAT.md#what-the-server-sees).
 - **What it protects** is the same for every client: the Android app loads
   its page from the server, so it protects as the web does, against a read
   of the database, backups, disks and logs, not against a changed server.
@@ -690,8 +702,8 @@ Important boundaries in the current code:
   data chunk
 - recovery passwords are never stored as plaintext and can be revealed only once
 - `JWT_SECRET` is not used for backup encryption
-- chat messages, previews, archive copies and key backups reach the server
-  only as ciphertext; every conversation route asks the access service for the
+- chat messages, files, previews, archive copies and key backups reach the
+  server only as ciphertext; every conversation route asks the access service for the
   conversation and answers 404 to anyone not in it
 
 ## Operational Notes

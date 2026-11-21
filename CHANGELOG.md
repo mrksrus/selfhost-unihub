@@ -8,77 +8,94 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
 ## 0.34.0 (unreleased)
 
+Group chats, files and voice messages in Chat, all end-to-end encrypted,
+with mentions, search and an administrator's rule for how long chat
+messages are kept. The first start after the upgrade runs database upgrade
+32, which takes moments. A reverse proxy in front of UniHub must let chat
+uploads of 101 MB through (see [Upgrading](docs/UPGRADING.md#0340-group-chats)).
+[Chat](docs/CHAT.md#what-the-server-sees) lists what the server sees: the
+names of group chats are not encrypted, and the server learns who is in a
+chat, who was mentioned and how large each file is.
+
 ### Added
 
-- **Group chats.** "New group" in Chat makes a chat with the people you
-  choose, or one that follows an organisation group you manage (also from
-  the group's page) and changes with it. Messages carry their sender's name
-  and initials, "Read by 3 of 7" opens the names, and lines say who joined
-  or left. Someone who joins reads from then on.
+- **Group chats.** "New group" in Chat makes a chat of up to 100 people:
+  the people you choose (the people of your own groups, or anyone when the
+  administrator allows it), or the members of an organisation group you
+  manage (also from the group's page), which changes with the group.
+  Messages carry their sender's name and initials, "Read by 3 of 7" opens
+  the names, and lines say who joined or left. Someone who joins reads from
+  then on, never older messages.
 - **The people of a group chat** open from its header: who manages it, who
   is online, and why someone's devices are not in it yet. A manager renames
-  the chat and adds or removes people; anyone leaves. A removed person
-  reads nothing new and the chat goes from their devices.
+  the chat and adds or removes people; anyone leaves a chat of chosen
+  people. A removed person reads nothing new and the chat goes from their
+  devices at their next sync.
 - **Mentions.** "@" in a group chat offers its people. A mention is
   highlighted, more strongly for the person it names, and the chat shows
   "@" in the list while it is unread.
 - **Notifications per chat**: all messages, mentions only, or nothing, from
-  the bell in the chat's header.
-- **Former colleagues.** Messages of someone who was deactivated or deleted
-  keep their name, marked "former colleague".
+  the bell in the chat's header. A group chat's notifications say "Alex in
+  Launch" or "Alex mentioned you in Launch".
 - **Files in a chat.** The paperclip, a paste or a drop attaches up to ten
-  files to a message. A picture shows its preview and opens in a viewer, a
-  PDF opens in the reader, anything else is saved. A file on its way shows
-  how far it is and can be cancelled; one above the administrator's limit is
-  refused with the limit. Files are fetched only when opened.
+  files to a message, encrypted on the device before they leave it. A
+  picture shows its preview and opens in a viewer, a PDF opens in the
+  reader, anything else is saved. A file on its way shows how far it is and
+  can be cancelled; one above the administrator's limit is refused with the
+  limit. Files are fetched only when opened.
 - **Voice messages**, up to 10 minutes, from the microphone beside the
-  field; the other person sees the length and plays it with a tap.
+  field; the other person sees the length and plays it with a tap. A
+  browser that cannot play another browser's recording offers to save it.
+- **Search in Chat**, above the chats: chats by name and messages by text
+  and file name, on this device only. A result opens its chat at that
+  message.
 - **Open with and Share for chat files in the Android app** (a new app):
   beside Save on a file, in the picture and PDF viewer, and on a voice
   message the page cannot play. The page decrypts the file and hands it to
   Android's sheet; an older app saves chat files and shows them in the page.
-- **Search in Chat**, above the chats: chats by name and messages by text
-  and file name, on this device only. A result opens its chat at that
-  message.
-- Adding someone to a group chat whose own chat messages are deleted sooner
-  says, before it is confirmed, that the chat will then delete older
-  messages for everyone, starting 24 hours later.
-- Reference pictures: `chat-files-*`, `chat-recorder-*` and `chat-search-*`
-  (Wide and Phone) are new; every picture with the chats or an open chat
-  gains the search field, the paperclip and the microphone, and a chat with
-  files in the list.
-- Reference pictures: `chat-group-*` and `chat-people-*` (Wide and Phone)
-  are new; `chat-wide-*`, `chat-earlier-wide-*`, `chat-list-phone-*` and
-  `chat-thread-phone-*` gain the group chats in the list, "New group" and
-  the bell in the chat's header; `chat-passphrase-*` and `settings-chat-*`
-  change only in the navigation's Chat count (4 instead of 2, from the
-  group chat's unread messages).
+  Open with no longer offers Android's installer for an app package someone
+  sent, in Chat or as a mail attachment: it goes to the sheet as a plain
+  file.
+- **Former colleagues.** Messages of someone who was deactivated or deleted
+  keep their name, marked "former colleague"; their files stay.
+- **Chat rules for administrators** on Server › Policies, for everyone or
+  per group: who members may add to a group chat (the people of their own
+  groups, or anyone), the largest file in a chat (50 MB unless changed),
+  and after how many days chat messages are deleted (kept unless set).
+  Settings › Chat tells each person how long their messages are kept and
+  how large a file they can send.
+- **Chat retention waits 24 hours and warns.** A chat follows the shortest
+  time among its people, and deleting starts 24 hours after a chat's time
+  got shorter, also when someone under a shorter rule joins. Saving a
+  shorter rule shows how many messages and files it would delete and needs
+  the typed word DELETE besides the password; everyone it reaches gets the
+  rules notice, the Policies page shows the change that waits with "Undo",
+  and each affected chat says so under its header. Adding someone under a
+  shorter rule to a chat says so before it is confirmed. Only the owner can
+  start deleting at once ("Apply now…", with the password, in the activity
+  log). Retention deletes even while deleting for good is not allowed;
+  earlier instance backups still hold what it deleted.
+- **Chat files on Server › Storage**, counted toward their sender; a
+  deleted person's count as "former colleagues".
+- **Reference pictures.** Twenty-eight new pictures with fixed synthetic
+  data, Wide and Phone, dark and light: `chat-group-*`, `chat-people-*`,
+  `chat-files-*`, `chat-recorder-*`, `chat-search-*`,
+  `chat-retention-dialog-*` and `chat-retention-pending-*`. Changed within
+  the accepted design: the other chat pictures gain the group chats in the
+  list, "New group", the bell in the chat's header, the search field, the
+  paperclip and the microphone, and a chat with files in the list;
+  `chat-passphrase-*` change only in the navigation's Chat count;
+  `settings-chat-*` gain "Messages and files"; the Policies page and a
+  group's Rules view say in their first paragraph which rule deletes.
 
-- **Three chat policies** on Server › Policies, for everyone or per group:
-  who members may add to a group chat (the people of their own groups, or
-  anyone), the largest file in a chat (50 MB unless changed), and after how
-  many days chat messages are deleted (kept unless set).
-- **Chat files on the server.** Files sent in a chat are stored encrypted,
-  as the device sent them, and count toward their sender on Server ›
-  Storage ("Chat files"; a deleted person's under "former colleagues").
-  A reverse proxy in front of UniHub must allow request bodies of 101 MB.
-- **Chat retention waits 24 hours.** A shorter rule starts deleting 24 hours
-  after a chat's time got shorter, also when someone under a shorter rule
-  joins; before saving, the administrator sees how many messages and files
-  it would delete; only the owner can start it at once, with their password,
-  and that is written to the activity log.
-- **A shorter chat retention asks twice.** Saving one on Server › Policies
-  needs the typed word DELETE besides the password. The page then shows
-  the change that waits, with its date and "Undo"; the owner also has
-  "Apply now…". A chat under a retention says so under its header, with the
-  date during the 24 hours, and Settings › Chat says how long your messages
-  are kept and how large a file you can send.
-- **Reference pictures.** Eight new pictures with fixed synthetic data: the
-  save dialog of a shorter chat retention and a retention that waits (Wide
-  and Phone, dark and light). The four Settings › Chat pictures gain
-  "Messages and files", and the Policies page and a group's Rules view say
-  in their first paragraph which rule deletes: added content within the
-  accepted design.
+### Changed
+
+- **Reverse proxy.** UniHub's own Nginx takes chat uploads of up to 110 MB
+  on their own path, unbuffered, and keeps 40 MB elsewhere. A proxy in
+  front must allow 101 MB there ([Installation](docs/INSTALLATION.md#1-prepare-your-server-and-browser-address)).
+- **Backups.** The instance backup carries chat files, as ciphertext, in a
+  new file root `chat`; a backup made before still restores. Personal
+  backups still carry no chats and stay data schema 8.
 
 ## 0.33.0
 

@@ -26,11 +26,18 @@ can use private DNS and HTTPS; public Internet exposure is not required.
 The proxy forwards to the server's published port **3000**, which reaches port 80
 inside UniHub. The API's port 4000 and MariaDB's port 3306 stay internal. If the proxy
 is itself a container, `localhost` refers to that container, not your NAS.
-It must accept request bodies of at least **101 MB**: a file sent in a chat
-is one upload of up to 100 MB. In Nginx Proxy Manager, add
-`client_max_body_size 110m;` under the proxy host's Advanced tab; other proxies
-have a similar limit. UniHub's own Nginx allows that size only on the chat
-upload and 40 MB elsewhere.
+It must accept request bodies of at least **101 MB** on the chat upload path
+(`/api/chat/conversations/<id>/attachments`), or larger chat files fail: a
+file sent in a chat is one upload of up to 100 MB, encrypted. It should also
+pass the body on as it arrives instead of storing it first, so that the
+sender's progress bar shows what reached UniHub. In Nginx Proxy Manager, add these two lines
+under the proxy host's Advanced tab; other proxies have similar settings:
+
+    client_max_body_size 110m;
+    proxy_request_buffering off;
+
+UniHub's own Nginx allows 110 MB on that path, 3.9 GB on a backup import
+and 40 MB elsewhere.
 
 Production login cookies require HTTPS. Opening `http://NAS-IP:3000` may show the
 page but is not a supported normal login setup. Some browsers treat localhost

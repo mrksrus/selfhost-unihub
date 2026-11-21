@@ -343,12 +343,15 @@ Admin routes require an authenticated user whose role grants the route's
 permission. `api/src/security/permissions.ts` maps roles to permissions
 (`users.read`, `users.manage`, `server.settings`, `storage.read`,
 `audit.read`, `groups.manage`, `admins.manage`, `owner.transfer`,
-`contacts.books.manage`, `calendars.manage`): the owner
+`contacts.books.manage`, `calendars.manage`, `chat.manage`): the owner
 has all of them, an `admin` all but `admins.manage` and `owner.transfer`, and
 a member (`user`) none. Every route declared with `auth: 'admin'` must name
 its permission, and the request boundary checks it before the handler runs.
 Rights are checked by permission, never by role name; the pages ask the
-same map through the `permissions` of `/api/auth/me`.
+same map through the `permissions` of `/api/auth/me`. `chat.manage` guards no
+route: in Chat it lets its holder add anyone to a group chat, make a chat
+that follows any group or everyone, and manage a followed chat they are in
+([Chat](CHAT.md#group-chats)); it gives no access to anyone's messages.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
@@ -386,6 +389,8 @@ same map through the `permissions` of `/api/auth/me`.
 | POST | `/api/admin/calendars/:id/restore` | Restore a deleted group or organisation calendar with its events and shares (`calendars.manage`) |
 | POST | `/api/admin/calendars/:id/hand-over` | Hand a calendar over at once to a person, the organisation or its owner's bin; admin's password (`calendars.manage`) |
 | PUT | `/api/admin/calendars/:id/archive` | Archive or unarchive a calendar; admin's password (`calendars.manage`) |
+| GET | `/api/admin/chat/retention-preview?days=&group_id=` | Before a shorter `chat.retention_days` is saved: the messages, files and chats it would delete, and how many chats wait to start deleting and from when; changes nothing (`server.settings`) |
+| POST | `/api/admin/chat/retention/apply-now` | The owner ends every chat's 24-hour wait, with the password (`server.settings`; anyone but the owner gets `403 OWNER_REQUIRED`) |
 | POST, PUT, DELETE | `/api/admin/users/:id/mail-accounts[/:accountId]` | Add, change, disconnect (`?purge=true`: and delete UniHub's copy of its mail) a person's mail account (`users.manage`) |
 | POST, PUT, DELETE | `/api/admin/users/:id/calendar-accounts[/:accountId]` | Add, change, remove a person's calendar account (`users.manage`) |
 | DELETE | `/api/admin/users/:id/backups/:jobId` | Delete a person's backup (`users.manage`) |
@@ -407,7 +412,9 @@ always does.
 every admin action on a user or on sign-up, starting an instance backup
 (`admin.instance_backup_started`) and changing its schedule
 (`admin.instance_backup_settings_changed`), each changed policy
-(`admin.policy_changed` with the key and its old and new value), everything
+(`admin.policy_changed` with the key and its old and new value) and the
+owner ending the wait of a shorter chat retention
+(`admin.chat_retention_applied`, with the number of chats), everything
 done on the administrator's path for a person (`admin.mail_account_added`,
 `_changed`, `_removed`, `_reset`; `admin.calendar_account_added`, `_changed`,
 `_removed`; `admin.backup_deleted`, `admin.bin_emptied`,
@@ -826,7 +833,8 @@ installation) or for one group. They are rules on actions (F13 on F1),
 resolved by `services/settings.ts` (`resolvePolicy`, `assertAllowed`) from the
 installation's `policy.<key>` rows and those of the person's groups, else the
 key's default, which always allows what UniHub did before. Changing a policy
-deletes nothing: the services read the rules when they act.
+deletes nothing: the services read the rules when they act. The one
+exception is `chat.retention_days`, whose purpose is to delete (below).
 
 **Groups only make rules stricter.** Everyone's value is the most anyone
 gets. A group's page offers only the values at least as strict as
@@ -862,9 +870,9 @@ that request reads them.
 | `auth.session_max_days` | `none`, `30`, `14`, `7`, `1` | a session older than that since its sign-in |
 | `modules.mail`, `modules.calendar`, `modules.contacts`, `modules.recordings`, `modules.chat` | `allowed`, `forbidden` | using the module at all: it is off and locked for the person and its data stays ([Modules](MODULES.md#administrator-policies)) |
 | `chat.presence`, `chat.read_receipts` | `user_choice`, `on`, `off` | nothing: `on` and `off` lock the person's `chat_presence` or `chat_read_receipts` switch ([Chat](CHAT.md#presence-and-read-receipts)) |
-| `chat.retention_days` | none, `365`, `180`, `90`, `30` | nothing: chat messages older than that are deleted, also while `bin.delete` is forbidden; a chat follows the shortest among its active members, starting 24 hours after its time got shorter; `GET /api/admin/chat/retention-preview` counts what a value would delete, and only the owner ends the wait early ([Chat](CHAT.md#files-and-retention-server)) |
+| `chat.retention_days` | none, `365`, `180`, `90`, `30` | nothing: chat messages older than that are deleted, also while `bin.delete` is forbidden; a chat follows the shortest among its active members, starting 24 hours after its time got shorter; `GET /api/admin/chat/retention-preview` counts what a value would delete, and only the owner ends the wait early ([Chat](CHAT.md#retention)) |
 | `chat.attachment_max_mb` | `100`, `50`, `25`, `10` | sending a larger file in a chat; default `50` |
-| `chat.reach` | `organisation`, `own_groups` | adding someone to a group chat who shares no organisation group with the member (`own_groups`, the default); administrators add anyone ([Chat](CHAT.md#group-chats-server)) |
+| `chat.reach` | `organisation`, `own_groups` | adding someone to a group chat who shares no organisation group with the member (`own_groups`, the default); administrators add anyone; a 1:1 chat stays open between any two people ([Chat](CHAT.md#group-chats)) |
 | `pages.music` | `allowed`, `forbidden` | the Music page alone; recordings keep working |
 | `notifications.detail` | `full`, `sender`, `none` | more detail than that in notifications: the floor of each mail account's `notify_detail` and of `chat_notification_detail`; `none` also floors reminders (a reminder has no sender, so `sender` leaves them full) |
 | `contacts.phone_sync` | `allowed`, `forbidden` | UniHub contacts in the Android app's phone contacts: the app's contacts sync is told Contacts is off (`403 MODULE_DISABLED` with the policy), so the phone removes them at its next sync; they stay in UniHub, and changes made on the phone since its last sync are lost |
@@ -881,23 +889,20 @@ refused with the date from which it can be deleted
 (`services/backup-policy.ts`); a failed or cancelled one can go at once.
 
 **A shorter chat retention on the Policies page.** `chat.retention_days` is
-the one rule whose purpose is to delete ([Chat](CHAT.md#files-and-retention-server)
-has the server's side). When a save makes it shorter for Everyone or a
-group, the save dialog first shows the server's count of the messages and
-files older than the new time and in how many chats, says that deleting
-starts 24 hours later, that a device that is switched off deletes its copies when it is
-next opened, that an earlier instance backup still holds the encrypted
-messages and that this deletes even where people may not delete for good,
-and asks for the typed word DELETE besides the password. The word is the
-page's own safeguard; the server checks the password. Under the rule the
-page then shows the change that waits. Right after the save it offers
-"Undo", which saves the value the page had loaded, because the server does
-not keep the earlier value. On a later visit it shows the server's date and
-how many chats wait, and says that a longer time set before then keeps what
-is younger than it and that "Never" keeps everything. "Apply now…" is offered to the owner alone. Settings ›
-Chat tells each person how long their messages are kept and how large a
-file they may send, and a chat under a retention says so under its header,
-with the date while its 24 hours run.
+the one rule whose purpose is to delete; [Chat](CHAT.md#retention) has the
+whole rule, the 24-hour wait and its warnings. When a save makes it shorter
+for Everyone or a group, the save dialog first shows the server's count of
+the messages and files older than the new time and in how many chats, says
+that deleting starts 24 hours later, that a device that is switched off
+deletes its copies when it is next opened, that an earlier instance backup
+still holds the encrypted messages and that this deletes even where people
+may not delete for good, and asks for the typed word DELETE besides the
+password. The word is the page's own safeguard; the server checks the
+password. Under the rule the page then shows the change that waits. Right
+after the save it offers "Undo", which saves the value the page had loaded,
+because the server does not keep the earlier value. On a later visit it
+shows the server's date and how many chats wait. "Apply now…" is offered to
+the owner alone.
 
 **The final check.** The boundary's answer, and a service's early checks, can
 be older than what holds when the step acts: an administrator's save, a module
