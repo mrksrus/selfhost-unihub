@@ -79,7 +79,7 @@ async function storeAttachment(userId: string, conversationId: string, rawId: st
 
 /**
  * In the post's transaction: ties the sender's unsent uploads to this chat
- * to the message, at most ten; an edit names none.
+ * to the message, at most twenty (ten files and their previews); an edit names none.
  */
 async function tieAttachments(cx: SqlExecutor, conversationId: string, userId: string, messageId: string, edit: boolean, value: unknown) {
   if (value === undefined || (Array.isArray(value) && !value.length)) return;

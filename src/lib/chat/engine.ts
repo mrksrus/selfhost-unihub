@@ -16,7 +16,7 @@ import { startDevice, type ChatDevice } from './device';
 import { createHistoryKey, unwrapHistoryKey, wrapHistoryKey } from './key-backup';
 import { MlsError, MlsUnavailableError, type MlsDevice } from './mls';
 import { open, seal, type SealKey } from './seal';
-import { MAX_FILES, downloadFile, fileRef, outgoingFiles, parseFiles, renewed, uploadExpired, uploadFile, type ChatFileRef, type OutgoingFile } from './files';
+import { MAX_FILES, MAX_FILE_BYTES, PREVIEW_MAX_BYTES, downloadFile, fileRef, outgoingFiles, parseFiles, renewed, uploadExpired, uploadFile, type ChatFileRef, type OutgoingFile } from './files';
 import { searchChats } from './search';
 import { ChatStore } from './store';
 import type {
@@ -591,7 +591,7 @@ class Engine implements ChatEngine {
     };
     if (message.kind === 'delete') {
       const gone = [...this.messages.values()].filter(item => item.id === message.replaces || item.replaces === message.replaces);
-      await this.keep(null, () => gone.map(item => ({ ...item, text: null, deleted: true })), next);
+      await this.keep(null, () => gone.map(item => ({ ...item, text: null, files: undefined, deleted: true })), next);
       await this.dropOutgoing(item => item.replaces === message.replaces);
       return;
     }
@@ -617,6 +617,7 @@ class Engine implements ChatEngine {
   send(conversationId: string, text: string, replyTo: string | null = null, mentions: string[] = [], files: ChatFileToSend[] = []) {
     if (mentions.length > MAX_MENTIONS) throw new Error(`A message mentions at most ${MAX_MENTIONS} people.`);
     if (files.length > MAX_FILES) throw new Error(`A message has at most ${MAX_FILES} files.`);
+    if (files.some(file => file.blob.size > MAX_FILE_BYTES)) throw new Error('A file in a chat can be at most 100 MB.');
     const checked = this.checked(text, files.length);
     void (async () => this.enqueue({ id: crypto.randomUUID(), conversation_id: conversationId, text: checked, reply_to: replyTo, replaces: null,
       ...mentions.length ? { mentions } : {}, ...files.length ? { files: await outgoingFiles(files) } : {} }))().catch(error => this.fail(error));
@@ -901,7 +902,7 @@ class Engine implements ChatEngine {
     }
     await chatApi.delete(messageId);
     const gone = [...this.messages.values()].filter(item => item.id === messageId || item.replaces === messageId);
-    await this.keep(null, () => gone.map(item => ({ ...item, text: null, deleted: true })));
+    await this.keep(null, () => gone.map(item => ({ ...item, text: null, files: undefined, deleted: true })));
     await this.dropOutgoing(item => item.replaces === messageId);
     this.channel?.postMessage('changed');
     void this.sync().catch(() => undefined);
@@ -933,7 +934,7 @@ class Engine implements ChatEngine {
       this.previewLoads.set(id, loading = (async () => {
         const kept = await this.store!.get<Blob>('previews', id);
         if (kept) return kept;
-        const blob = await downloadFile({ id, key, type: 'image/jpeg', size: 0 });
+        const blob = await downloadFile({ id, key, type: 'image/jpeg', size: 0 }, undefined, undefined, PREVIEW_MAX_BYTES);
         if (this.stopped) throw new Error('Chat was closed.');
         await this.store!.write([], transaction => { transaction.objectStore('previews').put(blob, id); });
         return blob;

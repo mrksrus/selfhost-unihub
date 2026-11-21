@@ -62,7 +62,17 @@ export function useVoiceCapture(onRecorded: (recording: VoiceRecording) => void)
     const stream = current.stream;
     if (current.cancelled) { stream.getTracks().forEach(track => track.stop()); return; }
     const chunks: Blob[] = [];
-    const recorder = new MediaRecorder(stream, { mimeType: type });
+    let recorder: MediaRecorder;
+    try {
+      recorder = new MediaRecorder(stream, { mimeType: type });
+      recorder.start(1000);
+    } catch (error) {
+      // The microphone must not stay on behind a recorder that never started.
+      stream.getTracks().forEach(track => track.stop());
+      if (session.current === current) { session.current = null; setState('idle'); }
+      toast({ title: 'Could not start recording', description: error instanceof Error ? error.message : undefined, variant: 'destructive' });
+      return;
+    }
     current.recorder = recorder;
     recorder.ondataavailable = event => { if (event.data.size) chunks.push(event.data); };
     recorder.onstop = () => {
@@ -74,7 +84,6 @@ export function useVoiceCapture(onRecorded: (recording: VoiceRecording) => void)
       recorded.current({ blob: new Blob(chunks, { type: chosen }), type: chosen, name: `Voice message.${chosen.startsWith('audio/mp4') ? 'm4a' : 'webm'}`, seconds: length });
     };
     current.startedAt = Date.now();
-    recorder.start(1000);
     setState('recording');
   }, [toast]);
 

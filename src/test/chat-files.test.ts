@@ -3,6 +3,7 @@ import { context, message, pair, server, settled, tab, until, chatDeliveryHooks,
 import { describe, expect, it, vi } from 'vitest';
 import { fromBase64Url } from '@/lib/chat/bytes';
 import { FileDecryptError, decryptFile, encryptFile, newFileKey } from '@/lib/chat/file-crypto';
+import { parseFiles } from '@/lib/chat/files';
 import { ChatStore } from '@/lib/chat/store';
 import type { ChatThreadMessage } from '@/lib/chat/types';
 
@@ -63,6 +64,16 @@ const withFiles = (on: Tab, id: string) => (on.engine.thread(id) ?? []).find((it
 const outbox = (on: Tab) => context.run(on.browser, async () => {
   const store = await ChatStore.open(on.browser.userId);
   try { return await store.all('outbox'); } finally { store.close(); }
+});
+
+describe('the file list of a received message', () => {
+  it('leaves out a file whose id is not an id, and a preview that names the file itself', () => {
+    const key = 'AAAAAAAAAAAAAAAAAAAAAA';
+    const file = { id: '6f1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d', key, name: 'a.png', type: 'image/png', size: 10 };
+    expect(parseFiles([{ ...file, id: '../conversations' }])).toEqual([]);
+    expect(parseFiles([{ ...file, preview: { id: file.id, key, width: 10, height: 10 } }])).toEqual([file]);
+    expect(parseFiles([{ ...file, preview: { id: '0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d', key, width: 10, height: 10 } }])[0].preview).toBeTruthy();
+  });
 });
 
 describe('sending files', { timeout: 60_000 }, () => {
