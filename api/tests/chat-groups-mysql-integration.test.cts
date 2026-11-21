@@ -6,6 +6,7 @@ const assert: typeof import('node:assert/strict') = require('node:assert/strict'
 const crypto = require('node:crypto') as typeof import('node:crypto');
 const { withTestDatabase } = require('./helpers/test-database.cts') as import('./helpers/test-database.cts').TestDatabaseHelpers;
 const { chatPeople } = require('./helpers/chat.cts') as import('./helpers/chat.cts').ChatHelpers;
+const { installSqlHooks } = require('./helpers/sql-hooks.cts');
 
 // Group chats through the real request handler with the shared people: who
 // may start one and add whom (chat.reach), a chat that follows Support,
@@ -106,6 +107,10 @@ test('group chats: reach, following a group, joining and removal, the limit, man
   const direct = (await call(alex, 'POST', NEW, { user_id: ids.member })).conversation.id;
   const dg = await group(alex, direct, null, [a1, b1]);
   assert.deepEqual(await refused(alex, 'POST', url(direct, '/messages'), message(dg, { mentions: [ids.member] })), [400, 'CHAT_MENTION_INVALID'], 'not in a direct chat');
+  for (const [method, path, body] of [['PUT', '', { name: 'x' }], ['POST', '/members', { user_ids: [ids.stranger] }], ['DELETE', `/members/${ids.member}`, undefined], ['POST', '/unfollow', undefined]] as const) {
+    assert.deepEqual(await refused(alex, method, url(direct, path), body), [400, 'CHAT_NOT_GROUP'], `${method} ${path} in a direct chat`);
+    assert.deepEqual(await refused(casey, method, url(direct, path), body), [404, 'CONVERSATION_NOT_FOUND'], `${method} ${path} by a stranger`);
+  }
 
   // ── Notifications: "<sender> in <chat>", a mention says so; the level and the person's choice for the chat apply ──
   const endpoint = 'https://fcm.googleapis.com/fcm/send/chat-groups-test-blair';
@@ -158,14 +163,26 @@ test('group chats: reach, following a group, joining and removal, the limit, man
   assert.equal((await call(admin, 'POST', url(big, '/members'), { user_ids: [ids.member] })).members.length, 100);
   const full = await admin.request('POST', url(big, '/members'), { user_ids: [ids.stranger] });
   assert.deepEqual([full.status, full.body.code, (full.body.details as FixtureValue)?.limit], [400, 'CHAT_TOO_MANY_PEOPLE', 100]);
+  const many = Array.from({ length: 101 }, () => crypto.randomUUID());
+  for (const [path, body] of [[NEW, { kind: 'group', name: 'Many', user_ids: many }], [url(big, '/members'), { user_ids: many }], [NEW, { kind: 'group', name: 'All', follow: { kind: 'everyone' } }]] as const) {
+    const reply = await admin.request('POST', path, body);
+    assert.deepEqual([reply.status, reply.body.code, (reply.body.details as FixtureValue)?.limit], [400, 'CHAT_TOO_MANY_PEOPLE', 100], `${path} ${JSON.stringify(body).slice(0, 40)}`);
+  }
 
   // ── A chat whose manager was deleted is managed by its longest-standing active member ──
   const team = (await call(casey, 'POST', NEW, { kind: 'group', name: 'Casey and friends', user_ids: [ids.member] })).conversation.id;
   await call(casey, 'POST', url(team, '/members'), { user_ids: [ids.manager] });
   await pool.execute("UPDATE grants SET granted_at = granted_at - INTERVAL 1 HOUR WHERE resource_id = ? AND principal_id = ?", [team, ids.member]);
   assert.equal((await listed(blair, team)).role, 'member');
+  // Of people added at the same moment, the one with the lowest id manages, whatever the order of the grants' own ids.
+  const tie = (await call(casey, 'POST', NEW, { kind: 'group', name: 'Tie', user_ids: [ids.member, ids.manager] })).conversation.id;
+  const [lowest, highest] = [ids.member, ids.manager].sort();
+  await pool.execute(`UPDATE grants SET granted_at = '2026-01-01 00:00:00', id = CASE principal_id WHEN ? THEN '00000000-0000-4000-8000-000000000000' WHEN ? THEN 'ffffffff-ffff-4fff-bfff-ffffffffffff' ELSE id END
+    WHERE resource_kind = 'conversation' AND resource_id = ?`, [highest, lowest, tie]);
   await call(admin, 'DELETE', `/api/admin/users/${ids.stranger}`, { current_password: password });
   assert.deepEqual([(await listed(blair, team)).role, (await listed(alex, team)).role], ['manager', 'member']);
+  const roleOf = async (id: string) => (await listed(id === ids.member ? blair : alex, tie)).role;
+  assert.deepEqual([await roleOf(lowest), await roleOf(highest)], ['manager', 'member']);
   assert.equal((await call(blair, 'PUT', url(team), { name: 'Blair and Alex' })).conversation.name, 'Blair and Alex');
 
   // ── Deleting Support: its chat stops following and keeps its people ──
@@ -186,4 +203,40 @@ test('group chats: reach, following a group, joining and removal, the limit, man
   assert.deepEqual(await refused(alex, 'POST', url(launch, '/messages'), message(g4)), [409, 'CHAT_GROUP_STALE']);
   const back = await send(alex, launch, message(await group(alex, launch, g4, [a1, b1])));
   assert.deepEqual((await call(blair, 'GET', `${url(launch, '/messages')}?after=0`)).messages.map((item: FixtureValue) => item.id), [back.id]);
+});
+
+// Every message and read mark makes each person's devices fetch the list again: its cost must not grow with the chats or the people.
+test('the conversation list and the members list read a fixed number of statements', { skip: !process.env.MYSQL_TEST_HOST, timeout: 300000 }, async t => {
+  const pool = await withTestDatabase(t);
+  const { ids, groups, clients, call } = await chatPeople(t, pool);
+  const chat = require('../dist/src/services/chat') as typeof import('../src/services/chat');
+  const statements = installSqlHooks(pool as FixtureValue).watch(/./);
+  const counted = async (work: () => Promise<unknown[]>, length: number) => {
+    const before = statements.count;
+    assert.equal((await work()).length, length);
+    return statements.count - before;
+  };
+  const extra = Array.from({ length: 40 }, () => crypto.randomUUID());
+  await pool.query('INSERT INTO users (id, email, password_hash, full_name, role, email_verified) VALUES ?',
+    [extra.map((id, index) => [id, `person${index}@example.test`, 'x', `Person ${index}`, 'user', true])]);
+  const NEW = '/api/chat/conversations';
+  const direct = (id: string) => call(clients.admin, 'POST', NEW, { user_id: id });
+  const chosen = async (name: string, people: string[]) => (await call(clients.admin, 'POST', NEW, { kind: 'group', name, user_ids: people })).conversation.id as string;
+
+  await direct(ids.member);
+  await call(clients.manager, 'POST', `/api/groups/${groups.support}/members`, { user_ids: [ids.admin] });
+  await call(clients.admin, 'POST', NEW, { kind: 'group', name: 'Support', follow: { kind: 'group', id: groups.support } });
+  const two = await counted(() => chat.listConversations(ids.admin), 2);
+  for (let index = 0; index < 5; index += 1) {
+    await direct(extra[index]);
+    await chosen(`Team ${index}`, extra.slice(5 + index * 3, 8 + index * 3));
+  }
+  const twelve = await counted(() => chat.listConversations(ids.admin), 12);
+  assert.equal(twelve, two, `the list: ${two} statements for 2 chats, ${twelve} for 12`);
+
+  const small = await chosen('Small', [ids.member, ids.manager]);
+  const three = await counted(() => chat.chatMembers(ids.admin, small), 3);
+  await call(clients.admin, 'POST', `${NEW}/${small}/members`, { user_ids: extra.slice(13) });
+  const thirty = await counted(() => chat.chatMembers(ids.admin, small), 30);
+  assert.equal(thirty, three, `the members: ${three} statements for 3 people, ${thirty} for 30`);
 });

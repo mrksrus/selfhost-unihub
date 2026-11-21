@@ -178,6 +178,17 @@ async function getUserPages(userId: string, connection: SqlExecutor = db) {
 async function isModuleEnabled(userId: string, id: string, connection: SqlExecutor = db) {
   return (await getUserModules(userId, connection)).find(module => module.id === id)?.enabled === true;
 }
+/** Of several people, those with the module on (as isModuleEnabled), from one read of their switches and one of the policies. */
+async function moduleEnabledAmong(userIds: readonly string[], id: string, connection: SqlExecutor = db): Promise<Set<string>> {
+  if (!userIds.length) return new Set();
+  const [[rows], { everyone, byUser }] = await Promise.all([
+    connection.execute<(RowDataPacket & { user_id: string; setting_value: unknown })[]>(`SELECT user_id, setting_value FROM user_settings
+      WHERE setting_key = ? AND user_id IN (${userIds.map(() => '?').join(', ')})`, [SETTING_KEY, ...userIds]),
+    policyOffByUser(connection),
+  ]);
+  const own = new Map(rows.map(row => [String(row.user_id), row.setting_value]));
+  return new Set(userIds.filter(userId => !(byUser.get(userId) ?? everyone).has(id) && modulesFromValue(own.get(userId)).find(module => module.id === id)?.enabled === true));
+}
 async function isModuleBackgroundEnabled(userId: string, id: string, connection: SqlExecutor = db) {
   const module = (await getUserModules(userId, connection)).find(module => module.id === id);
   return !!(module?.enabled && module.background);
@@ -246,6 +257,7 @@ export {
   withModulePolicies,
   getOrderedUserModules,
   isModuleEnabled,
+  moduleEnabledAmong,
   isModuleBackgroundEnabled,
   setUserModules,
 };

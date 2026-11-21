@@ -128,9 +128,10 @@ type Policies = Map<string, Policy>;
 // The policies on the person's settings: the installation's, with the floors
 // that data-safety policies put on settings (bin, app lock, notifications).
 async function loadPolicies(executor: SqlExecutor, userId: string | null): Promise<Policies> {
-  const { levels, floors } = await loadRules(executor, { userId });
-  return withChatLocks(withNotificationFloor(withAppLockFloor(withBinFloor(new Map(floors), levels), levels), levels), levels);
+  return policiesFrom(await loadRules(executor, { userId }));
 }
+const policiesFrom = ({ levels, floors }: Rules): Policies =>
+  withChatLocks(withNotificationFloor(withAppLockFloor(withBinFloor(new Map(floors), levels), levels), levels), levels);
 
 function resolve(scope: SettingScope, key: string, entry: Entry, stored: Value | undefined, policies: Policies): ResolvedSetting<Value> {
   const policy = policies.get(policyKey(scope, key));
@@ -198,6 +199,18 @@ async function getSettings<S extends SettingScope>(scope: S, userId: string, id:
 /** The values a worker applies, for a record the caller already knows is the user's. */
 async function settingValues<S extends SettingScope>(scope: S, userId: string, id: string = userId, executor: SqlExecutor = db): Promise<Values<S>> {
   return valuesOf(await getSettings(scope, userId, id, executor));
+}
+
+/** Several people's values (as settingValues), from one read of their settings and one of the policies: for a list of many people. */
+async function userSettingValuesOf(userIds: readonly string[], executor: SqlExecutor = db): Promise<Map<string, Values<'user'>>> {
+  if (!userIds.length) return new Map();
+  const [[rows], set, { floors }] = await Promise.all([
+    executor.execute<RowDataPacket[]>(`SELECT user_id, setting_key, setting_value FROM user_settings WHERE user_id IN (${userIds.map(() => '?').join(', ')})`, [...userIds]),
+    loadRuleSet(executor), readRules(executor, {}),
+  ]);
+  const stored = new Map(userIds.map(id => [id, new Map<string, string>()]));
+  for (const row of rows) stored.get(String(row.user_id))?.set(String(row.setting_key), String(row.setting_value));
+  return new Map(userIds.map(id => [id, valuesOf(resolveAll('user', stored.get(id)!, policiesFrom({ levels: levelsIn(set, id), floors })))]));
 }
 
 /** The values that apply where no record of the scope holds its own: the defaults under the person's policies. */
@@ -1207,6 +1220,7 @@ export {
   getSettings,
   getScopedSettings,
   settingValues,
+  userSettingValuesOf,
   defaultSettingValues,
   updateSettings,
   valuesOf,

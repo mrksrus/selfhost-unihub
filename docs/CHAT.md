@@ -362,8 +362,11 @@ most 100 people (`400 CHAT_TOO_MANY_PEOPLE`). Its people are its grants:
   manage it: rename, or stop following, after which it is a chat of the
   people it has. Deleting the organisation group does the same. An
   administrator who makes one for a group they are not in does not see it.
+  The limit of 100 is checked when it is made; a followed group that grows
+  past 100 later keeps its chat.
 - **No manager left.** A chat of chosen people whose managers are all gone
-  or deactivated is managed by its longest-standing active member.
+  or deactivated is managed by its longest-standing active member (of
+  people added at the same moment, the one with the lowest id).
 - **Joining and removal.** A person added reads from the first MLS group
   that holds their devices: their `joined_seq` is set then, and nothing
   older is served (before it, nothing at all). Adding or removing someone,

@@ -11,12 +11,12 @@ import { db } from '../state';
 import { badRequest, conflict, forbidden, notFound } from '../http/errors';
 import { log } from '../log';
 import { withTransaction } from './transactions';
-import { accessLevel, assertCan, can, conversationFollows, conversationManagers, conversationPeople, grantedBy, grantedTo, setGrant, visible } from './access';
+import { assertCan, can, conversationFollows, conversationPeople, conversationsReach, grantedTo, setGrant, visible } from './access';
 import { groupExists, groupNames, groupsOf, listGroups, membershipOf, peopleMatching, shareAGroup } from './groups';
 import { can as roleCan } from '../security/permissions';
 import { bytes, notEnrolled, object, ownChatDevice, utcIso, validDevices } from './chat-devices';
-import { isModuleEnabled } from './module-settings';
-import { resolvePolicy, settingValues } from './settings';
+import { isModuleEnabled, moduleEnabledAmong } from './module-settings';
+import { resolvePolicy, settingValues, userSettingValuesOf } from './settings';
 import { publishChatChanged, publishChatPresence, realtime } from './realtime';
 import { enqueueFromSource, processNotificationJobs } from './notifications';
 import { deleteMessageFiles, tieAttachments } from './chat-attachments';
@@ -75,12 +75,9 @@ const chatName = (value: unknown) => {
   return name;
 };
 const userIds = (value: unknown) => {
-  if (!Array.isArray(value) || value.length > MAX_PEOPLE) throw badRequest('CHAT_INVALID', 'Invalid chat data');
+  if (!Array.isArray(value)) throw badRequest('CHAT_INVALID', 'Invalid chat data');
+  if (value.length > MAX_PEOPLE) throw tooMany();
   return [...new Set(value.map(item => uuid(item, 'CHAT_INVALID')))];
-};
-const nameOf = async (userId: string, executor: SqlExecutor) => {
-  const [[row]] = await executor.execute<RowDataPacket[]>("SELECT COALESCE(NULLIF(full_name, ''), email) AS name FROM users WHERE id = ?", [userId]);
-  return row ? String(row.name) : null;
 };
 const chatAdmin = async (userId: string, executor: SqlExecutor) => {
   const [[row]] = await executor.execute<RowDataPacket[]>('SELECT role FROM users WHERE id = ?', [userId]);
@@ -98,14 +95,34 @@ async function peerState(peerId: string | null, executor: SqlExecutor = db): Pro
   const [[user]] = await executor.execute<RowDataPacket[]>("SELECT COALESCE(NULLIF(full_name, ''), email) AS name, is_active FROM users WHERE id = ?", [peerId]);
   if (!peerId || !user) return { user_id: null, name: 'Deleted person', reason: 'This person was deleted.', ready: false, active: false };
   const name = String(user.name);
-  const off = !user.is_active ? `${name} is deactivated.` : !await isModuleEnabled(peerId!, 'chat', executor) ? `Chat is off for ${name}.` : null;
-  const reason = off ?? ((await validDevices([peerId!], executor)).length ? null : `${name} has not opened UniHub since the update.`);
+  const off = !user.is_active ? `${name} is deactivated.` : !await isModuleEnabled(peerId!, 'chat', executor) ? chatOff(name) : null;
+  const reason = off ?? ((await validDevices([peerId!], executor)).length ? null : notOpened(name));
   return { user_id: peerId, name, reason, ready: !off, active: !!user.is_active };
+}
+const chatOff = (name: string) => `Chat is off for ${name}.`;
+const notOpened = (name: string) => `${name} has not opened UniHub since the update.`;
+
+interface PersonState { name: string; email: string; active: boolean; reason: string | null; presence: boolean; receipts: boolean }
+
+/** Several people as peerState sees them, with their presence and read-receipt choices, in a fixed number of reads; a deleted person is absent. */
+async function peopleStates(ids: readonly string[], executor: SqlExecutor = db): Promise<Map<string, PersonState>> {
+  if (!ids.length) return new Map();
+  const [[users], devices, chatOn, settings] = await Promise.all([
+    executor.execute<RowDataPacket[]>(`SELECT id, email, COALESCE(NULLIF(full_name, ''), email) AS name, is_active FROM users WHERE id IN (${placeholders(ids)})`, [...ids]),
+    validDevices(ids, executor), moduleEnabledAmong(ids, 'chat', executor), userSettingValuesOf(ids, executor),
+  ]);
+  const enrolled = new Set(devices.map(device => device.user_id));
+  return new Map(users.map(user => {
+    const id = String(user.id);
+    const name = String(user.name);
+    const reason = !user.is_active ? `${name} is deactivated.` : !chatOn.has(id) ? chatOff(name) : enrolled.has(id) ? null : notOpened(name);
+    const values = settings.get(id)!;
+    return [id, { name, email: String(user.email), active: !!user.is_active, reason, presence: values.chat_presence, receipts: values.chat_read_receipts }];
+  }));
 }
 
 // --- Conversations ----------------------------------------------------------------------
 
-// shortcut: a few queries per conversation (the peer, or a group chat's people and managers); one query for the list when lists grow long.
 async function describeConversations(userId: string, ids: readonly string[], executor: SqlExecutor = db): Promise<ChatConversation[]> {
   if (!ids.length) return [];
   const [rows] = await executor.execute<RowDataPacket[]>(`SELECT c.id, c.kind, c.name, c.direct_key, c.current_group_id, c.last_seq, c.created_at, c.retention_days, c.retention_from,
@@ -119,9 +136,14 @@ async function describeConversations(userId: string, ids: readonly string[], exe
     LEFT JOIN chat_members peer ON peer.conversation_id = c.id AND peer.user_id <> ? AND c.kind = 'direct'
     WHERE c.id IN (${placeholders(ids)})
     ORDER BY COALESCE(last_activity_at, c.created_at) DESC, c.id`, [userId, userId, userId, ...ids]);
-  const mine = await chatSettings(userId, executor);
-  const conversations: ChatConversation[] = [];
-  for (const row of rows) {
+  const reach = await conversationsReach(ids, executor);
+  const addedBy = (id: string) => reach.get(id)!.grantedBy.get(userId) ?? null;
+  // The caller, each direct chat's other person and whoever added the caller to a group chat.
+  const named = rows.map(row => row.kind === 'group' ? addedBy(String(row.id)) : otherOf(row.direct_key, userId)).filter((id): id is string => !!id);
+  const followed = [...reach.values()].flatMap(({ follows }) => follows?.kind === 'group' ? [follows.id] : []);
+  const [states, groupNamed] = await Promise.all([peopleStates([...new Set([userId, ...named])], executor), groupNames(followed, executor)]);
+  const mine = states.get(userId);
+  return rows.map((row): ChatConversation => {
     const id = String(row.id);
     const base = {
       id, current_group_id: row.current_group_id ? String(row.current_group_id) : null,
@@ -134,28 +156,27 @@ async function describeConversations(userId: string, ids: readonly string[], exe
       retention_from: row.retention_from ? utcIso(row.retention_from) : null,
     };
     if (row.kind === 'group') {
-      const follows = await conversationFollows(id, executor);
-      const by = await grantedBy(conversationOf(id), userId, executor);
-      conversations.push({
+      const { follows, managers, people } = reach.get(id)!;
+      const by = addedBy(id);
+      return {
         ...base, kind: 'group', name: String(row.name),
-        follows: !follows ? null : follows.kind === 'group' ? { kind: 'group', id: follows.id, name: (await groupNames([follows.id], executor)).get(follows.id) ?? '' } : { kind: 'everyone' },
-        role: await accessLevel(userId, conversationOf(id), executor) === 'manage' ? 'manager' : 'member',
-        member_count: (await conversationPeople(id, executor)).length,
-        added_by: by && by !== userId ? await nameOf(by, executor) : null,
-      });
-      continue;
+        follows: !follows ? null : follows.kind === 'group' ? { kind: 'group', id: follows.id, name: groupNamed.get(follows.id) ?? '' } : { kind: 'everyone' },
+        role: managers.has(userId) ? 'manager' : 'member',
+        member_count: people.length,
+        added_by: by && by !== userId ? states.get(by)?.name ?? null : null,
+      };
     }
-    const peer = await peerState(otherOf(row.direct_key, userId), executor);
-    const theirs = peer.user_id ? await chatSettings(peer.user_id, executor) : null;
-    conversations.push({
+    const peerId = otherOf(row.direct_key, userId);
+    const theirs = peerId ? states.get(peerId) : undefined;
+    const reason = theirs ? theirs.reason : 'This person was deleted.';
+    return {
       ...base, kind: 'direct',
-      peer: { user_id: peer.user_id, name: peer.name, active: peer.active, can_write: !peer.reason, reason: peer.reason,
-        online: mine.chat_presence && theirs?.chat_presence ? realtime.isPresent(peer.user_id) : null } satisfies ChatPeer,
-      peer_read_seq: mine.chat_read_receipts && theirs?.chat_read_receipts ? Number(row.peer_read_seq) : null,
+      peer: { user_id: theirs ? peerId : null, name: theirs?.name ?? 'Deleted person', active: !!theirs?.active, can_write: !reason, reason,
+        online: mine?.presence && theirs?.presence ? realtime.isPresent(peerId!) : null } satisfies ChatPeer,
+      peer_read_seq: mine?.receipts && theirs?.receipts ? Number(row.peer_read_seq) : null,
       peer_delivered_seq: Number(row.peer_delivered_seq),
-    });
-  }
-  return conversations;
+    };
+  });
 }
 
 async function listConversations(userId: string): Promise<ChatConversation[]> {
@@ -245,8 +266,11 @@ async function startGroupChat(userId: string, body: Record<string, unknown>) {
 /** A group chat's lock for a change of its people or name, refused for a direct one and, unless asked, for one that follows a group. */
 async function lockGroupChat(cx: SqlExecutor, userId: string, conversationId: string, permission: 'member' | 'manage', { followed = false } = {}) {
   const conversation = await lockConversation(cx, conversationId);
+  if (conversation.kind !== 'group') {
+    await assertCan(userId, conversationOf(conversationId), 'member', cx);
+    throw notGroup();
+  }
   await assertCan(userId, conversationOf(conversationId), permission, cx);
-  if (conversation.kind !== 'group') throw notGroup();
   const follows = await conversationFollows(conversationId, cx);
   if (!followed && follows) throw followsGroup();
   return follows;
@@ -261,7 +285,6 @@ async function dropMember(cx: SqlExecutor, conversationId: string, userId: strin
 /** A manager renames a group chat. */
 async function renameChat(userId: string, conversationId: string, input: unknown) {
   const name = chatName(object(input).name);
-  await assertCan(userId, conversationOf(conversationId), 'manage');
   await withTransaction(async cx => {
     await lockGroupChat(cx, userId, conversationId, 'manage', { followed: true });
     await cx.execute('UPDATE chat_conversations SET name = ? WHERE id = ?', [name, conversationId]);
@@ -273,7 +296,6 @@ async function renameChat(userId: string, conversationId: string, input: unknown
 /** A manager adds people to a group chat of chosen people; those already in it stay as they are. */
 async function addChatMembers(userId: string, conversationId: string, input: unknown) {
   const ids = userIds(object(input).user_ids);
-  await assertCan(userId, conversationOf(conversationId), 'manage');
   const people = await withTransaction(async cx => {
     await lockGroupChat(cx, userId, conversationId, 'manage');
     const present = await conversationPeople(conversationId, cx);
@@ -291,7 +313,6 @@ async function addChatMembers(userId: string, conversationId: string, input: unk
 /** A manager removes someone else from a group chat of chosen people; they are refused from now on. */
 async function removeChatMember(userId: string, conversationId: string, personId: string) {
   if (personId === userId) throw badRequest('CHAT_SELF', 'Leave the chat instead.');
-  await assertCan(userId, conversationOf(conversationId), 'manage');
   const people = await withTransaction(async cx => {
     await lockGroupChat(cx, userId, conversationId, 'manage');
     const present = await conversationPeople(conversationId, cx);
@@ -328,7 +349,6 @@ async function convertFollowed(cx: SqlExecutor, conversationId: string, follows:
 
 /** A manager of a followed chat stops following: it keeps the people it has. */
 async function unfollowChat(userId: string, conversationId: string) {
-  await assertCan(userId, conversationOf(conversationId), 'manage');
   await withTransaction(async cx => {
     const follows = await lockGroupChat(cx, userId, conversationId, 'manage', { followed: true });
     if (!follows) throw conflict('CHAT_NOT_FOLLOWING', 'This chat follows no group.');
@@ -354,28 +374,24 @@ async function followedGroupChanged(groupId: string, reached: string[]) {
 /** The people a conversation reaches, managers first, with their reasons, marks and presence as the caller may see them. */
 async function chatMembers(userId: string, conversationId: string): Promise<ChatMember[]> {
   await assertCan(userId, conversationOf(conversationId), 'member');
-  const people = await conversationPeople(conversationId);
+  const { people, managers } = (await conversationsReach([conversationId])).get(conversationId)!;
   const [[conversation]] = await db.execute<RowDataPacket[]>('SELECT kind, last_seq FROM chat_conversations WHERE id = ?', [conversationId]);
-  const managers = conversation.kind === 'group' ? await conversationManagers(conversationId) : new Set<string>();
-  const [users] = await db.execute<RowDataPacket[]>(`SELECT id, email, COALESCE(NULLIF(full_name, ''), email) AS name, is_active FROM users WHERE id IN (${placeholders(people)})`, people);
   const [marks] = await db.execute<RowDataPacket[]>('SELECT user_id, read_seq, delivered_seq, joined_seq FROM chat_members WHERE conversation_id = ?', [conversationId]);
   const marksOf = new Map(marks.map(row => [String(row.user_id), row]));
-  const mine = await chatSettings(userId, db);
-  const members: ChatMember[] = [];
-  for (const user of users) {
-    const id = String(user.id);
-    const state = await peerState(id);
-    const theirs = await chatSettings(id, db);
+  const states = await peopleStates([...new Set([userId, ...people])]);
+  const mine = states.get(userId);
+  return people.flatMap((id): ChatMember[] => {
+    const state = states.get(id);
+    if (!state) return [];
     const row = marksOf.get(id);
-    members.push({
-      user_id: id, name: String(user.name), email: String(user.email), role: managers.has(id) ? 'manager' : 'member', active: !!user.is_active, reason: state.reason,
-      online: mine.chat_presence && theirs.chat_presence ? realtime.isPresent(id) : null,
-      read_seq: mine.chat_read_receipts && theirs.chat_read_receipts ? Number(row?.read_seq ?? 0) : null,
+    return [{
+      user_id: id, name: state.name, email: state.email, role: conversation.kind === 'group' && managers.has(id) ? 'manager' : 'member', active: state.active, reason: state.reason,
+      online: mine?.presence && state.presence ? realtime.isPresent(id) : null,
+      read_seq: mine?.receipts && state.receipts ? Number(row?.read_seq ?? 0) : null,
       delivered_seq: Number(row?.delivered_seq ?? 0),
       joined_seq: row ? Number(row.joined_seq) : conversation.kind === 'group' ? Number(conversation.last_seq) : 0,
-    });
-  }
-  return members.sort((a, b) => Number(b.role === 'manager') - Number(a.role === 'manager') || a.name.localeCompare(b.name) || a.user_id.localeCompare(b.user_id));
+    }];
+  }).sort((a, b) => Number(b.role === 'manager') - Number(a.role === 'manager') || a.name.localeCompare(b.name) || a.user_id.localeCompare(b.user_id));
 }
 
 /** What a chat notifies the caller of. */

@@ -8,7 +8,7 @@ import crypto from 'node:crypto';
 import { db } from '../state';
 import { forbidden, notFound } from '../http/errors';
 import { can as roleCan } from '../security/permissions';
-import { allGroupIds, groupExists, groupMemberIds, groupNames, groupsOf, listGroups, membershipOf, peopleMatching, shareAGroup } from './groups';
+import { allGroupIds, groupExists, groupMemberIds, groupNames, groupsOf, listGroups, membershipOf, membershipsByUser, peopleMatching, shareAGroup } from './groups';
 
 // The access service (F4): the one place that decides who may read or
 // manage a resource beyond its owner. Routes and workers ask it before any
@@ -288,19 +288,52 @@ async function conversationFollows(conversationId: string, executor: SqlExecutor
 
 /** The people who manage a group chat now (see the top of this file). */
 async function conversationManagers(conversationId: string, executor: SqlExecutor = db): Promise<Set<string>> {
-  const grants = await grantsOn({ kind: 'conversation', id: conversationId }, executor);
-  const followed = grants.find(grant => grant.principal.kind !== 'user')?.principal;
-  const people = followed ? await conversationPeople(conversationId, executor) : grants.map(grant => (grant.principal as { id: string }).id);
-  if (!people.length) return new Set();
-  const [rows] = await executor.execute<RowDataPacket[]>(`SELECT id, role FROM users WHERE is_active = TRUE AND id IN (${people.map(() => '?').join(', ')})`, people);
+  return (await conversationsReach([conversationId], executor)).get(conversationId)!.managers;
+}
+
+interface ConversationReach { people: string[]; follows: Exclude<Principal, { kind: 'user' }> | null; managers: Set<string>; grantedBy: Map<string, string> }
+
+/**
+ * Several conversations at once, in a fixed number of reads: the people
+ * each reaches (as conversationPeople), what it follows, who manages it if
+ * it is a group chat, and who gave each person their own grant.
+ */
+async function conversationsReach(ids: readonly string[], executor: SqlExecutor = db): Promise<Map<string, ConversationReach>> {
+  if (!ids.length) return new Map();
+  // People granted at the same moment (a chat's first people, a followed chat made ordinary) stand in the order of their ids.
+  const [grants] = await executor.execute<RowDataPacket[]>(`SELECT resource_id, principal_kind, principal_id, permission, granted_by FROM grants
+    WHERE resource_kind = 'conversation' AND resource_id IN (${ids.map(() => '?').join(', ')}) ORDER BY granted_at, principal_id`, [...ids]);
+  const kinds = new Set(grants.map(row => String(row.principal_kind)));
+  const memberships = kinds.has('group') ? await membershipsByUser(executor) : new Map<string, { id: string; role: string }[]>();
+  const everyone = kinds.has('everyone') ? (await executor.execute<RowDataPacket[]>('SELECT id FROM users'))[0].map(row => String(row.id)) : [];
+  const inGroup = (groupId: string, role?: string) => [...memberships].filter(([, groups]) => groups.some(group => group.id === groupId && (!role || group.role === role))).map(([id]) => id);
+  const reach = new Map(ids.map(id => {
+    const own = grants.filter(row => String(row.resource_id) === id);
+    const chosen = own.filter(row => row.principal_kind === 'user');
+    const follow = own.find(row => row.principal_kind !== 'user');
+    const people = new Set(chosen.map(row => String(row.principal_id)));
+    for (const row of own) for (const person of row.principal_kind === 'group' ? inGroup(String(row.principal_id)) : row.principal_kind === 'everyone' ? everyone : []) people.add(person);
+    return [id, { chosen, follow, people: [...people].sort() }] as const;
+  }));
+  const reached = [...new Set([...reach.values()].flatMap(entry => entry.people))];
+  const [rows] = reached.length ? await executor.execute<RowDataPacket[]>(`SELECT id, role FROM users WHERE is_active = TRUE AND id IN (${reached.map(() => '?').join(', ')})`, reached) : [[]];
   const active = new Map(rows.map(row => [String(row.id), String(row.role)]));
-  if (followed) {
-    const groupManagers = new Set(followed.kind === 'group' ? await groupMemberIds(followed.id, executor, 'manager') : []);
-    return new Set([...active].filter(([id, role]) => roleCan(role, 'chat.manage') || groupManagers.has(id)).map(([id]) => id));
-  }
-  const managers = grants.filter(grant => grant.permission === 'manage').map(grant => (grant.principal as { id: string }).id).filter(id => active.has(id));
-  // Grants come oldest first: with no active manager left, the longest-standing active member manages.
-  return new Set(managers.length ? managers : people.filter(id => active.has(id)).slice(0, 1));
+  return new Map([...reach].map(([id, { chosen, follow, people }]) => {
+    let managers: string[];
+    if (follow) {
+      const groupManagers = new Set(follow.principal_kind === 'group' ? inGroup(String(follow.principal_id), 'manager') : []);
+      managers = people.filter(person => active.has(person) && (roleCan(active.get(person), 'chat.manage') || groupManagers.has(person)));
+    } else {
+      const managing = chosen.filter(row => row.permission === 'manage' && active.has(String(row.principal_id))).map(row => String(row.principal_id));
+      // With no active manager left, the longest-standing active member manages.
+      managers = managing.length ? managing : chosen.map(row => String(row.principal_id)).filter(person => active.has(person)).slice(0, 1);
+    }
+    return [id, {
+      people, managers: new Set(managers),
+      follows: !follow ? null : follow.principal_kind === 'group' ? { kind: 'group', id: String(follow.principal_id) } : { kind: 'everyone' },
+      grantedBy: new Map(chosen.flatMap(row => row.granted_by ? [[String(row.principal_id), String(row.granted_by)] as const] : [])),
+    } satisfies ConversationReach];
+  }));
 }
 
 /** The resources of a kind a principal holds a grant on (the chats that follow a group). */
@@ -308,13 +341,6 @@ async function grantedTo(kind: AccessKind, principal: Exclude<Principal, { kind:
   const [rows] = await executor.execute<RowDataPacket[]>('SELECT resource_id FROM grants WHERE resource_kind = ? AND principal_kind = ? AND principal_id = ? ORDER BY resource_id',
     [kind, ...principalKey(principal)]);
   return rows.map(row => String(row.resource_id));
-}
-
-/** Who gave the person their own grant on the resource; null when nobody did or that person is gone. */
-async function grantedBy(resource: Resource, userId: string, executor: SqlExecutor = db): Promise<string | null> {
-  const [[row]] = await executor.execute<RowDataPacket[]>(`SELECT granted_by FROM grants
-    WHERE resource_kind = ? AND resource_id = ? AND principal_kind = 'user' AND principal_id = ?`, [resource.kind, resource.id, userId]);
-  return row?.granted_by ? String(row.granted_by) : null;
 }
 
 /** The resources of a kind on which the person holds a direct grant of exactly `permission` (the books they created). */
@@ -360,7 +386,7 @@ async function reachCandidates(userId: string, query: string, adminPermission: P
 }
 
 export {
-  principalsOf, accessLevel, can, assertCan, visible, conversationPeople, conversationFollows, conversationManagers, grantedBy, grantedTo, grantsOn, namedGrants, shareCounts, lockGrant, setGrant, removeGrantsOf, removeGrantsOnCalendarsOf, removeGrantsOn, assertNoneArchived, heldBy,
+  principalsOf, accessLevel, can, assertCan, visible, conversationPeople, conversationFollows, conversationManagers, conversationsReach, grantedTo, grantsOn, namedGrants, shareCounts, lockGrant, setGrant, removeGrantsOf, removeGrantsOnCalendarsOf, removeGrantsOn, assertNoneArchived, heldBy,
   assertReach, reachCandidates,
 };
-export type { Resource, Grant };
+export type { Resource, Grant, ConversationReach };
