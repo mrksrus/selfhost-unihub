@@ -20,11 +20,12 @@
 // and a custom repeat rule (Phone), and Chat with an open chat at
 // its newest and at its first messages (Wide), the list and an open chat
 // (Phone), and the chat passphrase chosen and entered and Settings -> Chat
-// (Wide and Phone), and a group chat and its people (Wide and Phone), each in
-// Dark Default and Light Default.
+// (Wide and Phone), and a group chat and its people (Wide and Phone), and the
+// save dialog of a shorter chat retention and a retention that waits on
+// Server -> Policies (Wide and Phone), each in Dark Default and Light Default.
 // One hundred and twenty-two pictures; see docs/UI_BASELINES.md.
 import { customRepeat, expect, expectBaseline, sharedCalendars, test, THEMES, VIEWPORTS, withChat, type Page } from '../support/test.ts';
-import { CURRENT_DEVICE_LOCKED, POLICIES_ADMIN_APP_LOCK, POLICIES_EFFECTIVE_APP_LOCK, POLICIES_EFFECTIVE_TWO_FACTOR, USER } from '../support/fixtures.ts';
+import { CURRENT_DEVICE_LOCKED, POLICIES_ADMIN_APP_LOCK, POLICIES_ADMIN_RETENTION, POLICIES_EFFECTIVE_APP_LOCK, POLICIES_EFFECTIVE_TWO_FACTOR, RETENTION_WAITING, USER } from '../support/fixtures.ts';
 
 // The app lock's state is this browser's (a PIN record in IndexedDB
 // `unihub-lock-v1`, as src/lib/app-lock/pin.ts keeps it) plus the server's
@@ -113,10 +114,41 @@ function chatPassphraseAndSettings(viewport: 'wide' | 'phone', theme: string) {
   });
 }
 
+// Chat retention on Server -> Policies as the owner: the save dialog of a
+// shorter time with the server's count, and the change that waits its 24 hours.
+function chatRetention(viewport: 'wide' | 'phone', theme: string) {
+  test.describe(`chat retention (${viewport}, ${theme})`, () => {
+    test.use({ ...VIEWPORTS[viewport], admin: true });
+
+    test(`the save dialog of a shorter chat retention (${viewport}, ${theme})`, async ({ page, open, settle }) => {
+      await open('/admin/policies');
+      await page.getByRole('combobox', { name: 'Delete chat messages after' }).click();
+      await page.getByRole('option', { name: '30 days' }).click();
+      await page.getByRole('button', { name: 'Save changes…' }).click();
+      await expect(page.getByText(/^128 messages and 9 files in 6 chats/)).toBeVisible();
+      await settle();
+      await expectBaseline(page, `chat-retention-dialog-${viewport}-${theme}.png`);
+    });
+
+    test(`a chat retention that waits (${viewport}, ${theme})`, async ({ page, open, settle }) => {
+      const answer = (body: unknown) => (route: { fulfill(response: object): Promise<void> }) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
+      await page.route('**/api/admin/policies', answer(POLICIES_ADMIN_RETENTION));
+      await page.route('**/api/admin/chat/retention-preview', answer(RETENTION_WAITING));
+      await open('/admin/policies');
+      // From the row above, so that the rule shows whole with the two rules after it.
+      await page.getByText('Read receipts', { exact: true }).evaluate(element => element.scrollIntoView({ block: 'start' }));
+      await expect(page.getByRole('button', { name: 'Apply now…' })).toBeVisible();
+      await settle();
+      await expectBaseline(page, `chat-retention-pending-${viewport}-${theme}.png`);
+    });
+  });
+}
+
 for (const theme of THEMES) {
   test.describe(`${theme} default`, () => {
     test.use({ theme, colorScheme: theme });
     for (const viewport of ['wide', 'phone'] as const) chatPassphraseAndSettings(viewport, theme);
+    for (const viewport of ['wide', 'phone'] as const) chatRetention(viewport, theme);
 
     test.describe('wide', () => {
       test.use(VIEWPORTS.wide);

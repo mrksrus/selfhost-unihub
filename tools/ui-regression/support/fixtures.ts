@@ -251,6 +251,7 @@ const POLICY_DEFAULTS: Record<string, unknown> = {
   'modules.mail': 'allowed', 'modules.calendar': 'allowed', 'modules.contacts': 'allowed', 'modules.recordings': 'allowed', 'pages.music': 'allowed',
   'notifications.detail': 'full', 'contacts.phone_sync': 'allowed', 'offline.copies': 'allowed',
   'modules.chat': 'allowed', 'chat.presence': 'user_choice', 'chat.read_receipts': 'user_choice',
+  'chat.retention_days': null, 'chat.attachment_max_mb': 50, 'chat.reach': 'own_groups',
 };
 const POLICY_VALUES: Record<string, unknown[]> = {
   'mail.mode.new_accounts': ['user_choice', 'download', 'download_delete', 'sync'], 'mail.provider_delete': ['user_choice', 'forbidden', 'required'],
@@ -259,6 +260,7 @@ const POLICY_VALUES: Record<string, unknown[]> = {
   'auth.two_factor': ['optional', 'required'], 'auth.password_min_length': [12, 14, 16, 20], 'auth.session_max_days': ['none', '30', '14', '7', '1'],
   'notifications.detail': ['full', 'sender', 'none'],
   'chat.presence': ['user_choice', 'on', 'off'], 'chat.read_receipts': ['user_choice', 'on', 'off'],
+  'chat.retention_days': [null, 30, 90, 180, 365], 'chat.attachment_max_mb': [10, 25, 50, 100], 'chat.reach': ['own_groups', 'organisation'],
 };
 /** The server's effects of the app lock rules (settings-registry.ts POLICY_EFFECTS), shown under a changed row. */
 const APP_LOCK_EFFECTS: Record<string, string> = {
@@ -290,6 +292,17 @@ const POLICIES_ADMIN = {
   }])),
   bin_min_retention: { value: 'forever', source: 'default', default: 'forever', values: ['30', '90', 'forever'], applies: true, effect: 'Applies while deleting from the bin for good is not allowed; people may keep items longer.' },
   revision: 2,
+};
+
+/** Chat retention as the Policies page asks for it: nothing waits, and 30 days would delete what the dialog's picture counts. */
+const RETENTION_PREVIEW = { messages: 0, files: 0, conversations: 0, waiting: 0, waiting_from: null as string | null };
+const RETENTION_PREVIEW_30 = { ...RETENTION_PREVIEW, messages: 128, files: 9, conversations: 6 };
+/** 30 days set for everyone the day before, with three chats still in their 24 hours. */
+export const RETENTION_WAITING = { ...RETENTION_PREVIEW, waiting: 3, waiting_from: at('06-16T08:00:00.000Z') };
+export const POLICIES_ADMIN_RETENTION = {
+  ...POLICIES_ADMIN,
+  policies: { ...POLICIES_ADMIN.policies, 'chat.retention_days': { ...POLICIES_ADMIN.policies['chat.retention_days'], value: 30, source: 'policy',
+    effect: 'Messages older than this are deleted from the chats it applies to, starting 24 hours after a chat\'s time gets shorter; devices delete their copies when next opened. Instance backups made before keep them.' } },
 };
 
 const BACKUP_CAPABILITIES = {
@@ -683,6 +696,7 @@ function defaultRoutes(emails: typeof EMAILS, admin = false): Route[] {
     ['GET', /^\/backup\/jobs$/, () => ok({ jobs: BACKUP_JOBS })],
     ['GET', /^\/backup\/restore-jobs$/, () => ok({ jobs: [] })],
     ['GET', /^\/admin\/policies$/, () => ok(POLICIES_ADMIN)],
+    ['GET', /^\/admin\/chat\/retention-preview$/, url => ok(url.searchParams.get('days') === '30' ? RETENTION_PREVIEW_30 : RETENTION_PREVIEW)],
     // 0.29 app lock: the device routes. The reports are accepted and change nothing here.
     ['GET', /^\/devices$/, () => ok({ devices: DEVICES })],
     ['GET', /^\/devices\/current$/, () => ok(CURRENT_DEVICE)],

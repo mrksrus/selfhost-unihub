@@ -29,8 +29,9 @@ const SCREENSHOTS = 'A browser cannot block screenshots; the Android app blocks 
 
 /**
  * Settings › Chat: what others see of the person (presence, read receipts),
- * what a chat notification shows, the passphrase of this device's history,
- * and what the encryption does and does not protect. The server applies the
+ * what a chat notification shows, how long messages are kept and how large a
+ * file may be for this person, the passphrase of this device's history, and
+ * what the encryption does and does not protect. The server applies the
  * three choices and an administrator's locks; the page only reflects them.
  */
 export default function ChatSettings() {
@@ -44,6 +45,7 @@ export default function ChatSettings() {
     settings[key].locked ? policies[policy].reason ?? ADMIN_REASON : undefined;
   const detail = settings.chat_notification_detail;
   const state = snapshot?.readiness.state ?? 'starting';
+  const retention = policies['chat.retention_days'].value;
 
   return (
     <>
@@ -66,6 +68,12 @@ export default function ChatSettings() {
             </SelectContent>
           </Select>
         </SettingsRow>
+      </SettingsSection>
+
+      <SettingsSection title="Messages and files" description="Set by your administrator.">
+        <SettingsRow label={retention ? `Messages are deleted after ${retention} days` : 'Messages are kept'}
+          description={<span className="block max-w-prose">{retention ? 'On the server and on your devices, in every chat you are in.' : 'Nothing is deleted on its own.'} A chat with someone under a shorter time follows theirs and says so at its top.</span>} />
+        <SettingsRow label={`Files up to ${policies['chat.attachment_max_mb'].value} MB`} description="The largest file or voice message you can send in a chat." />
       </SettingsSection>
 
       <SettingsSection title="Chat passphrase" description="It brings your earlier messages to a new phone or browser. Without it and without another signed-in device, a lost device means lost history: nobody else can restore it.">

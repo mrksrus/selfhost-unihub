@@ -114,6 +114,8 @@ export type StorageSection = {
   tracked_bytes?: number;
   tracked_items?: number;
   ready_items?: number;
+  /** Chat files only: those whose sender no longer has an account. */
+  former_colleagues?: { bytes: number; files: number };
   path_exists: boolean;
   scan_error: string | null;
 };
@@ -228,6 +230,7 @@ const ACTIONS: Record<string, string> = {
   'admin.calendar_archived': 'Archived a calendar',
   'admin.calendar_unarchived': 'Unarchived a calendar',
   'admin.calendar_binned': 'Deleted a calendar to its owner\'s bin',
+  'admin.chat_retention_applied': 'Started deleting old chat messages without the 24 hours',
 };
 const ROLE_NAMES: Record<string, string> = { owner: 'owner', admin: 'admin', user: 'member' };
 
@@ -310,6 +313,36 @@ export async function saveAdminPolicies(values: Partial<PolicyValues>, currentPa
   const answer = unwrap(await api.put<AdminPoliciesAnswer>(policiesPath(scope), body));
   if (!answer?.policies) throw new Error('The server did not answer with its policies.');
   return answer;
+}
+
+// ── Chat retention (Server settings → Policies) ───────────────────
+import type { ChatRetentionApplyNowRequest, ChatRetentionApplyNowResponse, ChatRetentionPreviewResponse } from '../../api/src/contracts/chat';
+export type RetentionPreview = ChatRetentionPreviewResponse;
+
+/** Under the policies' key, so a saved rule asks again. The chats that wait (no `days`) are the same for every scope. */
+export const retentionPreviewQueryKey = (days?: number, scope?: PolicyScope) => [...adminPoliciesQueryKey, 'chat-retention', days ?? null, (days && scope?.groupId) || null] as const;
+
+/**
+ * What saving chat.retention_days = `days` for Everyone or a group would
+ * delete once its 24 hours are over. Without `days` only `waiting` and
+ * `waiting_from` say something: the chats that wait to start deleting.
+ */
+export async function fetchRetentionPreview(days?: number, scope?: PolicyScope, signal?: AbortSignal): Promise<RetentionPreview> {
+  const query = days ? `?${new URLSearchParams({ days: String(days), ...(scope ? { group_id: scope.groupId } : {}) })}` : '';
+  const answer = unwrap(await api.get<RetentionPreview>(`/admin/chat/retention-preview${query}`, { signal }));
+  if (typeof answer?.waiting !== 'number') throw new Error('The server did not answer with the count.');
+  return answer;
+}
+
+/** Whether `next` deletes sooner than `now`; null keeps every message. */
+export const shorterRetention = (next: unknown, now: unknown): next is number => typeof next === 'number' && (now === null || (typeof now === 'number' && next < now));
+/** Typed before a shorter time is saved. The server checks only the password: the word is the dialog's own safeguard. */
+export const RETENTION_WORD = 'DELETE';
+export const retentionWordTyped = (typed: string) => typed.trim().toUpperCase() === RETENTION_WORD;
+
+/** The owner starts deleting in every waiting chat now (403 OWNER_REQUIRED for an administrator). */
+export async function applyRetentionNow(currentPassword: string) {
+  return unwrap(await api.post<ChatRetentionApplyNowResponse>('/admin/chat/retention/apply-now', { current_password: currentPassword } satisfies ChatRetentionApplyNowRequest));
 }
 
 // ── A person's accounts, backups and bin (the admin path, F13) ───

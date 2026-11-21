@@ -4,7 +4,7 @@
 // (P-12), the theme is painted before the app runs and follows the choice
 // (P-02), and touch targets are big enough and never overlap (P-11).
 import type { Page } from '@playwright/test';
-import { POLICIES_EFFECTIVE_TWO_FACTOR, RICH_TASK, TASKS } from '../support/fixtures.ts';
+import { POLICIES_EFFECTIVE_TWO_FACTOR, RETENTION_WAITING, RICH_TASK, TASKS } from '../support/fixtures.ts';
 import { touchViolations } from '../support/geometry.ts';
 import { expectOnlyKnown, KNOWN_DEFECTS } from '../support/known-defects.ts';
 import { customRepeat, expect, pointerIsCoarse, sharedCalendars, test, THEMES, VIEWPORTS, withChat } from '../support/test.ts';
@@ -502,6 +502,23 @@ test.describe('P-11 touch targets are big enough and never overlap', () => {
       await expect(page.getByRole('menuitem', { name: 'Hand over…' })).toBeVisible();
       await settle();
       expectOnlyKnown(await touchViolations(page, '[role="menu"]'), []);
+    });
+
+    test('Server, Policies: a chat retention that waits and the dialog of a shorter one', async ({ page, open, settle }) => {
+      await page.route('**/api/admin/chat/retention-preview', route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(RETENTION_WAITING) }));
+      await open('/admin/policies');
+      await page.getByRole('button', { name: 'Apply now…' }).scrollIntoViewIfNeeded();
+      await settle();
+      expectOnlyKnown(await touchViolations(page, '[data-testid="retention-pending"]'), []);
+      await page.getByRole('combobox', { name: 'Delete chat messages after' }).click();
+      await page.getByRole('option', { name: '30 days' }).click();
+      await page.getByRole('button', { name: 'Save changes…' }).click();
+      const dialog = page.getByRole('dialog', { name: 'Save the changed rules?' });
+      await expect(dialog.getByText(/^128 messages and 9 files in 6 chats/)).toBeVisible();
+      // The typed word comes first, then the password, then the buttons.
+      await expect(dialog.getByLabel('Type DELETE to confirm')).toBeFocused();
+      await settle();
+      expectOnlyKnown(await touchViolations(page, '[role="dialog"]'), []);
     });
 
     test('Server, a group and its Add people dialog', async ({ page, open, settle }) => {

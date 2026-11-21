@@ -103,7 +103,8 @@ const AdminSettings = () => {
               {storageOverview.sections.map(section => (
                 <SettingsRow key={section.key} label={section.label}
                   description={<>
-                    {[`${section.files} files`, section.tracked_items !== undefined && `${section.tracked_items} tracked`, section.ready_items !== undefined && `${section.ready_items} ready`].filter(Boolean).join(', ')}
+                    {[`${section.files} files`, section.tracked_items !== undefined && `${section.tracked_items} tracked`, section.ready_items !== undefined && `${section.ready_items} ready`,
+                      !!section.former_colleagues?.files && `${formatBytes(section.former_colleagues.bytes)} in ${section.former_colleagues.files} files from former colleagues`].filter(Boolean).join(', ')}
                     {(!section.path_exists || section.scan_error) && <span className="block text-destructive">{section.scan_error || 'The storage folder does not exist yet.'}</span>}
                   </>}>
                   <span className="text-sm font-medium tabular-nums">{formatBytes(section.bytes)}</span>
@@ -132,7 +133,7 @@ const AdminSettings = () => {
                     <div className="h-full rounded-full bg-accent" style={{ width: `${share}%` }} />
                   </div>
                   <p className="text-xs text-muted-foreground">
-                    Attachments {formatBytes(sections.mail_attachments?.bytes)}, raw mail {formatBytes(sections.mail_raw?.bytes)}, recordings {formatBytes(sections.recordings?.bytes)}, exports {formatBytes(sections.exports?.bytes)}. {storageUser.files} files.
+                    Attachments {formatBytes(sections.mail_attachments?.bytes)}, raw mail {formatBytes(sections.mail_raw?.bytes)}, recordings {formatBytes(sections.recordings?.bytes)}, exports {formatBytes(sections.exports?.bytes)}, chat files {formatBytes(sections.chat_files?.bytes)}. {storageUser.files} files.
                   </p>
                 </SettingsBlock>
               );

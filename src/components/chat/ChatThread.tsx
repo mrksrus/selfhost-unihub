@@ -17,6 +17,7 @@ import { EmptyState, LoadingState } from '@/components/ui/page-states';
 import { ChatComposer, type ComposerMode } from '@/components/chat/ChatComposer';
 import { ChatMessage } from '@/components/chat/ChatMessage';
 import { ChatPeople } from '@/components/chat/ChatPeople';
+import { ChatRetentionLine } from '@/components/chat/ChatRetentionLine';
 import { PeerAvatar } from '@/components/chat/ConversationList';
 import { dayLabel, deliveryLabel, useChatMembers, useChatThread } from '@/components/chat/chat-state';
 
@@ -147,6 +148,7 @@ export function ChatThread({ engine, conversation, draft, onDraft }: Props) {
         </div>
       </header>
       {conversation.catching_up && <p role="status" className="shrink-0 border-b border-border px-4 py-1.5 text-xs text-muted-foreground">Catching up on the messages since you were last here…</p>}
+      <ChatRetentionLine conversation={conversation} />
 
       <div ref={scroller} className="min-h-0 flex-1 overflow-y-auto px-3 py-3 md:px-4"
         onScroll={event => { const box = event.currentTarget; atEnd.current = box.scrollHeight - box.scrollTop - box.clientHeight < 48; }}>

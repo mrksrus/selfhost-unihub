@@ -3,7 +3,7 @@ import { useAuth } from '@/contexts/useAuth';
 import { useDebouncedValue } from '@/hooks/use-debounced-value';
 import {
   adminGroupsQueryKey, adminPoliciesQueryKey, adminPoliciesQueryKeyFor, adminUsersQueryKey, fetchAdminGroups, fetchAdminPolicies, fetchAdminUsers,
-  fetchPersonDevices, personDevicesQueryKey, policyPreviewQueryKey, previewTwoFactorPolicy, type PolicyScope,
+  fetchPersonDevices, fetchRetentionPreview, personDevicesQueryKey, policyPreviewQueryKey, previewTwoFactorPolicy, retentionPreviewQueryKey, type PolicyScope,
 } from '@/lib/admin-api';
 import { fetchGroup, fetchGroupCandidates, fetchMyGroups, groupsQueryKeys } from '@/lib/groups-api';
 import { can } from '@/lib/permissions';
@@ -62,6 +62,21 @@ export function useTwoFactorPreview(scope: PolicyScope, enabled: boolean) {
     queryFn: ({ signal }) => previewTwoFactorPolicy(scope, signal),
     enabled: enabled && online && can(user, 'server.settings'),
     staleTime: 0,
+  });
+}
+
+/**
+ * What a shorter chat retention of `days` would delete (asked while that save
+ * is prepared), or without `days` the chats that wait to start deleting.
+ */
+export function useRetentionPreview(scope: PolicyScope, days: number | undefined, enabled: boolean) {
+  const { user, online } = useOnline();
+  return useQuery({
+    queryKey: retentionPreviewQueryKey(days, scope),
+    queryFn: ({ signal }) => fetchRetentionPreview(days, scope, signal),
+    enabled: enabled && online && can(user, 'server.settings'),
+    staleTime: 0,
+    retry: false,
   });
 }
 

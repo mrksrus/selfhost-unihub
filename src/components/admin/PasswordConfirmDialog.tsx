@@ -24,7 +24,7 @@ export function TargetLine({ target }: { target: string }) {
  * administrator always sees whose data a password unlocks. The activity log
  * records the action.
  */
-export function PasswordConfirmDialog({ open, onClose, title, description, target, children, actionLabel, destructive = false, pending, confirmDisabled = false, onConfirm }: {
+export function PasswordConfirmDialog({ open, onClose, title, description, target, children, actionLabel, destructive = false, pending, confirmDisabled = false, onConfirm, className }: {
   open: boolean; onClose: () => void; title: string; description: ReactNode; actionLabel: string;
   /** The person the action concerns, shown as its own line ("For Alex Example (alex@example.com)"). */
   target?: string;
@@ -33,6 +33,8 @@ export function PasswordConfirmDialog({ open, onClose, title, description, targe
   destructive?: boolean; pending: boolean;
   /** The fields above the password are not yet complete. */
   confirmDisabled?: boolean;
+  /** For the dialog's box, for example to let long content scroll. */
+  className?: string;
   onConfirm: (currentPassword: string) => void;
 }) {
   const [password, setPassword] = useState('');
@@ -40,7 +42,7 @@ export function PasswordConfirmDialog({ open, onClose, title, description, targe
   useEffect(() => { if (!open) setPassword(''); }, [open]);
   return (
     <Dialog open={open} onOpenChange={next => { if (!next && !pending) onClose(); }}>
-      <DialogContent>
+      <DialogContent className={className}>
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
           <DialogDescription>{description}</DialogDescription>

@@ -1,9 +1,9 @@
 import { useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useSecretMutation } from '@/hooks/use-secret-mutation';
-import { useAdminPolicies, useTwoFactorPreview } from '@/hooks/use-organisation';
+import { useAdminPolicies, useRetentionPreview, useTwoFactorPreview } from '@/hooks/use-organisation';
 import { useToast } from '@/hooks/use-toast';
-import { adminGroupsQueryKey, adminPoliciesQueryKey, adminPoliciesQueryKeyFor, adminUsersQueryKey, saveAdminPolicies, type AdminPolicy, type BinMinimum, type PolicyPreviewPerson, type PolicyScope } from '@/lib/admin-api';
+import { adminGroupsQueryKey, adminPoliciesQueryKey, adminPoliciesQueryKeyFor, adminUsersQueryKey, retentionWordTyped, saveAdminPolicies, shorterRetention, type AdminPolicy, type BinMinimum, type PolicyPreviewPerson, type PolicyScope } from '@/lib/admin-api';
 import { acknowledgePolicies, policiesQueryKey, type PolicyKey, type PolicyValues } from '@/lib/policies-api';
 import type { AppLockArea } from '@/lib/devices-api';
 import { Button } from '@/components/ui/button';
@@ -13,12 +13,14 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { ErrorState, LoadingState } from '@/components/ui/page-states';
 import { SettingsBlock, SettingsRow, SettingsSection } from '@/components/settings/SettingsLayout';
 import { PasswordConfirmDialog } from '@/components/admin/PasswordConfirmDialog';
-import { formatDay, personName } from '@/components/admin/person-words';
+import { formatDay, formatDayTime, personName } from '@/components/admin/person-words';
+import { RetentionPending, RetentionWarning } from '@/components/organisation/ChatRetention';
 
 // The rules of one scope (F13 on F1): Everyone, which is the installation,
 // or one group (0.30). Each key is one row; the values come from the server,
 // and a change is saved with the administrator's password in one transaction
-// with its activity-log entry. Changing a rule never deletes data.
+// with its activity-log entry. Changing a rule never deletes data, with one
+// exception: a shorter chat retention, which warns first (ChatRetention.tsx).
 //
 // A group can only make a rule stricter: its rows offer the values at least
 // as strict as Everyone's, name Everyone's beside each, and choosing
@@ -32,6 +34,7 @@ import { formatDay, personName } from '@/components/admin/person-words';
 
 /** The bin's minimum is not a policy key: it travels as its own field and has this row key here. */
 const BIN_MINIMUM_KEY = 'bin.min_retention';
+const RETENTION_KEY = 'chat.retention_days';
 type RowKey = PolicyKey | typeof BIN_MINIMUM_KEY;
 type Row = { key: RowKey; label: string; description: string };
 
@@ -64,10 +67,13 @@ const GROUPS: { title: string; description?: string; rows: Row[] }[] = [
   },
   {
     title: 'Chat',
-    description: 'What people may switch themselves under Settings › Chat. Messages are always encrypted between the two people; no rule changes that.',
+    description: 'What people may switch themselves under Settings › Chat, how long messages are kept, how large a file may be and whom members may add. Messages are always encrypted between the people of a chat; no rule changes that.',
     rows: [
       { key: 'chat.presence', label: 'Presence', description: 'Whether people who chat with each other see that the other has UniHub open.' },
       { key: 'chat.read_receipts', label: 'Read receipts', description: 'Whether the sender sees that a message was read.' },
+      { key: RETENTION_KEY, label: 'Delete chat messages after', description: 'Their files too, for everyone in the chat. A chat follows the shortest time among its members.' },
+      { key: 'chat.attachment_max_mb', label: 'Largest file in a chat', description: 'Each file or voice message a person sends.' },
+      { key: 'chat.reach', label: 'Who members may add to a group chat', description: 'Administrators add anyone. A chat between two people is open to everyone either way.' },
     ],
   },
   {
@@ -141,7 +147,11 @@ const VALUE_LABELS_BY_KEY: Partial<Record<RowKey, Record<string, string>>> = {
   'notifications.detail': { full: 'Everything', sender: 'The sender only', none: 'No details' },
   'chat.presence': { on: 'Always on', off: 'Always off' },
   'chat.read_receipts': { on: 'Always on', off: 'Always off' },
+  [RETENTION_KEY]: { null: 'Never' },
+  'chat.attachment_max_mb': { '10': '10 MB', '25': '25 MB', '50': '50 MB', '100': '100 MB' },
+  'chat.reach': { own_groups: 'People in their own groups', organisation: 'Anyone in the organisation' },
 };
+const NEVER_DELETES = 'Changing a rule never deletes data, except a shorter time under "Delete chat messages after", which says what it deletes before you save.';
 const NONE = 'none';
 const valueKey = (value: unknown) => value === null ? NONE : String(value);
 const valueLabel = (value: unknown, key?: RowKey): string => Array.isArray(value) ? requiredLabel(value as AppLockArea[])
@@ -253,6 +263,10 @@ export function PolicyEditor({ scope, groupName }: { scope?: PolicyScope; groupN
   const client = useQueryClient();
   const [draft, setDraft] = useState<Partial<Record<RowKey, unknown>>>({});
   const [confirming, setConfirming] = useState(false);
+  // A shorter chat retention saved in this visit, with the value before it: what Undo sets back.
+  const [shortened, setShortened] = useState<{ earlier: unknown; days: number; at: number } | null>(null);
+  const [undoing, setUndoing] = useState(false);
+  const [typed, setTyped] = useState('');
   const query = useAdminPolicies(scope);
   const group = !!scope;
   const requiresTwoFactor = draft['auth.two_factor'] === 'required';
@@ -267,6 +281,12 @@ export function PolicyEditor({ scope, groupName }: { scope?: PolicyScope; groupN
     : policies?.[key];
   const changed = Object.keys(draft) as RowKey[];
   const current = (key: RowKey): unknown => (key in draft ? draft[key] : policyOf(key)?.value);
+  const retention = policyOf(RETENTION_KEY);
+  // A time shorter than the one in force deletes messages: its save shows the server's count and asks for a typed word.
+  const shorter = shorterRetention(draft[RETENTION_KEY], retention?.value) ? draft[RETENTION_KEY] : undefined;
+  const deletes = useRetentionPreview(scope, shorter, confirming && shorter !== undefined);
+  const waits = useRetentionPreview(undefined, undefined, !!retention);
+  const closeSave = () => { setConfirming(false); setTyped(''); };
   const change = (key: RowKey, value: unknown) => setDraft(previous => {
     const next = { ...previous };
     if (sameValue(value, policyOf(key)?.value)) delete next[key]; else next[key] = value;
@@ -275,13 +295,14 @@ export function PolicyEditor({ scope, groupName }: { scope?: PolicyScope; groupN
 
   // The password is a variable of the request: useSecretMutation drops it as soon as the server answers.
   const save = useSecretMutation({
-    mutationFn: (currentPassword: string) => {
+    mutationFn: ({ password, set }: { password: string; set: Partial<Record<RowKey, unknown>>; undo?: boolean; shortens?: typeof shortened }) => {
       // For a group, a row set back to Everyone's value gives the group's own rule up (`clear`); the rest are its values.
-      const cleared = group ? changed.filter(key => sameValue(draft[key], policyOf(key)?.default)) : [];
-      const { [BIN_MINIMUM_KEY]: binValue, ...values } = Object.fromEntries(changed.filter(key => !cleared.includes(key)).map(key => [key, draft[key]])) as Partial<Record<RowKey, unknown>>;
-      return saveAdminPolicies(values as Partial<PolicyValues>, currentPassword, binValue as BinMinimum | undefined, scope, cleared);
+      const keys = Object.keys(set) as RowKey[];
+      const cleared = group ? keys.filter(key => sameValue(set[key], policyOf(key)?.default)) : [];
+      const { [BIN_MINIMUM_KEY]: binValue, ...values } = Object.fromEntries(keys.filter(key => !cleared.includes(key)).map(key => [key, set[key]])) as Partial<Record<RowKey, unknown>>;
+      return saveAdminPolicies(values as Partial<PolicyValues>, password, binValue as BinMinimum | undefined, scope, cleared);
     },
-    onSuccess: answer => {
+    onSuccess: (answer, { set, undo, shortens }) => {
       client.setQueryData(adminPoliciesQueryKeyFor(scope), answer);
       // The administrator set these rules and has seen them: no notice for them. Then what shows them follows: their own
       // greyed controls, people and groups, and the other scopes' pages (this scope's answer is already in place).
@@ -292,9 +313,17 @@ export function PolicyEditor({ scope, groupName }: { scope?: PolicyScope; groupN
         void client.invalidateQueries({ queryKey: adminGroupsQueryKey });
         void client.invalidateQueries({ queryKey: adminPoliciesQueryKey, predicate: query => JSON.stringify(query.queryKey) !== own });
       });
+      if (undo) {
+        setUndoing(false);
+        setShortened(null);
+        return toast({ title: 'Undone', description: 'Nothing was deleted.' });
+      }
       setDraft({});
-      setConfirming(false);
-      toast({ title: 'Policies saved', description: 'Nothing was deleted; the rules apply from now on.' });
+      closeSave();
+      if (RETENTION_KEY in set) setShortened(shortens ?? null);
+      toast({ title: 'Policies saved', description: shortens
+        ? `Chat messages older than ${shortens.days} days are deleted from about ${formatDayTime(new Date(shortens.at + 24 * 60 * 60 * 1000).toISOString())}. Until then you can undo it here.`
+        : 'Nothing was deleted; the rules apply from now on.' });
     },
     onError: (error: Error) => toast({ title: 'Could not save the policies', description: error.message, variant: 'destructive' }),
   });
@@ -316,9 +345,9 @@ export function PolicyEditor({ scope, groupName }: { scope?: PolicyScope; groupN
     <>
       <p className="mb-8 max-w-prose text-sm text-muted-foreground">
         {group
-          ? <>Rules for the members of {groupName ?? 'this group'}, on top of the rules for everyone. A group can only make a rule stricter; for a person in several groups the strictest applies. Changing a rule never deletes data.</>
+          ? <>Rules for the members of {groupName ?? 'this group'}, on top of the rules for everyone. A group can only make a rule stricter; for a person in several groups the strictest applies. {NEVER_DELETES}</>
           : <>Rules for everyone on this server. A rule greys out the control it concerns, with its reason, and the server refuses the action.
-            Changing a rule never deletes data. Administrators can always manage a person's accounts, backups and bin for them under People.</>}
+            {' '}{NEVER_DELETES} Administrators can always manage a person's accounts, backups and bin for them under People.</>}
       </p>
       {GROUPS.map(section => (
         <SettingsSection key={section.title} title={section.title} description={section.description}>
@@ -342,6 +371,7 @@ export function PolicyEditor({ scope, groupName }: { scope?: PolicyScope; groupN
                 description={lines.length || policy.conflict ? <>
                   {lines.map(line => <span key={line} className="block">{line}</span>)}
                   {policy.conflict && <span className="block text-warning">Some people are in groups that disagree here. For them, this value applies.</span>}
+                  {row.key === RETENTION_KEY && <RetentionPending pending={waits.data} saved={shortened} onUndo={() => setUndoing(true)} />}
                 </> : undefined}>
                 {row.key === 'app_lock.required'
                   ? <AppLockRequiredControl id={id} value={Array.isArray(value) ? value as AppLockArea[] : []} floor={group && Array.isArray(policy.default) ? policy.default as AppLockArea[] : []} onChange={next => change(row.key, next)} disabled={!!lock} />
@@ -365,11 +395,16 @@ export function PolicyEditor({ scope, groupName }: { scope?: PolicyScope; groupN
       <SettingsBlock>
         <p className="text-xs text-muted-foreground">Saved changes are recorded in the activity log with your name.</p>
       </SettingsBlock>
-      <PasswordConfirmDialog open={confirming} onClose={() => setConfirming(false)} title={group ? `Save the changed rules of ${groupName ?? 'this group'}?` : 'Save the changed rules?'}
-        description={`${changed.map(labelOf).join(', ')}. Nothing is deleted; the rules apply from now on, and the people they change for are told at their next start.`}
-        actionLabel="Save changes" pending={save.isPending} onConfirm={password => save.mutate(password)}>
+      <PasswordConfirmDialog open={confirming} onClose={closeSave} title={group ? `Save the changed rules of ${groupName ?? 'this group'}?` : 'Save the changed rules?'}
+        description={`${changed.map(labelOf).join(', ')}. ${shorter === undefined ? 'Nothing is deleted; the' : 'The'} rules apply from now on, and the people they change for are told at their next start.`}
+        className="max-h-[90dvh] overflow-y-auto" actionLabel="Save changes" destructive={shorter !== undefined} confirmDisabled={shorter !== undefined && (!deletes.isSuccess || !retentionWordTyped(typed))} pending={save.isPending}
+        onConfirm={password => save.mutate({ password, set: draft, shortens: shorter === undefined ? null : { earlier: retention?.value, days: shorter, at: Date.now() } })}>
+        {shorter !== undefined && <RetentionWarning days={shorter} preview={deletes} typed={typed} onTyped={setTyped} />}
         {requiresTwoFactor && preview.data && <TwoFactorPreview without={preview.data.without} inGrace={preview.data.in_grace} />}
       </PasswordConfirmDialog>
+      <PasswordConfirmDialog open={undoing} onClose={() => setUndoing(false)} title="Undo the shorter time?"
+        description={'"Delete chat messages after" goes back to what it was before you saved. Nothing was deleted yet.'}
+        actionLabel="Undo" pending={save.isPending} onConfirm={password => save.mutate({ password, set: { [RETENTION_KEY]: shortened?.earlier }, undo: true })} />
     </>
   );
 }
