@@ -85,7 +85,7 @@ const chatTest = {
         check();
       });
       if (state === 'choose-passphrase') await engine.choosePassphrase(passphrase);
-      if (state === 'enter-passphrase') await engine.enterPassphrase(passphrase);
+      if (state === 'enter-passphrase' || state === 'waiting') await engine.enterPassphrase(passphrase);
       return state;
     } finally {
       release();

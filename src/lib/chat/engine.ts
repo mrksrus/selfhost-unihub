@@ -194,7 +194,8 @@ class Engine implements ChatEngine {
       const later = (id: string | null = null) => void this.sync(id).catch(() => undefined);
       this.stops.push(
         onAppEvent('unihub:chat-changed', later),
-        onAppEvent('unihub:chat-device', () => later()),
+        // A device that joined elsewhere (a proof, an approval) starts again from a failed start.
+        onAppEvent('unihub:chat-device', () => { if (this.problem?.state === 'failed') this.restart(); else later(); }),
         onAppEvent('unihub:chat-presence', ({ user_id, online }) => {
           this.server = this.server.map(item => item.kind === 'direct' && item.peer.user_id === user_id && item.peer.online !== null ? { ...item, peer: { ...item.peer, online } } : item);
           for (const [id, list] of this.memberLists) this.setMembers(id, list.map(member => member.user_id === user_id && member.online !== null ? { ...member, online } : member));
