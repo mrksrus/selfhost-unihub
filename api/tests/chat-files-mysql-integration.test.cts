@@ -65,7 +65,7 @@ test('chat files: limits, who fetches, one message each, deletion, the sweep and
 
   // ── Tied to one message of its uploader in this chat, at most ten, never by an edit ──
   assert.deepEqual(await refused(blair, 'POST', `/api/chat/conversations/${chat}/messages`, message(g1, { attachments: [file] })), [400, 'CHAT_ATTACHMENT_INVALID'], 'not hers');
-  assert.deepEqual(await refused(alex, 'POST', `/api/chat/conversations/${chat}/messages`, message(g1, { attachments: Array.from({ length: 11 }, () => file) })),
+  assert.deepEqual(await refused(alex, 'POST', `/api/chat/conversations/${chat}/messages`, message(g1, { attachments: Array.from({ length: 21 }, () => file) })),
     [400, 'CHAT_ATTACHMENT_INVALID'], 'more than ten');
   const sent = await send(alex, chat, message(g1, { attachments: [file] }));
   const second = message(g1, { attachments: [file] });

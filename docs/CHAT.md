@@ -400,7 +400,7 @@ most 100 people (`400 CHAT_TOO_MANY_PEOPLE`). Its people are its grants:
 second file) and uploads the ciphertext, one request per file of at most
 101 MiB; the server checks the uploader's `chat.attachment_max_mb` (`413
 CHAT_FILE_TOO_LARGE` with the limit) and stores it under
-`chat/<conversation>/<id>` of the uploads volume. The post names up to 10 of
+`chat/<conversation>/<id>` of the uploads volume. The post names up to 20 of
 the sender's uploads to that chat that no message uses yet (`400
 CHAT_ATTACHMENT_INVALID` otherwise; an edit names none). A file is served,
 as stored and never cached, to a member of the chat who reads its message

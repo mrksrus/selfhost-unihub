@@ -366,7 +366,8 @@ export interface ChatPreview { chat_device_id: string; sealed: Base64Url }
  * are notified as mentioned; the server keeps no list. 400
  * CHAT_MENTION_INVALID for anyone else, more than 20, or in a direct chat.
  *
- * attachments: up to 10 ids of the sender's uploads to this chat not yet
+ * attachments: up to 20 ids (ten files and a preview for each picture among
+ * them) of the sender's uploads to this chat not yet
  * tied to a message (POST .../attachments); the message is tied to them, and
  * deleting it deletes them. 400 CHAT_ATTACHMENT_INVALID otherwise; an edit
  * names none.

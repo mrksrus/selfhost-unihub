@@ -307,7 +307,7 @@ function deliveryService() {
         const mentions = body.mentions as string[] | undefined;
         if (mentions && (conversation!.name === undefined || mentions.length > 20 || mentions.some(person => person === me || !conversation!.people.includes(person)))) return refuse(400, 'CHAT_MENTION_INVALID');
         const attached = body.attachments as string[] | undefined;
-        if (attached?.length && (body.replaces || attached.length > 10 || attached.some(id => {
+        if (attached?.length && (body.replaces || attached.length > 20 || attached.some(id => {
           const file = attachments.get(id);
           return !file || file.uploader !== me || file.conversation !== conversation!.id || file.message;
         }))) return refuse(400, 'CHAT_ATTACHMENT_INVALID');

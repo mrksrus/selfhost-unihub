@@ -22,7 +22,8 @@ import { fileRemovalGate } from './file-removal-gate';
 // Rows go first and files after, through the file removal gate.
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const MAX_PER_MESSAGE = 10;
+// Ten files, and for each picture among them its small preview, which is an upload of its own.
+const MAX_PER_MESSAGE = 20;
 const MB = 1024 * 1024;
 // shortcut: one request per file up to this, no resumable upload; a session of chunks (as recordings have) if files must grow past it.
 const UPLOAD_LIMIT = 101 * MB;

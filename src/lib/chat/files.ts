@@ -7,8 +7,8 @@ import { decryptFile, encryptFile, newFileKey } from './file-crypto';
 import type { ChatFileToSend } from './types';
 
 export const MAX_FILES = 10;
-/** The server ties at most this many uploads to a post, previews included: a picture beyond them goes without one. */
-const MAX_IDS = 10;
+/** The server ties at most this many uploads to a post: every file and a preview for each picture. */
+const MAX_IDS = 20;
 const PREVIEW_PIXELS = 320;
 /** The server deletes an upload no message names after a day; one kept longer than this is uploaded again under a new id. */
 const UPLOAD_KEPT_MS = 12 * 3_600_000;
