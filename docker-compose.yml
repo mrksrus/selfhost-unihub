@@ -39,6 +39,13 @@ services:
       - SETUID
     ports:
       - "3000:80"
+      # The relay for calls (TURN_SECRET below): uncomment these three lines
+      # with it and forward the same ports from the router; a reverse proxy
+      # cannot carry them. Off by default because Docker opens a published
+      # port in the firewall and holds it with a proxy even while nothing listens.
+      # - "3478:3478/udp"
+      # - "3478:3478/tcp"
+      # - "49160-49200:49160-49200/udp"
     environment:
       NODE_ENV: production
       # Connection to the MariaDB service below. The MYSQL_ names are kept
@@ -73,6 +80,17 @@ services:
       # takes the defaults in docs/DATA_RECOVERY.md.
       INSTANCE_BACKUP_TIME: ${UNIHUB_INSTANCE_BACKUP_TIME:-}
       INSTANCE_BACKUP_KEEP: ${UNIHUB_INSTANCE_BACKUP_KEEP:-}
+      # ── The relay for calls between different networks ─────────────
+      # Off until TURN_SECRET is set (openssl rand -base64 48); then also
+      # publish its ports above. TURN_URLS is the address devices are told,
+      # for example turn:calls.example.org:3478. Behind NAT, and Docker's own
+      # network is one, TURN_EXTERNAL_IP is the host's public IP address.
+      # docs/INSTALLATION.md "Calls and the relay".
+      TURN_URLS: ${UNIHUB_TURN_URLS:-}
+      TURN_SECRET: ${UNIHUB_TURN_SECRET:-}
+      TURN_EXTERNAL_IP: ${UNIHUB_TURN_EXTERNAL_IP:-}
+      # true only when everyone calls from one private network or VPN.
+      TURN_ALLOW_PRIVATE_PEERS: ${UNIHUB_TURN_ALLOW_PRIVATE_PEERS:-false}
       # ── Log lines: readable text by default, "json" for a log collector ──
       LOG_FORMAT: ${UNIHUB_LOG_FORMAT:-text}
       # ── First-run admin bootstrap (required when users table is empty) ──
@@ -108,7 +126,7 @@ services:
     # ── Secrets as files (recommended) ──────────────────────────────
     # Every secret can come from a file: NAME_FILE instead of NAME (JWT_SECRET,
     # ENCRYPTION_KEY, ENCRYPTION_KEY_PREVIOUS, BACKUP_MASTER_KEY, MYSQL_PASSWORD,
-    # BOOTSTRAP_ADMIN_PASSWORD, INSTANCE_BACKUP_KEY). Setting both with
+    # BOOTSTRAP_ADMIN_PASSWORD, INSTANCE_BACKUP_KEY, TURN_SECRET). Setting both with
     # different values stops the start. To use Compose secrets, replace for
     # example the JWT_SECRET line above with
     #   JWT_SECRET_FILE: /run/secrets/unihub_jwt_secret

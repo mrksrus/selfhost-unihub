@@ -26,7 +26,11 @@ The entrypoint waits up to 300 seconds for an authenticated MariaDB connection,
 continuing immediately when it succeeds. It then starts a small Node.js service
 supervisor as the container's main process. The supervisor starts the API and
 nginx, forwards shutdown signals, and exits with failure if either service stops.
-The existing Docker restart policy can then recover the whole app. The default
+The existing Docker restart policy can then recover the whole app. With
+`TURN_SECRET` set, the entrypoint first starts the relay for calls (coturn) as
+the API user from a configuration it writes to `/tmp/unihub-turn`; if the relay
+stops, the entrypoint stops the supervisor, which ends the container
+([Calls and the relay](INSTALLATION.md#calls-and-the-relay)). The default
 360-second health startup grace remains unchanged.
 
 Nginx uses long `/api/` proxy timeouts because mail sync and large backup uploads

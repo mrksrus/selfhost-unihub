@@ -12,6 +12,9 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
 - **A policy for calls.** The administrator policy `chat.calls` allows or
   forbids voice calls, for everyone or for a group.
+- The image has a relay for calls between different networks (coturn). It
+  starts when `TURN_SECRET` is set; publish its ports with it
+  ([Calls and the relay](docs/INSTALLATION.md#calls-and-the-relay)).
 
 ## 0.34.0
 

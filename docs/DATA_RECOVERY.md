@@ -53,6 +53,8 @@ soon as a connection succeeds.
 The instance backup (0.28.0) copies the whole installation: the database and
 every stored file, encrypted, to a destination the administrator mounts. It is
 the disaster-recovery copy; the account backups below move one person's data.
+The relay for calls keeps no state: it is configured from the environment at
+every start, so keep `TURN_SECRET` with the other secrets.
 `api/src/services/instance-backup.ts` runs it, `instance-backup-format.ts`
 defines the file, `instance-restore.ts` restores it.
 
