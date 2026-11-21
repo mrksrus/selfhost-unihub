@@ -6,6 +6,13 @@ Read the [upgrade guide](docs/UPGRADING.md) before updating an existing
 installation, and keep a consistent backup of the database, uploads, configuration and
 secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
+## 0.35.0 (unreleased)
+
+### Added
+
+- **A policy for calls.** The administrator policy `chat.calls` allows or
+  forbids voice calls, for everyone or for a group.
+
 ## 0.34.0
 
 Group chats, files and voice messages in Chat, all end-to-end encrypted,

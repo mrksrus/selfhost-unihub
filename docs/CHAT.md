@@ -638,6 +638,76 @@ Delivery details are in [PWA](PWA.md#enable-notifications) and
   the passphrase ([Data recovery](DATA_RECOVERY.md#after-an-instance-restore)).
   A backup keeps what retention deleted after it was made.
 
+## Calls
+
+Voice calls between the two people of a direct chat. The sound goes from
+device to device, encrypted by WebRTC (DTLS-SRTP); it never passes through
+the server. Calls belong to Chat: no module of their own, the app lock area
+and the module gate are `chat`, and a device that has not joined Chat is
+refused every call route and hears nothing of a call.
+
+**What the server sees.** Who calls whom and when, which devices ring and
+which one answered, how long the call lasts and how it ended, and, for the
+seconds of set-up, the connection data the two devices exchange (network
+addresses and the fingerprints of the media keys). Those signals are rows
+the other device fetches, are logged nowhere and are deleted when the call
+ends. The call's line in the chat stays until retention removes it. With
+the relay (TURN), the relay carries the encrypted sound and sees addresses
+and amounts. The two people see each other's network address.
+
+**The flow.** The calling device starts the call (`POST /api/chat/calls`,
+naming the person or the direct chat) and posts its offer as the first
+signal. Every joined device of the callee rings for 45 seconds: open pages
+by the hint `chat.call`, Android apps that can ring by a notification of
+kind `call` over their own connection, sent at once. The first device to
+answer takes the call (one conditional update); the others stop ringing.
+The two ends exchange signals (`POST …/signals`, then `GET …/signals?after=`
+after each hint) and send a sign of life every 30 seconds. Either ends the
+call; the server deletes the signals, writes the call's entry in the chat
+and tells both people. One call per person at a time: a second caller is
+answered busy and the callee gets a missed call. Two people calling each
+other at once end in one call: the second start answers with the first
+call, to be answered.
+
+**Endings.** `answered`; `missed` (nobody answered in 45 seconds);
+`cancelled` (the caller ended it while it rang); `declined`; `busy`;
+`failed` (a device could not connect or lost the connection, the devices
+stopped sending signs of life for 90 seconds, or the server started again
+after an instance restore). A missed, cancelled or busy call is a missed
+call for the callee: a `call_missed` notification on every joined device
+("Missed call from Alex", "Missed call" at the detail `none`) until its
+entry is read, and the entry counts as unread for them alone. An answered
+call moves nobody's read mark.
+
+**The entry.** Kind `call`, written by the server when the call ends, with
+the caller as its sender, no ciphertext and no group; `call` carries the
+outcome and the times. Nobody can edit or delete it; a device archives it
+like a message it read. Retention removes it with the call's row; deleting
+a person empties their side of the call and the entry stays.
+
+**Who can be called.** Anyone who can be written to in a direct chat (active,
+Chat on, a joined device), while the policy `chat.calls` allows calls for
+both people. Reach does not apply. The callee's choice of what a chat
+notifies them of does not stop the ring.
+
+**Which phones ring.** The `call` notification goes only to an Android app
+whose device reported the capability `calls: true` in its lock report
+(`PUT /api/devices/current/lock`); its title is the caller's name, or
+"Incoming call" at the detail `none` or on a device whose lock hides Chat.
+When the call stops ringing, the phones that rang get a second `call`
+message (`event: 'end'`) with a dedupe key of its own; the phone that
+answered gets none. Browsers and older apps ring only in an open page and
+get the missed-call notification.
+
+**The relay.** `TURN_URLS` (comma separated, the addresses devices are told)
+with `TURN_SECRET` or `TURN_SECRET_FILE`: each start, answer and
+`GET …/ice` hands the two ends credentials made for the call, valid twelve
+hours (the user name is the expiry and the call's id, the password the
+base64 HMAC-SHA1 of it under the secret), never stored. Without both, no
+servers are handed out and calls connect only where the two devices reach
+each other directly. `GET /api/admin/settings/signup-mode` answers
+`calls_relay` for the Server page.
+
 ## Limits and known behaviours
 
 - **Not built.** Reactions, formatting, a typing indicator, blocking people,
@@ -710,6 +780,12 @@ included).
 | `DELETE /api/chat/messages/:id` | Delete for everyone in the chat; declares `bin.delete` |
 | `PUT /api/chat/conversations/:id/marks` | Move the read and delivered marks forward |
 | `POST /api/chat/archive`, `GET /api/chat/archive` | Store and list the person's own archive copies |
+| `POST /api/chat/calls` | Call the other person of a direct chat ([Calls](#calls)): `409 CHAT_CALL_BUSY`, `409 CHAT_CALL_IN_PROGRESS`, `403 POLICY_FORBIDS` for `chat.calls`, `403 CHAT_UNAVAILABLE` |
+| `GET /api/chat/calls/current` | The person's ringing or active call |
+| `POST /api/chat/calls/:id/answer` | The first answering device takes the call (`409 CHAT_CALL_ANSWERED`, `409 CHAT_CALL_ENDED`) |
+| `POST /api/chat/calls/:id/end` | Decline, cancel, hang up, or report a failed connection |
+| `POST /api/chat/calls/:id/signals`, `GET …/signals?after=` | Signals between the two ends, at most 16,384 characters each |
+| `POST /api/chat/calls/:id/alive`, `GET /api/chat/calls/:id/ice` | A sign of life; fresh relay credentials |
 
 Two administrator routes need `server.settings` and no module:
 
@@ -736,6 +812,8 @@ only in ordinary requests ([Architecture](ARCHITECTURE.md#live-status-events)).
   receipts off, is told only to the reader.
 - `chat.presence` (`user_id`, `online`): a person someone shares a chat with
   opened their first page of a device in Chat or closed their last.
+- `chat.call` (`call_id`): to both people, a call started, was answered or
+  ended; to the other end, a signal was posted.
 - `chat.device` (`chat_device_id`): to every page of the person, a device
   asked for an approval, was answered or dropped, or joined. A page of a
   device that joined takes the other chat hints from then on.
@@ -748,7 +826,8 @@ notification over the app's own connection; the page fetches when opened.
 
 Upgrade step 31 adds nine tables; step 32 adds `chat_attachments`, and to
 `chat_conversations` the name and the retention columns and to
-`chat_members` the notification choice. None is in a personal backup; the
+`chat_members` the notification choice; step 34 adds `chat_calls` and
+`chat_call_signals`, and lets a message have no group (a call's entry). None is in a personal backup; the
 instance backup carries each as stored. The manifest is
 `api/src/modules/chat.ts`.
 
@@ -764,6 +843,8 @@ instance backup carries each as stored. The manifest is
 | `chat_messages` | Messages, edits and deletions, ciphertext only | organisation | ciphertext |
 | `chat_archive` | Each person's sealed archive copies | person | ciphertext |
 | `chat_attachments` | A file's chat, message, uploader and size; its ciphertext under `chat/<conversation>/<id>` of the uploads volume | organisation | ciphertext |
+| `chat_calls` | A call's chat, its two people and their two devices, state, outcome, times and entry in the chat; a call left ringing or going on in an instance backup ends as failed at the next start | organisation | org |
+| `chat_call_signals` | The signals of a call being set up; deleted when it ends | organisation | installation |
 
 Membership of a chat is grants of the access kind `conversation`: one per
 person (`member` or `manage`), or for a followed chat one to the

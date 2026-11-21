@@ -3,7 +3,7 @@
 -- Schema changes are numbered migrations in api/src/services/database.ts; the app
 -- creates and upgrades its own schema on startup. This file is a reviewable
 -- reference, and a database test fails when it differs from a freshly migrated database.
--- Through migration 33.
+-- Through migration 34.
 
 CREATE TABLE `address_books` (
   `id` char(36) NOT NULL,
@@ -470,6 +470,49 @@ CREATE TABLE `chat_attachments` (
   CONSTRAINT `fk_chat_attachments_uploader` FOREIGN KEY (`uploader_user_id`) REFERENCES `users` (`id`) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE `chat_call_signals` (
+  `id` bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+  `call_id` char(36) NOT NULL,
+  `from_chat_device_id` char(36) DEFAULT NULL,
+  `payload` text NOT NULL,
+  `created_at` datetime NOT NULL,
+  PRIMARY KEY (`id`),
+  KEY `idx_chat_call_signals_call` (`call_id`,`id`),
+  KEY `fk_chat_call_signals_device` (`from_chat_device_id`),
+  CONSTRAINT `fk_chat_call_signals_call` FOREIGN KEY (`call_id`) REFERENCES `chat_calls` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_chat_call_signals_device` FOREIGN KEY (`from_chat_device_id`) REFERENCES `chat_devices` (`id`) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `chat_calls` (
+  `id` char(36) NOT NULL,
+  `conversation_id` char(36) NOT NULL,
+  `caller_user_id` char(36) DEFAULT NULL,
+  `callee_user_id` char(36) DEFAULT NULL,
+  `caller_chat_device_id` char(36) DEFAULT NULL,
+  `answered_chat_device_id` char(36) DEFAULT NULL,
+  `state` varchar(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  `outcome` varchar(16) CHARACTER SET ascii COLLATE ascii_bin DEFAULT NULL,
+  `created_at` datetime NOT NULL,
+  `answered_at` datetime DEFAULT NULL,
+  `ended_at` datetime DEFAULT NULL,
+  `alive_at` datetime NOT NULL,
+  `message_id` char(36) DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_chat_calls_message` (`message_id`),
+  KEY `idx_chat_calls_caller` (`caller_user_id`,`state`),
+  KEY `idx_chat_calls_callee` (`callee_user_id`,`state`),
+  KEY `idx_chat_calls_state` (`state`,`created_at`),
+  KEY `fk_chat_calls_conversation` (`conversation_id`),
+  KEY `fk_chat_calls_caller_device` (`caller_chat_device_id`),
+  KEY `fk_chat_calls_answered_device` (`answered_chat_device_id`),
+  CONSTRAINT `fk_chat_calls_answered_device` FOREIGN KEY (`answered_chat_device_id`) REFERENCES `chat_devices` (`id`) ON DELETE SET NULL,
+  CONSTRAINT `fk_chat_calls_callee` FOREIGN KEY (`callee_user_id`) REFERENCES `users` (`id`) ON DELETE SET NULL,
+  CONSTRAINT `fk_chat_calls_caller` FOREIGN KEY (`caller_user_id`) REFERENCES `users` (`id`) ON DELETE SET NULL,
+  CONSTRAINT `fk_chat_calls_caller_device` FOREIGN KEY (`caller_chat_device_id`) REFERENCES `chat_devices` (`id`) ON DELETE SET NULL,
+  CONSTRAINT `fk_chat_calls_conversation` FOREIGN KEY (`conversation_id`) REFERENCES `chat_conversations` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_chat_calls_message` FOREIGN KEY (`message_id`) REFERENCES `chat_messages` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE `chat_conversations` (
   `id` char(36) NOT NULL,
   `kind` varchar(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
@@ -555,7 +598,7 @@ CREATE TABLE `chat_messages` (
   `id` char(36) NOT NULL,
   `conversation_id` char(36) NOT NULL,
   `seq` bigint(20) unsigned NOT NULL,
-  `group_id` char(36) NOT NULL,
+  `group_id` char(36) DEFAULT NULL,
   `sender_user_id` char(36) DEFAULT NULL,
   `sender_chat_device_id` char(36) DEFAULT NULL,
   `kind` varchar(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT 'message',

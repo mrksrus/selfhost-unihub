@@ -501,11 +501,12 @@ released its lock.
 `api/src/services/background-work.ts` holds the periodic work of the API
 process. `app.ts` starts it once after the server listens and stops it on
 shutdown, before the event streams close. Each timer skips a tick while its
-previous run is still going (`services/timers.ts`). These eighteen run:
+previous run is still going (`services/timers.ts`). These nineteen run:
 
 | Interval | Job |
 | --- | --- |
 | 1 second | Re-enqueue due mail writebacks (per-operation backoff) and nudge the durable mail scheduler |
+| 5 seconds | End calls nobody ended (`chat-calls.ts`): ringing past 45 seconds (missed), active without a sign of life for 90 seconds (failed); at a start every such call, as failed |
 | 15 seconds | Thread mail stored before 0.24 (`mail-thread-backfill.ts`): up to 600 messages or 5 seconds a tick; pauses 5 minutes once nothing is left |
 | 15 seconds | Send the scheduled drafts that are due, each at most once (`mail-scheduled-send.ts`); a send claimed 10 minutes ago (2 for a send by hand) without an outcome is settled from its send-once receipt |
 | 30 seconds | Bring back snoozed messages whose time has come, each with its notification (`mail-snooze.ts`) |

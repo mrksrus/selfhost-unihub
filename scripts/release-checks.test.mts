@@ -200,6 +200,7 @@ test('the instance drill compares every installation-owned row in full and allow
       row('b1', { id: 'h-b1', status: 'h-succeeded', finished_at: 'h-backup-end' }, { status: 'succeeded', file_name: file, finished_at: '2026-11-01 10:00:05' }),
       row('b0', { id: 'h-b0', status: 'h-failed', finished_at: 'h-old-end' }, { status: 'failed', file_name: null, finished_at: '2026-10-01 03:31:00' })] },
     notification_config: { owner: 'installation', rows: [row('1', { public_key: 'h-key', encrypted_private_key: 'h-private', reminder_revision: 'h-3' })] },
+    chat_call_signals: { owner: 'organisation', rows: [] },
   });
   // The restore command ran from 10:20:00.400 to 10:20:03.700.
   const context = { backupFile: file, restore: { from: new Date('2026-11-01T10:20:00.400Z'), to: new Date('2026-11-01T10:20:03.700Z') } };
@@ -210,6 +211,8 @@ test('the instance drill compares every installation-owned row in full and allow
     report.instance_backups.rows[0].plain.finished_at = value;
   };
   assert.deepEqual(check(() => {}), []);
+  // A call's signals exist only while it is set up.
+  assert.match(check(report => { report.chat_call_signals.rows = [row('s1', { id: 'h-s1' })]; }).join('\n'), /chat_call_signals: has rows/);
   // The documented changes: this backup's run is finished by the restore (to the second), the push reminder cursors move.
   for (const at of ['2026-11-01 10:20:00', '2026-11-01 10:20:04']) {
     assert.deepEqual(check(report => { finishedAt(report, at); report.notification_config.rows[0].columns.reminder_revision = 'h-4'; }), [], at);

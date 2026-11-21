@@ -135,7 +135,7 @@ async function main() {
         await db.execute('INSERT INTO chat_key_packages (chat_device_id, key_package, last_resort) VALUES (?, ?, FALSE), (?, ?, TRUE)', [chat, bytes(313), chat, bytes(313)]);
         await db.execute('INSERT INTO chat_accounts (user_id, history_public, key_backup, backup_salt, backup_rounds, backup_format) VALUES (?, ?, ?, ?, 600000, 1)', [user, bytes(65), bytes(60), bytes(16)]);
       }
-      await db.execute("INSERT INTO chat_conversations (id, kind, direct_key, current_group_id, last_seq, created_by) VALUES (?, 'direct', ?, ?, 4, ?)",
+      await db.execute("INSERT INTO chat_conversations (id, kind, direct_key, current_group_id, last_seq, created_by) VALUES (?, 'direct', ?, ?, 6, ?)",
         [conversation, [admin, other.id].sort().join(':'), chatGroup, admin]);
       await db.execute(`INSERT INTO grants (id, resource_kind, resource_id, principal_kind, principal_id, permission, granted_by)
         VALUES (UUID(), 'conversation', ?, 'user', ?, 'member', ?), (UUID(), 'conversation', ?, 'user', ?, 'member', ?)`, [conversation, admin, admin, conversation, other.id, admin]);
@@ -148,6 +148,15 @@ async function main() {
         gone2, conversation, chatGroup, other.id, otherChat, deletion, conversation, chatGroup, other.id, otherChat, gone2]);
       await db.execute('INSERT INTO chat_archive (user_id, message_id, sealed) VALUES (?, ?, ?), (?, ?, ?), (?, ?, ?)',
         [admin, sent, bytes(500), admin, edit, bytes(500), other.id, sent, bytes(500)]);
+      // An answered call and a missed one, each with its entry in the chat.
+      const [answered, missed, answeredEntry, missedEntry] = Array.from({ length: 4 }, () => crypto.randomUUID());
+      await db.execute(`INSERT INTO chat_messages (id, conversation_id, seq, group_id, sender_user_id, sender_chat_device_id, kind) VALUES
+        (?, ?, 5, NULL, ?, ?, 'call'), (?, ?, 6, NULL, ?, ?, 'call')`, [answeredEntry, conversation, admin, adminChat, missedEntry, conversation, other.id, otherChat]);
+      await db.execute(`INSERT INTO chat_calls (id, conversation_id, caller_user_id, callee_user_id, caller_chat_device_id, answered_chat_device_id, state, outcome,
+          created_at, answered_at, ended_at, alive_at, message_id) VALUES
+        (?, ?, ?, ?, ?, ?, 'ended', 'answered', UTC_TIMESTAMP() - INTERVAL 10 MINUTE, UTC_TIMESTAMP() - INTERVAL 9 MINUTE, UTC_TIMESTAMP() - INTERVAL 4 MINUTE, UTC_TIMESTAMP() - INTERVAL 4 MINUTE, ?),
+        (?, ?, ?, ?, ?, NULL, 'ended', 'missed', UTC_TIMESTAMP() - INTERVAL 3 MINUTE, NULL, UTC_TIMESTAMP() - INTERVAL 2 MINUTE, UTC_TIMESTAMP() - INTERVAL 3 MINUTE, ?)`,
+      [answered, conversation, admin, other.id, adminChat, otherChat, answeredEntry, missed, conversation, other.id, admin, otherChat, missedEntry]);
       // A group chat that follows the drill group, with a retention, a choice to hear only mentions and a file.
       const [teamChat, teamGroup, file] = Array.from({ length: 3 }, () => crypto.randomUUID());
       await db.execute(`INSERT INTO chat_conversations (id, kind, name, current_group_id, last_seq, created_by, retention_days, retention_from)

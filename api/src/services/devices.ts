@@ -344,12 +344,18 @@ async function describeCurrentDevice(userId: string, token: string | null): Prom
 }
 
 const CAPABILITY_FLAGS = ['secure_window', 'recents_hidden', 'device_lock_signal'] as const;
+/** SQL: the device whose id is in `column` is an Android app that rings for a call while closed (its lock report said calls). */
+const ringsForCalls = (column: string) => `EXISTS (SELECT 1 FROM devices d WHERE d.id = ${column} AND d.kind = 'android' AND JSON_EXTRACT(d.capabilities, '$.calls') = 'true')`;
+
 function parseCapabilities(value: unknown): DeviceCapabilities | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const input = value as Record<string, unknown>;
   if (!(input.lock === 'none' || LOCK_METHODS.includes(input.lock as LockMethod))) return null;
   if (!CAPABILITY_FLAGS.every(flag => typeof input[flag] === 'boolean')) return null;
-  return { lock: input.lock as DeviceCapabilities['lock'], secure_window: !!input.secure_window, recents_hidden: !!input.recents_hidden, device_lock_signal: !!input.device_lock_signal };
+  // calls: only apps that ring for a call while closed send it.
+  if (input.calls !== undefined && typeof input.calls !== 'boolean') return null;
+  return { lock: input.lock as DeviceCapabilities['lock'], secure_window: !!input.secure_window, recents_hidden: !!input.recents_hidden, device_lock_signal: !!input.device_lock_signal,
+    ...input.calls ? { calls: true } : {} };
 }
 
 /**
@@ -518,6 +524,6 @@ export {
   deviceFromUserAgent, parseLockApplied, deviceForSession, deviceLockFor, lockCovers, appLockShortfall, appLockRefusal,
   deviceKeyHash, deviceClaim, bindDevice, currentDevice, adoptDeviceKey, listDevices, describeCurrentDevice,
   reportDeviceLock, reportLockState, removeDevice, touchDevice, pruneIdleDevices,
-  personDevices, signedInDeviceNames, lastActiveByUser, endPersonDevices,
+  personDevices, signedInDeviceNames, lastActiveByUser, endPersonDevices, ringsForCalls,
 };
 export type { DeviceLockState, DeviceClaim };

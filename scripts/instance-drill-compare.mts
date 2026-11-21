@@ -24,6 +24,8 @@ interface Rule {
   mayAdd?: (row: ReportedRow, context: Context) => boolean;
   /** The restore deletes every row of the table: none of the source's may remain. */
   cleared?: boolean;
+  /** The table holds rows only while something is going on: neither side may have any. */
+  empty?: boolean;
 }
 
 export const INSTALLATION_RULES: Readonly<Record<string, Rule>> = Object.freeze({
@@ -78,6 +80,8 @@ export const INSTALLATION_RULES: Readonly<Record<string, Rule>> = Object.freeze(
   chat_messages: { reason: 'Messages come back as ciphertext, edits and deletions included.' },
   chat_archive: { reason: "Each person's archive copies come back sealed." },
   chat_attachments: { reason: "A chat file's row comes back with its message and uploader." },
+  chat_calls: { reason: 'Calls come back with their outcome and their entry in the chat.' },
+  chat_call_signals: { reason: "A call's signals are deleted when it ends, so an installation at rest has none.", empty: true },
   'chat files': { reason: 'Chat files come back as the ciphertext they were.' },
 });
 
@@ -95,6 +99,7 @@ export function installationProblems(source: InstallationReport, target: Install
     const rule = INSTALLATION_RULES[table];
     if (!rule) { problems.push(`${table}: declared as ${(source[table] ?? target[table]).owner}-owned, but the drill neither compares it nor names an exception`); continue; }
     if (!source[table] || !target[table]) { problems.push(`${table}: not reported by the ${source[table] ? 'restored installation' : 'source'}`); continue; }
+    if (rule.empty) { if (source[table].rows.length || target[table].rows.length) problems.push(`${table}: has rows, but holds none at rest`); continue; }
     const sourceRows = new Map(source[table].rows.map(row => [row.key, row]));
     const targetRows = new Map(target[table].rows.map(row => [row.key, row]));
     if (!sourceRows.size) problems.push(`${table}: the source has no rows to compare`);

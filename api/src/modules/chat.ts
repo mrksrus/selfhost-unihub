@@ -29,7 +29,7 @@ const CHAT_MANIFEST = Object.freeze({
   module: Object.freeze({ id: 'chat', label: 'Chat', backgroundSupported: false, recoverySection: null }),
   pages: Object.freeze([Object.freeze({ id: 'chat', label: 'Chat', module: 'chat' })]),
   // Its notification kinds; services/notifications.ts renders them and refuses to start without each.
-  notificationKinds: Object.freeze(['chat', 'chat_device']),
+  notificationKinds: Object.freeze(['chat', 'chat_device', 'call', 'call_missed']),
   // Upgrade step 31 (chat-migration.ts).
   introducedIn: 31,
   excludedReason: 'Chats are not in a personal backup: the server cannot read them, and they are restored with the chat passphrase. Only the instance backup carries them, as stored.',
@@ -56,6 +56,11 @@ const CHAT_MANIFEST = Object.freeze({
       columns: 'user_id message_id sealed created_at' },
     chat_attachments: { owner: 'organisation', shareable: false, dataClass: 'ciphertext', restore: `${INSTANCE_ONLY} Its file under chat/ opens only with the key inside its message.`,
       columns: 'id conversation_id message_id uploader_user_id size_bytes storage_path created_at', introducedIn: 32 },
+    chat_calls: { owner: 'organisation', shareable: false, dataClass: 'org', restore: `${INSTANCE_ONLY} A call that was ringing or going on ends as failed at the next start.`,
+      columns: 'id conversation_id caller_user_id callee_user_id caller_chat_device_id answered_chat_device_id state outcome created_at answered_at ended_at alive_at message_id',
+      introducedIn: 34 },
+    chat_call_signals: { owner: 'organisation', shareable: false, dataClass: 'installation', restore: `${INSTANCE_ONLY} A call's signals go when it ends.`,
+      columns: 'id call_id from_chat_device_id payload created_at', introducedIn: 34 },
   }),
 });
 

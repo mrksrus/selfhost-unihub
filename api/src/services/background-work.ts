@@ -25,12 +25,13 @@ import { purgeBin } from './bin';
 import { sweepContactPhotos } from './contact-photos';
 import { sweepContactImports } from './contacts-import';
 import { runChatRetention } from './chat-retention';
+import { sweepCalls } from './chat-calls';
 import { isModuleEnabled } from './module-settings';
 import { isWorkerOwner } from './worker-owner';
 import { fileRemovalGate } from './file-removal-gate';
 import { log } from '../log';
 
-// The periodic work of this API process: the eighteen timers listed in
+// The periodic work of this API process: the nineteen timers listed in
 // docs/ARCHITECTURE.md "Scheduled Jobs", the startup resets they rely on and
 // the mail IDLE supervisor they start. app.ts starts it once after the server
 // listens and stops it on shutdown. UniHub runs one API process; everything
@@ -72,6 +73,7 @@ interface BackgroundWorkDeps {
   sweepContactPhotos: (active: () => boolean) => Promise<number>;
   sweepContactImports: () => Promise<{ expired: number; orphans: number }>;
   runChatRetention: typeof runChatRetention;
+  sweepCalls: typeof sweepCalls;
   isWorkerOwner: () => boolean;
   recoverInstanceBackups: () => Promise<unknown>;
   runDueInstanceBackup: () => Promise<unknown>;
@@ -105,6 +107,7 @@ function defaultDeps(): BackgroundWorkDeps {
     sweepContactPhotos: active => sweepContactPhotos({ active, moduleEnabled: userId => isModuleEnabled(userId, 'contacts'), heldForUndo: userId => photosHeldForUndo(userId) }),
     sweepContactImports: () => sweepContactImports(),
     runChatRetention: () => runChatRetention(),
+    sweepCalls: startup => sweepCalls(startup),
     isWorkerOwner,
     recoverInstanceBackups: () => (require('./instance-backup') as typeof import('./instance-backup')).recoverInterruptedInstanceBackups(),
     runDueInstanceBackup: () => (require('./instance-backup') as typeof import('./instance-backup')).runDueInstanceBackup(),
@@ -161,6 +164,9 @@ async function runStartup(deps: BackgroundWorkDeps, state: { stopped: boolean },
 
   const notifications = every('NOTIFICATIONS', 30 * 1000, deps.processNotificationJobs);
   void notifications.run();
+  // Calls nobody ends: past the ring time, or without a sign of life; at start-up every stale one, as failed.
+  if (active()) await deps.sweepCalls(true).catch(error => log.error('CALLS', 'Could not end stale calls', error));
+  every('CALLS', 5 * 1000, () => deps.sweepCalls());
 
   // A process restart cannot resume an IMAP connection; rescan safely using
   // completed local imports. Accepted provider changes stay durable jobs.

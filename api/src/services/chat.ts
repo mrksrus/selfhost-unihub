@@ -2,7 +2,7 @@ import type { ResultSetHeader, RowDataPacket } from 'mysql2/promise';
 import type { SqlExecutor } from '../types';
 import type {
   ChatArchiveEntry, ChatConversation, ChatGroupStaleDetails, ChatMarksResponse, ChatMember, ChatMessage, ChatMessagesResponse, ChatNotify, ChatPeer,
-  ChatRetentionDays, ChatSender, ChatTooManyPeopleDetails, ChatWelcome, ChatCandidatesResponse,
+  ChatRetentionDays, ChatSender, ChatTooManyPeopleDetails, ChatWelcome, ChatCandidatesResponse, ChatCallEntry,
 } from '../contracts/chat';
 import type { Principal } from '../contracts/organisation';
 
@@ -83,6 +83,9 @@ const chatAdmin = async (userId: string, executor: SqlExecutor) => {
   const [[row]] = await executor.execute<RowDataPacket[]>('SELECT role FROM users WHERE id = ?', [userId]);
   return roleCan(row?.role, 'chat.manage');
 };
+// What counts as unread: a message, and a call the person missed (its caller is the sender, so never the caller's own).
+const UNREAD_KIND = `((m.kind = 'message' AND m.replaces IS NULL AND m.ciphertext IS NOT NULL)
+  OR (m.kind = 'call' AND EXISTS (SELECT 1 FROM chat_calls k WHERE k.message_id = m.id AND k.outcome IN ('missed', 'cancelled', 'busy'))))`;
 // A person in a group chat without a marks row has not joined yet: their messages start at the conversation's end.
 const JOINED = "IF(me.user_id IS NULL AND c.kind = 'group', c.last_seq, COALESCE(me.joined_seq, 0))";
 
@@ -132,7 +135,7 @@ async function describeConversations(userId: string, ids: readonly string[], exe
       (SELECT MAX(m.created_at) FROM chat_messages m WHERE m.conversation_id = c.id) AS last_activity_at,
       COALESCE(me.read_seq, 0) AS read_seq, COALESCE(me.delivered_seq, 0) AS delivered_seq, ${JOINED} AS joined_seq, COALESCE(me.notify, 'all') AS notify,
       COALESCE(peer.read_seq, 0) AS peer_read_seq, COALESCE(peer.delivered_seq, 0) AS peer_delivered_seq,
-      (SELECT COUNT(*) FROM chat_messages m WHERE m.conversation_id = c.id AND m.kind = 'message' AND m.replaces IS NULL AND m.ciphertext IS NOT NULL
+      (SELECT COUNT(*) FROM chat_messages m WHERE m.conversation_id = c.id AND ${UNREAD_KIND}
         AND m.seq > GREATEST(COALESCE(me.read_seq, 0), ${JOINED}) AND NOT (m.sender_user_id <=> ?)) AS unread
     FROM chat_conversations c
     LEFT JOIN chat_members me ON me.conversation_id = c.id AND me.user_id = ?
@@ -495,10 +498,10 @@ async function confirmJoined(userId: string, token: string | null, groupId: stri
 
 const MESSAGE_COLUMNS = 'id, seq, group_id, sender_user_id, sender_chat_device_id, kind, replaces, format, ciphertext, created_at';
 const toMessage = (row: RowDataPacket): ChatMessage => ({
-  id: String(row.id), seq: Number(row.seq), group_id: String(row.group_id),
+  id: String(row.id), seq: Number(row.seq), group_id: row.group_id === null ? null : String(row.group_id),
   sender_user_id: row.sender_user_id ? String(row.sender_user_id) : null,
   sender_chat_device_id: row.sender_chat_device_id ? String(row.sender_chat_device_id) : null,
-  kind: row.kind === 'delete' ? 'delete' : 'message', replaces: row.replaces ? String(row.replaces) : null,
+  kind: row.kind === 'delete' || row.kind === 'call' ? row.kind : 'message', replaces: row.replaces ? String(row.replaces) : null,
   format: Number(row.format), ciphertext: row.ciphertext === null ? null : String(row.ciphertext), created_at: utcIso(row.created_at),
 });
 
@@ -597,6 +600,8 @@ async function fetchMessages(userId: string, token: string | null, conversationI
     JOIN chat_group_devices gd ON gd.group_id = g.id AND gd.chat_device_id = ?
     WHERE g.conversation_id = ? AND gd.joined_at IS NULL AND g.welcome IS NOT NULL ORDER BY g.created_at, g.id`, [own, conversationId]) : [[]];
   const messages = rows.slice(0, limit).map(toMessage);
+  const entries = await callEntries(messages.flatMap(item => item.kind === 'call' ? [item.id] : []));
+  for (const item of messages) if (entries.has(item.id)) item.call = entries.get(item.id);
   const senderIds = [...new Set(messages.flatMap(item => item.sender_user_id ? [item.sender_user_id] : []))];
   const [senders] = senderIds.length ? await db.execute<RowDataPacket[]>(`SELECT id, COALESCE(NULLIF(full_name, ''), email) AS name, is_active FROM users
     WHERE id IN (${placeholders(senderIds)}) ORDER BY id`, senderIds) : [[]];
@@ -606,6 +611,17 @@ async function fetchMessages(userId: string, token: string | null, conversationI
     senders: senders.map((row): ChatSender => ({ user_id: String(row.id), name: String(row.name), active: !!row.is_active })),
     last_seq: Number(conversation.last_seq), more: rows.length > limit,
   };
+}
+
+/** The calls of these 'call' entries, by message id. */
+async function callEntries(messageIds: readonly string[]): Promise<Map<string, ChatCallEntry>> {
+  if (!messageIds.length) return new Map();
+  const [rows] = await db.execute<RowDataPacket[]>(`SELECT id, message_id, outcome, caller_user_id, callee_user_id, created_at, answered_at, ended_at FROM chat_calls
+    WHERE message_id IN (${messageIds.map(() => '?').join(', ')})`, [...messageIds]);
+  return new Map(rows.map(row => [String(row.message_id), {
+    call_id: String(row.id), outcome: row.outcome, caller_user_id: row.caller_user_id ? String(row.caller_user_id) : null,
+    callee_user_id: row.callee_user_id ? String(row.callee_user_id) : null, started_at: utcIso(row.created_at), answered_at: row.answered_at ? utcIso(row.answered_at) : null, ended_at: utcIso(row.ended_at),
+  }]));
 }
 
 /**
@@ -679,7 +695,7 @@ async function storeArchive(userId: string, input: unknown) {
   for (const [messageId, sealed] of parsed) {
     // A locking read: a deletion that ran first leaves no ciphertext to copy.
     const [insert] = await db.execute<ResultSetHeader>(`INSERT IGNORE INTO chat_archive (user_id, message_id, sealed)
-      SELECT ?, id, ? FROM chat_messages WHERE id = ? AND kind = 'message' AND ciphertext IS NOT NULL AND conversation_id IN (${placeholders(reached)})`,
+      SELECT ?, id, ? FROM chat_messages WHERE id = ? AND ((kind = 'message' AND ciphertext IS NOT NULL) OR kind = 'call') AND conversation_id IN (${placeholders(reached)})`,
     [userId, sealed, messageId, ...reached]);
     stored += insert.affectedRows;
   }
@@ -760,7 +776,7 @@ realtime.onPresence(presenceChanged);
 
 export type { ChatNotificationSource };
 export {
-  listConversations, startConversation, createGroup, confirmJoined, postMessage, fetchMessages, deleteMessage, moveMarks,
+  peerState, otherOf, listConversations, startConversation, createGroup, confirmJoined, postMessage, fetchMessages, deleteMessage, moveMarks,
   storeArchive, listArchive, notificationSource, previewFor,
   renameChat, addChatMembers, removeChatMember, leaveChat, unfollowChat, unfollowDeletedGroup, followedGroupChanged, chatMembers, setNotify, chatCandidates,
 };

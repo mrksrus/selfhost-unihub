@@ -7,7 +7,7 @@ import type { DeviceLockState } from './devices';
 import crypto from 'crypto';
 import { db } from '../state';
 import { CHAT_MANIFEST } from '../modules/chat';
-import { appLockShortfall, currentDevice, deviceLockFor, lockCovers } from './devices';
+import { appLockShortfall, currentDevice, deviceLockFor, lockCovers, ringsForCalls } from './devices';
 import { ApiError, badRequest } from '../http/errors';
 import { isModuleBackgroundEnabled } from './module-settings';
 import { getActiveRestoreSectionsByUser } from './restore-locks';
@@ -166,6 +166,8 @@ interface SourceKind<S> {
   expiresAt(source: S, payload: NotificationPayload, now: number): Date;
   /** Sent only to devices that joined Chat. */
   joinedChatDevices?: true;
+  /** Sent only to Android apps that ring for a call (their device reported the capability calls). */
+  ringingDevices?: true;
 }
 interface FixedKind {
   module: 'recordings' | 'mail' | 'chat' | null;
@@ -294,6 +296,8 @@ const newCalendarItem = (title: string) => defineSourceKind<CalendarSource>({
 });
 
 const chat = () => require('./chat') as typeof import('./chat');
+const calls = () => require('./chat-calls') as typeof import('./chat-calls');
+const callLevel = async (userId: string, _call: unknown, connection: SqlExecutor) => (await settingValues('user', userId, userId, connection)).chat_notification_detail;
 // A group chat names itself; a direct one is its sender.
 const chatTitle = ({ sender, chat: name, mentioned }: import('./chat').ChatNotificationSource) =>
   name === null ? sender : mentioned ? `${sender} mentioned you in ${name}` : `${sender} in ${name}`;
@@ -366,6 +370,23 @@ const KINDS: Readonly<Record<string, KindSpec>> = Object.freeze({
     },
     deviceContent: (payload, deviceId, connection) => chat().previewFor(payload, deviceId, connection),
     expiresAt: (_message, _payload, now) => new Date(now + DAY_MS),
+    joinedChatDevices: true,
+  }),
+  // A call rings on the callee's phones, or stops ringing there (chat-calls.ts).
+  // The app hands it to Android's call handling, which shows the title as the caller.
+  call: defineSourceKind<import('./chat-calls').CallNotice>({
+    module: 'chat', load: (userId, callId, connection, payload) => calls().callNotice(userId, callId, connection, payload), level: callLevel,
+    render: { full: call => ({ title: call.caller, body: 'Incoming call' }), sender: call => ({ title: call.caller, body: 'Incoming call' }), none: () => ({ title: 'Incoming call', body: '' }) },
+    expiresAt: (call, payload, now) => new Date((payload.call as { event?: unknown } | undefined)?.event === 'ring' ? call.ringsUntil : now + 15000),
+    joinedChatDevices: true,
+    ringingDevices: true,
+  }),
+  // A call the person missed, until its entry in the chat is read.
+  call_missed: defineSourceKind<import('./chat-calls').CallNotice>({
+    module: 'chat', load: (userId, callId, connection, payload) => calls().callNotice(userId, callId, connection, payload, true), level: callLevel,
+    render: { full: call => ({ title: `Missed call from ${call.caller}`, body: '' }), sender: call => ({ title: `Missed call from ${call.caller}`, body: '' }),
+      none: () => ({ title: 'Missed call', body: '' }) },
+    expiresAt: (_call, _payload, now) => new Date(now + DAY_MS),
     joinedChatDevices: true,
   }),
   // A waiting chat device of the person asks to be approved (chat-devices.ts),
@@ -469,11 +490,14 @@ async function currentPayload(row: EventRow, payload: NotificationPayload, conne
 }
 // A subscription of a device that joined Chat, for the kinds sent only to those.
 const JOINED_CHAT_DEVICE = 'EXISTS (SELECT 1 FROM chat_devices cd WHERE cd.device_id = p.device_id AND cd.user_id = p.user_id AND cd.approved_at IS NOT NULL)';
+// The app of an Android device that can ring for a call.
+const RINGING_DEVICE = `p.transport = 'android' AND ${ringsForCalls('p.device_id')}`;
 // The user's devices that can still be reached: subscriptions of live sessions.
 async function subscribedDevices(userId: string, connection: SqlExecutor, endpointHash: string | null = null, kind: string | null = null) {
   const [devices] = await connection.execute<RowDataPacket[]>(`SELECT p.id FROM push_subscriptions p JOIN sessions s ON s.id = p.session_id AND s.user_id = p.user_id
     JOIN users u ON u.id = p.user_id WHERE p.user_id = ? AND s.expires_at > UTC_TIMESTAMP() AND u.is_active = TRUE
-    ${endpointHash ? 'AND p.endpoint_hash = ?' : ''} ${kind && kindOf(kind)?.joinedChatDevices ? `AND ${JOINED_CHAT_DEVICE}` : ''}`, endpointHash ? [userId, endpointHash] : [userId]);
+    ${endpointHash ? 'AND p.endpoint_hash = ?' : ''} ${kind && kindOf(kind)?.joinedChatDevices ? `AND ${JOINED_CHAT_DEVICE}` : ''}
+    ${kind && (kindOf(kind) as SourceKind<unknown> | null)?.ringingDevices ? `AND ${RINGING_DEVICE}` : ''}`, endpointHash ? [userId, endpointHash] : [userId]);
   return devices as { id: string }[];
 }
 async function queueDeliveries(eventId: string, devices: { id: string }[], connection: SqlExecutor) {
@@ -501,11 +525,12 @@ async function enqueueEvent({ userId, dedupeKey, kind, sourceId = null, title, b
 }
 // The source stage of a source kind: the event is queued only when its
 // filters let it through, with the text of its level.
-async function enqueueFromSource({ kind: kindId, userId, sourceId, dedupeKey, url, data = {}, held = false, source, now = Date.now() }:
-  { kind: string; userId: string; sourceId: string; dedupeKey: string; url: string; data?: Record<string, unknown>; held?: boolean; source?: unknown; now?: number }, connection: SqlExecutor) {
+async function enqueueFromSource({ kind: kindId, userId, sourceId, dedupeKey, url, data = {}, held = false, source, now = Date.now(), endpointHash = null }:
+  { kind: string; userId: string; sourceId: string; dedupeKey: string; url: string; data?: Record<string, unknown>; held?: boolean; source?: unknown; now?: number; endpointHash?: string | null },
+  connection: SqlExecutor) {
   const kind = kindOf(kindId);
   if (!kind || !isSourceKind(kind)) throw new Error(`Not a notification source kind: ${kindId}`);
-  return enqueueEvent({ userId, dedupeKey, kind: kindId, sourceId, url, data, held, expiresAt: new Date(now) }, connection, async () => {
+  return enqueueEvent({ userId, dedupeKey, kind: kindId, sourceId, url, data, held, endpointHash, expiresAt: new Date(now) }, connection, async () => {
     const payload: NotificationPayload = { dedupeKey, ...data };
     const prepared = await prepare(kind, userId, sourceId, payload, connection, { source, now });
     return prepared && { ...prepared.rendering, expiresAt: kind.expiresAt(prepared.source, payload, now) };
