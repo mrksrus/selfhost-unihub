@@ -42,8 +42,8 @@ export function androidApp(userAgent = typeof navigator === 'undefined' ? '' : n
 /**
  * The messages the app's bridge understands (MainActivity.BRIDGE_LEVEL, sent
  * as "UniHubBridge/<level>" in the user agent): 1 for apps up to 0.24, which do
- * not say, 2 from 0.25 (file actions), 3 from 0.29 (the app lock), 4 from 0.34
- * (Open with and Share of a file the page made). 0 outside the app.
+ * not say, 2 from 0.25 (file actions), then 3 (the app lock) and 4 (Open with
+ * and Share of a file the page made). 0 outside the app.
  */
 export function appBridgeLevel(userAgent = typeof navigator === 'undefined' ? '' : navigator.userAgent) {
   if (!androidApp(userAgent)) return 0;

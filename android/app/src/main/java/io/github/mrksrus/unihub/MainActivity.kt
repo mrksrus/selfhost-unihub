@@ -1117,7 +1117,7 @@ class MainActivity : Activity() {
         // 1 up to 0.24 (files from the page, downloads, theme, notifications),
         // 2 from 0.25 (fileAction: open with, save, share with a download ticket),
         // 3 from 0.29 (appLock: the app lock with the phone's own unlock),
-        // 4 from 0.34 (saveFileStart's target: Open with and Share of a file the page made).
+        // 4: saveFileStart's target, Open with and Share of a file the page made.
         const val BRIDGE_LEVEL = 4
         private const val COVER_LOCK = 1
         /** Debug builds only: the cover going up and down and the page's first visible content, in order (tools/e2e/android/app-lock-bridge.test.mjs). */
