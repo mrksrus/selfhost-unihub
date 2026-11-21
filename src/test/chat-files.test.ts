@@ -118,6 +118,16 @@ describe('sending files', { timeout: 60_000 }, () => {
     expect(server.state.downloads).toBe(before + 1);
     expect(await blair.as(engine => engine.picturePreview(received.id, received.files[1].id))).toBeNull();
     expect(blair.as(engine => engine.search('minutes.p')).map(hit => hit.line)).toEqual(['Minutes.pdf']);
+
+    // Deleted for both: neither device keeps the picture's preview, nor the files' names and keys.
+    const kept = (on: Tab) => context.run(on.browser, async () => {
+      const store = await ChatStore.open(on.browser.userId);
+      try { return { previews: (await store.all('previews')).length, files: (await store.all<{ files?: unknown }>('messages')).filter(record => record.files).length }; } finally { store.close(); }
+    });
+    expect([await kept(again), await kept(blair)]).toEqual([{ previews: 1, files: 1 }, { previews: 1, files: 1 }]);
+    await again.as(engine => engine.delete(sent.id));
+    await blair.as(engine => engine.sync());
+    expect([await kept(again), await kept(blair)]).toEqual([{ previews: 0, files: 0 }, { previews: 0, files: 0 }]);
   });
 
   it('a file above the limit fails with the limit in words and is sent with its message on retry; uploads older than the server keeps are made again', async () => {

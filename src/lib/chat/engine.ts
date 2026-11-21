@@ -109,8 +109,9 @@ const dropPreviews = (transaction: IDBTransaction, records: Stored[]) =>
 /** Puts a record unless the store holds a readable one and this one is not (a restore or another tab came first). */
 function putRecord(transaction: IDBTransaction, record: Stored) {
   const messages = transaction.objectStore('messages');
-  if (record.deleted) dropPreviews(transaction, [record]);
-  if (record.text !== null || record.deleted) { messages.put(record); return; }
+  // A deleted message keeps no file names or keys; its previews go first, while the record still names them.
+  if (record.deleted) { dropPreviews(transaction, [record]); messages.put({ ...record, files: undefined }); return; }
+  if (record.text !== null) { messages.put(record); return; }
   const existing = messages.get(record.id);
   existing.onsuccess = () => { if ((existing.result as Stored | undefined)?.text == null) messages.put(record); };
 }
@@ -591,7 +592,7 @@ class Engine implements ChatEngine {
     };
     if (message.kind === 'delete') {
       const gone = [...this.messages.values()].filter(item => item.id === message.replaces || item.replaces === message.replaces);
-      await this.keep(null, () => gone.map(item => ({ ...item, text: null, files: undefined, deleted: true })), next);
+      await this.keep(null, () => gone.map(item => ({ ...item, text: null, deleted: true })), next);
       await this.dropOutgoing(item => item.replaces === message.replaces);
       return;
     }
@@ -902,7 +903,7 @@ class Engine implements ChatEngine {
     }
     await chatApi.delete(messageId);
     const gone = [...this.messages.values()].filter(item => item.id === messageId || item.replaces === messageId);
-    await this.keep(null, () => gone.map(item => ({ ...item, text: null, files: undefined, deleted: true })));
+    await this.keep(null, () => gone.map(item => ({ ...item, text: null, deleted: true })));
     await this.dropOutgoing(item => item.replaces === messageId);
     this.channel?.postMessage('changed');
     void this.sync().catch(() => undefined);

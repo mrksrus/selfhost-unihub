@@ -153,7 +153,7 @@ export function ChatThread({ engine, conversation, draft, onDraft }: Props) {
       style={phone ? { top: 'var(--visible-top, 0px)', height: 'var(--visible-height, 100dvh)' } : undefined}
       onDragOver={event => { if (peer.can_write && event.dataTransfer.types.includes('Files')) { event.preventDefault(); setDragging(true); } }}
       onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDragging(false); }}
-      onDrop={event => { if (!peer.can_write || !event.dataTransfer.files.length) return; event.preventDefault(); setDragging(false); attach.current([...event.dataTransfer.files]); field.current?.focus(); }}>
+      onDrop={event => { setDragging(false); if (!peer.can_write || !event.dataTransfer.files.length) return; event.preventDefault(); attach.current([...event.dataTransfer.files]); field.current?.focus(); }}>
       {dragging && <p aria-hidden="true" className="pointer-events-none absolute inset-2 z-10 flex items-center justify-center rounded-lg border-2 border-dashed border-accent bg-background/90 text-sm font-medium">Drop the files to attach them</p>}
       {/* As high as its lines need: a chat can say more under its name. */}
       <header className="flex min-h-14 shrink-0 items-center gap-3 border-b border-border px-2 py-1.5 lg:px-4">
