@@ -67,7 +67,9 @@ The build records installed package versions in `/app/licenses/alpine-packages.t
 and FFmpeg's own license report in `/app/licenses/ffmpeg-license.txt`.
 
 coturn, the relay for calls, is BSD-3-Clause; its license text is in
-`licenses/third-party/coturn-BSD-3-Clause.txt`.
+`licenses/third-party/coturn-BSD-3-Clause.txt`. Its program comes from the
+coturn project's own image (`coturn/coturn`, the version the Dockerfile
+names), so it is not in `alpine-packages.txt`; the libraries it uses are.
 
 The 0.10 release build uses Alpine 3.24 and FFmpeg 8.1.2-r0. That FFmpeg binary is
 built with `--enable-gpl` and `--enable-version3`, including x264/x265 support;
