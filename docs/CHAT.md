@@ -384,7 +384,8 @@ starts one.
   list. Everything else, an SVG or HTML file included, is only saved, never
   opened in the page. A saved file is whatever the sender sent: treat it as
   you would an email attachment. In the Android app, Save puts the file in
-  Downloads.
+  Downloads, and Open with and Share hand it to another app
+  ([below](#the-android-app)).
 - **Voice messages.** The microphone beside the field records with the
   browser's own recorder, up to 10 minutes; the recording then stops by
   itself and waits among the files to send. The browser asks for the
@@ -559,7 +560,12 @@ Delivery details are in [PWA](PWA.md#enable-notifications) and
   own, "Chat messages".
 - **Chat in the app lock.** Chat is one of the modules the app lock covers.
 - **Files.** The page decrypts a chat file and hands it to the app, which
-  saves it to Downloads; nothing outside the page fetches it.
+  saves it to Downloads or gives Android's Open with or Share sheet a copy;
+  nothing outside the page fetches it. The app you pick can read that one
+  copy, under the name and type its sender chose; the copy is deleted after
+  six hours and at sign-out, and an app package is never offered to
+  Android's installer ([Android app](ANDROID.md#files-for-other-apps)). An
+  app from before 0.34 has Save only.
 - **An app from before 0.33** keeps working with Chat (the page is the
   server's) but shows "New message" without text, does not block
   screenshots in Chat and cannot lock Chat: it locks the other modules, and

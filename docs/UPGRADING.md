@@ -25,6 +25,8 @@ instance backup gains the file root `chat` for chat files.
   ([Installation](INSTALLATION.md#1-prepare-your-server-and-browser-address)
   has the two lines for Nginx Proxy Manager). UniHub's own Nginx needs no
   change.
+- **Android app.** Open with and Share for a chat file need the 0.34.0 app;
+  an older app keeps working and saves chat files to Downloads.
 
 ## 0.33.0 Chat
 

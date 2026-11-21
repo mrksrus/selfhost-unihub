@@ -140,7 +140,7 @@ for shared copies, and hands Android's sheet the type if it is well formed
 (else the extension's). Open with never names an app package: such a file, a
 mail attachment too, goes to the sheet as a plain file, so Android's
 installer is not offered for a file someone sent. The copy is kept and deleted like the copies above,
-and a hand-over that breaks off or ends with the session leaves none.
+and a hand-over that is cancelled, fails or ends with the session leaves none.
 UniHub declares no activity for files, so the sheet never offers UniHub
 itself, and the chosen app gets read access to that one copy. Chat's
 screenshot block stays on; handing a file to another app is the person's
