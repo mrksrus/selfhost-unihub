@@ -27,6 +27,8 @@ export JWT_SECRET="${JWT_SECRET:-ci-test-jwt-secret-for-container-smoke}"
 image="${UNIHUB_SMOKE_IMAGE:-unihub:ci}"
 container_name="unihub-smoke-${GITHUB_RUN_ID:-local}-${RANDOM}"
 volume_name="${container_name}-uploads"
+turn_secret="$(node -e 'console.log(require("node:crypto").randomBytes(48).toString("base64"))')"
+turn_secret_file="$(mktemp)"
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 cleanup() {
@@ -37,6 +39,7 @@ cleanup() {
   docker logs --tail 60 "${container_name}-variant" 2>&1 || true
   docker rm -f "$container_name" "${container_name}-nginx" "${container_name}-variant" >/dev/null 2>&1 || true
   docker volume rm "$volume_name" >/dev/null 2>&1 || true
+  rm -f "$turn_secret_file"
   exit "$status"
 }
 trap cleanup EXIT
@@ -83,7 +86,7 @@ docker run -d --name "$container_name" --network host \
   -e "MYSQL_DATABASE=$MYSQL_TEST_DATABASE" -e "MYSQL_USER=$MYSQL_TEST_USER" -e "MYSQL_PASSWORD=$MYSQL_TEST_PASSWORD" \
   -e BOOTSTRAP_ADMIN_EMAIL -e BOOTSTRAP_ADMIN_PASSWORD -e ENCRYPTION_KEY -e BACKUP_MASTER_KEY -e JWT_SECRET \
   -e 'MYSQL_STARTUP_MAX_WAIT_SECONDS=60' -e 'MYSQL_STARTUP_CHECK_INTERVAL_SECONDS=2' \
-  -e 'UNIHUB_API_START_DELAY_SECONDS=3' "$image" >/dev/null
+  -e 'UNIHUB_API_START_DELAY_SECONDS=3' -e "TURN_SECRET=$turn_secret" "$image" >/dev/null
 
 ready=0
 for ((attempt=0; attempt<90; attempt++)); do
@@ -136,6 +139,23 @@ for(const target of ["/app/uploads","/app/uploads/legacy-smoke","/app/uploads/le
 if(fs.lstatSync("/app/uploads/legacy-smoke/link").uid!==10001)throw new Error("Symlink in uploads was not handed over");
 if(fs.statSync("/etc/passwd").uid!==0)throw new Error("Ownership change followed a symlink out of uploads");
 console.log("API runs as uid/gid 10001 without capabilities; uploads handed over");'
+# The relay for calls, started as root, drops to the API user like the API.
+docker exec "$container_name" node -e '
+const fs=require("node:fs");const pid=fs.readdirSync("/proc").find(name=>{try{return fs.readFileSync(`/proc/${name}/comm`,"utf8").trim()==="turnserver"}catch{return false}});
+if(!pid)throw new Error("The relay for calls is not running");const status=fs.readFileSync(`/proc/${pid}/status`,"utf8");
+const field=name=>(new RegExp(`^${name}:[ \t]*(.*)$`,"m").exec(status)||[])[1]?.trim().split(/\s+/).filter(Boolean)||[];
+if(![...field("Uid"),...field("Gid")].every(id=>id==="10001")||field("Groups").length)throw new Error(`The relay must run as 10001 without groups: ${field("Uid")} ${field("Gid")} ${field("Groups")}`);
+if(BigInt("0x"+field("CapEff")[0])!==0n||BigInt("0x"+field("CapPrm")[0])!==0n)throw new Error("The relay must not hold capabilities");
+console.log("The relay for calls runs as uid/gid 10001 without capabilities")'
+[[ "$startup_log" == *'TURN_SECRET is set without TURN_URLS'* ]] || { echo 'A relay secret without TURN_URLS must be warned about.' >&2; exit 1; }
+# Peers the relay must refuse: loopback (also IPv4-mapped), the API's port,
+# this host's own address and the database's. Host networking: the
+# container's addresses are the runner's.
+own_ip="$(hostname -I | awk '{ print $1 }')"
+db_container="$(docker ps --quiet --filter publish=3306 | head -n 1)"
+db_ip="$([[ -z "$db_container" ]] || docker inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}' "$db_container" | awk '{ print $1 }')"
+RELAY_SECRET="$turn_secret" RELAY_REFUSE="127.0.0.1 127.0.0.1:4000 ::ffff:127.0.0.1 $own_ip $own_ip:4000 ${db_ip:+$db_ip:3306}" \
+  RELAY_ALLOW=203.0.113.5 node "$script_dir/relay-smoke.mts"
 docker exec "$container_name" ffmpeg -version
 docker exec "$container_name" node -e 'const fs=require("node:fs");for(const name of ["LICENSE","LICENSING.md","THIRD_PARTY_NOTICES.md","frontend-dependency-notices.txt","crypto-dependency-notices.txt","alpine-packages.txt","ffmpeg-license.txt"]){if(!fs.statSync("/app/licenses/"+name).size)throw Error("Empty license notice: "+name)}'
 [[ "$(docker inspect --format '{{index .Config.Labels "org.opencontainers.image.licenses"}}' "$container_name")" == 'PolyForm-Noncommercial-1.0.0' ]]
@@ -210,6 +230,9 @@ docker exec -i -u 10001:10001 -e UNIHUB_API_ROOT=/app/api \
 container_log="$(docker logs "$container_name" 2>/dev/null)"
 [[ "$container_log" == *'"GET / HTTP/1.1" 200 '* ]] || { echo 'Nginx access log lines did not reach the container log.' >&2; exit 1; }
 docker exec "$container_name" sh -c '! ls /var/log/nginx/*.log 2>/dev/null' || { echo 'Nginx wrote log files under /var/log/nginx.' >&2; exit 1; }
+[[ "$container_log" == *'Coturn Version'* ]] && docker exec "$container_name" sh -c '! ls /var/log/turn*.log /var/tmp/turn*.log /tmp/turn*.log 2>/dev/null' \
+  || { echo 'The relay for calls must log to the container log, not to files.' >&2; exit 1; }
+[[ "$(docker logs "$container_name" 2>&1)" != *"$turn_secret"* ]] || { echo 'The relay secret appeared in the container log.' >&2; exit 1; }
 # Graceful stop: with cap_drop ALL the root supervisor cannot signal the API
 # user, so shutdown goes through the IPC channel. It must finish well inside
 # Docker's grace period (no SIGKILL) and exit 0.
@@ -300,11 +323,17 @@ for refused in 04000 70000 8080x; do
 done
 # A port above 1023 needs no NET_BIND_SERVICE. 4000 is the API's own port
 # inside the container: Nginx gets it and the API moves to 4001.
-start_variant 4000 --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add SETGID --cap-add SETUID
+start_variant 4000 --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add SETGID --cap-add SETUID -e TURN_URLS=turn:localhost:3478
+# TURN_URLS without a secret: a warning, and nothing listens on the relay's port.
+[[ "$(docker logs "${container_name}-variant" 2>&1)" == *'TURN_URLS is set without TURN_SECRET'* ]] || { echo 'TURN_URLS without a secret must be warned about.' >&2; exit 1; }
+node "$script_dir/relay-smoke.mts"
 stop_variant
 docker run --rm --network none --entrypoint chown \
   --mount "type=volume,source=$volume_name,target=/app/uploads" "$image" -R -h 568:568 /app/uploads
-start_variant 8568 --user 568:568
+# This start also runs the relay, from a secret file, with private peers allowed.
+printf '%s\n' "$turn_secret" > "$turn_secret_file" && chmod 644 "$turn_secret_file"
+start_variant 8568 --user 568:568 --mount "type=bind,source=$turn_secret_file,target=/run/turn-secret,readonly" \
+  -e TURN_SECRET_FILE=/run/turn-secret -e TURN_URLS=turn:localhost:3478 -e TURN_ALLOW_PRIVATE_PEERS=true
 docker exec "${container_name}-variant" node -e '
 const fs=require("node:fs");let count=0;
 for(const pid of fs.readdirSync("/proc").filter(name=>/^\d+$/.test(name))){
@@ -329,5 +358,16 @@ if [[ "$variant_log" == *'Permission denied'* || "$variant_log" == *'[emerg]'* |
   echo 'Started as --user 568:568, the container logged a permission or Nginx startup error.' >&2
   exit 1
 fi
-stop_variant
-echo 'Container smoke passed: startup, non-root API and uploads handover, health, security headers, Android app download, authentication, isolation, malformed requests, audio, contact photo and encrypted backup round-trips, graceful stop, essential-service recovery, API-down answers, and starts on another port and as another user.'
+# Private peers allowed: the database is reachable, this host's own addresses still are not.
+RELAY_SECRET="$turn_secret" RELAY_REFUSE="127.0.0.1:4000 $own_ip $own_ip:4000" RELAY_ALLOW="203.0.113.5 ${db_ip}" node "$script_dir/relay-smoke.mts"
+# The relay's end ends the container, as the API's does.
+docker exec "${container_name}-variant" sh -c 'kill -TERM "$(pidof turnserver)"'
+for ((attempt=0; attempt<20; attempt++)); do
+  [[ "$(docker inspect --format '{{.State.Running}}' "${container_name}-variant")" == false ]] && break
+  sleep 1
+done
+[[ "$(docker inspect --format '{{.State.Running}}' "${container_name}-variant")" == false ]] || { echo 'The container stayed running after the relay stopped.' >&2; exit 1; }
+[[ "$(docker logs "${container_name}-variant" 2>&1)" == *'The relay for calls stopped'* ]] || { echo 'The relay stopping was not reported.' >&2; exit 1; }
+# The supervisor stopped the API and Nginx as on docker stop.
+[[ "$(docker inspect --format '{{.State.ExitCode}}' "${container_name}-variant")" == 0 ]] || { echo 'The container did not stop cleanly after the relay stopped.' >&2; exit 1; }
+echo 'Container smoke passed: startup, non-root API and uploads handover, health, security headers, Android app download, authentication, isolation, malformed requests, audio, contact photo and encrypted backup round-trips, graceful stop, essential-service recovery, API-down answers, starts on another port and as another user, and the relay for calls (refusing internal peers, off without a secret).'
