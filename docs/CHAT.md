@@ -33,9 +33,9 @@ The server does see, and keeps:
   that it can notify them; the server keeps this in each person's queued
   notification until that is cleaned up;
 - **files**: how many a message carries, each file's size, chat, uploader
-  and upload time. The server cannot tell a picture's preview or a voice
-  message from any other file, but a file's size hints at what it is, such
-  as how long a recording is;
+  and upload time. The server is not told which file is a picture's preview
+  or a voice message, but sizes and upload times hint at both, as at how
+  long a recording is;
 - each person's devices that take part in Chat, their read and delivered
   marks, and who has a UniHub page open (presence);
 - **each person's notification choice per chat**, and that a notification
@@ -201,7 +201,7 @@ MLS deletes old keys on purpose, so a new device cannot open old
 ciphertext. Chat's history is a personal archive instead: each device seals
 every message it sends or reads to its person's **history key** and uploads
 that copy. The server stores one copy per person and message, so a message
-in a chat of 50 people is stored once as the MLS message and 50 times as
+in a chat of 50 people is stored once as the MLS message and up to 50 times as
 archive copies, each sealed to one person. A copy holds the message's file
 keys too, so the history also opens the files that are still on the server.
 
@@ -267,7 +267,8 @@ starts one.
   administrators who are in it manage it: they rename it, or stop
   following, after which it is a chat of the people it has at that moment,
   managed by whoever stopped it. Deleting the organisation group does the
-  same, and leaves the chat without a manager of its own. A chat of chosen
+  same, and leaves the chat without a manager of its own: its
+  longest-standing active member then manages it. A chat of chosen
   people whose managers are all
   gone or deactivated is managed by its longest-standing active member (of
   people added at the same moment, the one with the lowest id). There is no
@@ -424,7 +425,8 @@ stricter, so a group's rule holds for its members when it is shorter.
 Settings › Chat tells each person how long their messages are kept.
 
 - **One time per chat.** A message is one row for all its readers, so a chat
-  follows the shortest time among its active people. A message's age counts
+  follows the shortest time among its active people (someone with Chat off
+  counts; a deactivated person does not). A message's age counts
   from when it was sent; an edit does not renew it.
 - **Deleting starts 24 hours later.** Whenever a chat's time gets shorter,
   deleting under the new time starts 24 hours later: after a rule is saved,

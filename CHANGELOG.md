@@ -65,7 +65,7 @@ chat, who was mentioned and how large each file is.
   Settings › Chat tells each person how long their messages are kept and
   how large a file they can send.
 - **Chat retention waits 24 hours and warns.** A chat follows the shortest
-  time among its people, and deleting starts 24 hours after a chat's time
+  time among its active people, and deleting starts 24 hours after a chat's time
   got shorter, also when someone under a shorter rule joins. Saving a
   shorter rule shows how many messages and files it would delete and needs
   the typed word DELETE besides the password; everyone it reaches gets the

@@ -19,8 +19,9 @@ instance backup gains the file root `chat` for chat files.
 
 - **Reverse proxy.** A file sent in a chat is one upload of up to 100 MB. A
   proxy in front of UniHub must allow request bodies of at least 101 MB on
-  `/api/chat/conversations/<id>/attachments`, and should not buffer them,
-  or larger chat files fail
+  `/api/chat/conversations/<id>/attachments`, or larger chat files fail,
+  and should pass them on unbuffered so the progress shown while sending is
+  right
   ([Installation](INSTALLATION.md#1-prepare-your-server-and-browser-address)
   has the two lines for Nginx Proxy Manager). UniHub's own Nginx needs no
   change.
