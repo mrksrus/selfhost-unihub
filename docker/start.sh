@@ -103,10 +103,11 @@ if [ -n "$turn_secret" ]; then
   turn_dir=/tmp/unihub-turn
   rm -rf "$turn_dir" && mkdir -m 700 -p "$turn_dir" || exit 1
   # Peers the relay never sends to: this network, loopback, link-local,
-  # multicast and reserved, IPv4-compatible IPv6, and every address of the
-  # container itself. Ranges stay prefix-aligned, as coturn compares IPv6 ranges byte by byte.
+  # multicast and reserved, and every address of the container itself.
+  # Ranges stay prefix-aligned, as coturn compares IPv6 ranges byte by byte,
+  # and none starts at ::, which coturn reads as open below (every IPv4 peer).
   turn_denied="0.0.0.0-0.255.255.255 127.0.0.0-127.255.255.255 169.254.0.0-169.254.255.255 224.0.0.0-255.255.255.255
-    ::-::ffff:ffff fe80::-feff:ffff:ffff:ffff:ffff:ffff:ffff:ffff ff00::-ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff
+    ::1 fe80::-feff:ffff:ffff:ffff:ffff:ffff:ffff:ffff ff00::-ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff
     $(awk '/\/32 host LOCAL/ { print last } { last = $2 }' /proc/net/fib_trie 2>/dev/null | sort -u)
     $(sed 's/^\(....\)\(....\)\(....\)\(....\)\(....\)\(....\)\(....\)\(....\) .*/\1:\2:\3:\4:\5:\6:\7:\8/' /proc/net/if_inet6 2>/dev/null)"
   # Private networks and carrier-grade NAT, unless everyone calls from one private network or VPN.
