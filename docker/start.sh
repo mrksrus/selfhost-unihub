@@ -79,11 +79,11 @@ turn_secret="${TURN_SECRET:-}"
 if [ -n "${TURN_SECRET_FILE:-}" ]; then
   turn_secret="$(cat -- "$TURN_SECRET_FILE")" || turn_secret=
   [ -n "$turn_secret" ] || echo "WARNING: TURN_SECRET_FILE ($TURN_SECRET_FILE) could not be read or is empty; the relay for calls is off." >&2
+  [ -z "${TURN_SECRET:-}" ] || [ "$TURN_SECRET" = "$turn_secret" ] || { echo "WARNING: TURN_SECRET and TURN_SECRET_FILE are both set, with different values; the relay for calls is off." >&2; turn_secret=; }
 fi
 if [ -z "$turn_secret" ]; then
-  [ -z "${TURN_URLS:-}" ] || echo "WARNING: TURN_URLS is set without TURN_SECRET or TURN_SECRET_FILE; the relay for calls is off and calls between different networks fail." >&2
+  [ -z "${TURN_URLS:-}" ] || [ -n "${TURN_SECRET:-}${TURN_SECRET_FILE:-}" ] || echo "WARNING: TURN_URLS is set without TURN_SECRET or TURN_SECRET_FILE; the relay for calls is off and calls between different networks fail." >&2
 else
-  [ -n "${TURN_URLS:-}" ] || echo "WARNING: TURN_SECRET is set without TURN_URLS; the relay for calls runs but devices are not told about it." >&2
   # The first address devices are told, without scheme, query and port.
   turn_realm="${TURN_URLS%%,*}"; turn_realm="${turn_realm#*:}"; turn_realm="${turn_realm%%\?*}"
   case "$turn_realm" in \[*) turn_realm="${turn_realm%%]*}"; turn_realm="${turn_realm#[}" ;; *) turn_realm="${turn_realm%%:*}" ;; esac
@@ -97,39 +97,48 @@ else
   fi
   # The secret and the address end up in a config line: nothing that could start another one.
   case "$turn_secret" in =*|*[!A-Za-z0-9+/=._~-]*) echo "WARNING: TURN_SECRET may hold only letters, digits and + / = . _ ~ - (openssl rand -base64 48); the relay for calls is off." >&2; turn_secret= ;; esac
-  case "${TURN_EXTERNAL_IP:-}" in *[!0-9A-Fa-f.:/]*) echo "WARNING: TURN_EXTERNAL_IP is not an IP address; the relay for calls is off." >&2; turn_secret= ;; esac
+  # One address: coturn's public/private form would put the private one on its allow list.
+  if [ -n "${TURN_EXTERNAL_IP:-}" ]; then
+    { case "$TURN_EXTERNAL_IP" in *[!0-9A-Fa-f.:]*) false ;; esac && node -e 'process.exit(require("node:net").isIP(process.argv[1]) ? 0 : 1)' "$TURN_EXTERNAL_IP"; } \
+      || { echo "WARNING: TURN_EXTERNAL_IP must be one IPv4 or IPv6 address; the relay for calls is off." >&2; turn_secret=; }
+  fi
+  # The container's own IPv4 addresses must be refused; without them the relay stays off.
+  turn_own_ipv4="$(awk '/\/32 host LOCAL/ { print last } { last = $2 }' /proc/net/fib_trie 2>/dev/null | sort -u)"
+  [ -n "$turn_own_ipv4" ] || [ -z "$turn_secret" ] || { echo "WARNING: the container's own IPv4 addresses could not be read (/proc/net/fib_trie); the relay for calls is off." >&2; turn_secret=; }
+  [ -z "$turn_secret" ] || [ -n "${TURN_URLS:-}" ] || echo "WARNING: TURN_SECRET is set without TURN_URLS; the relay for calls runs but devices are not told about it." >&2
 fi
 if [ -n "$turn_secret" ]; then
   turn_dir=/tmp/unihub-turn
   rm -rf "$turn_dir" && mkdir -m 700 -p "$turn_dir" || exit 1
   # Peers the relay never sends to: this network, loopback, link-local,
-  # multicast and reserved, and every address of the container itself.
+  # multicast and reserved, IPv6 forms that carry an IPv4 address (IPv4-compatible,
+  # NAT64, 6to4, Teredo), and every address of the container itself.
   # Ranges stay prefix-aligned, as coturn compares IPv6 ranges byte by byte,
   # and none starts at ::, which coturn reads as open below (every IPv4 peer).
   turn_denied="0.0.0.0-0.255.255.255 127.0.0.0-127.255.255.255 169.254.0.0-169.254.255.255 224.0.0.0-255.255.255.255
-    ::1 fe80::-feff:ffff:ffff:ffff:ffff:ffff:ffff:ffff ff00::-ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff
-    $(awk '/\/32 host LOCAL/ { print last } { last = $2 }' /proc/net/fib_trie 2>/dev/null | sort -u)
+    ::1-::ffff:ffff 64:ff9b::-64:ff9b::ffff:ffff 64:ff9b:1::-64:ff9b:1:ffff:ffff:ffff:ffff:ffff
+    2001::-2001:0:ffff:ffff:ffff:ffff:ffff:ffff 2002::-2002:ffff:ffff:ffff:ffff:ffff:ffff:ffff
+    fe80::-feff:ffff:ffff:ffff:ffff:ffff:ffff:ffff ff00::-ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff
+    $turn_own_ipv4
     $(sed 's/^\(....\)\(....\)\(....\)\(....\)\(....\)\(....\)\(....\)\(....\) .*/\1:\2:\3:\4:\5:\6:\7:\8/' /proc/net/if_inet6 2>/dev/null)"
   # Private networks and carrier-grade NAT, unless everyone calls from one private network or VPN.
   [ "${TURN_ALLOW_PRIVATE_PEERS:-}" = true ] || turn_denied="$turn_denied 10.0.0.0-10.255.255.255
     172.16.0.0-172.31.255.255 192.168.0.0-192.168.255.255 100.64.0.0-100.127.255.255 fc00::-fdff:ffff:ffff:ffff:ffff:ffff:ffff:ffff"
+  # max-bps is bytes per second each way per allocation: 512 kbit/s, about five times a voice call.
   (
     umask 077 && exec > "$turn_dir/turnserver.conf" || exit 1
     printf '%s\n' listening-port=3478 min-port=49160 max-port=49200 use-auth-secret "static-auth-secret=$turn_secret" \
       "realm=$turn_realm" fingerprint no-tcp-relay no-tls no-dtls cli=0 no-multicast-peers no-dynamic-ip-list \
-      no-dynamic-realms user-quota=8 total-quota=40 log-file=stdout "pidfile=$turn_dir/turnserver.pid" userdb=:memory:
+      no-dynamic-realms user-quota=8 total-quota=40 max-bps=64000 log-file=stdout "pidfile=$turn_dir/turnserver.pid" userdb=:memory:
     [ -z "${TURN_EXTERNAL_IP:-}" ] || echo "external-ip=$TURN_EXTERNAL_IP"
     [ -z "$turn_user" ] || printf '%s\n' "proc-user=$turn_user" "proc-group=$turn_group"
     for peer in $turn_denied; do echo "denied-peer-ip=$peer"; done
   ) || exit 1
   echo "✓ Starting the relay for calls on port 3478..."
-  supervisor_pid=$$
-  # The relay's end stops the supervisor (the PID this script hands over by
-  # exec), which ends the container for its restart policy.
+  # Mail, calendars and chat matter more than relayed calls: the relay's end is only logged.
   (
     turnserver -c "$turn_dir/turnserver.conf"
-    echo 'The relay for calls stopped; restarting the container.' >&2
-    while kill -TERM "$supervisor_pid" 2>/dev/null; do sleep 5; done
+    echo 'The relay for calls stopped: calls between different networks will not connect until the container is restarted.' >&2
   ) &
 fi
 

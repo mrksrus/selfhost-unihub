@@ -127,7 +127,8 @@ services:
     # Every secret can come from a file: NAME_FILE instead of NAME (JWT_SECRET,
     # ENCRYPTION_KEY, ENCRYPTION_KEY_PREVIOUS, BACKUP_MASTER_KEY, MYSQL_PASSWORD,
     # BOOTSTRAP_ADMIN_PASSWORD, INSTANCE_BACKUP_KEY, TURN_SECRET). Setting both with
-    # different values stops the start. To use Compose secrets, replace for
+    # different values stops the start (for TURN_SECRET: the relay stays off).
+    # To use Compose secrets, replace for
     # example the JWT_SECRET line above with
     #   JWT_SECRET_FILE: /run/secrets/unihub_jwt_secret
     # list the secrets here and at the end of this file, and make each file

@@ -333,7 +333,7 @@ and holds it even while nothing listens. Instead of the secret itself,
 
 | Port | Protocol | For |
 | --- | --- | --- |
-| 3478 | UDP and TCP | Devices reach the relay |
+| 3478 | UDP and TCP | Devices reach the relay (TCP for networks that block UDP) |
 | 49160 to 49200 | UDP | The sound of relayed calls |
 
 A reverse proxy cannot carry them: it forwards web requests, and this is
@@ -342,7 +342,8 @@ them in the server's firewall. There is no TLS port (5349) in this version.
 
 **Behind NAT.** Docker's own network is behind NAT even on a server with a
 public address, so set `TURN_EXTERNAL_IP` to the address the Internet sees:
-the server's public IP address, or the router's when the server is at home.
+the server's public IP address, or the router's when the server is at home;
+one address, IPv4 or IPv6.
 The relay tells devices that address. It is read at start; after the address
 changes, restart UniHub.
 
@@ -354,19 +355,23 @@ networks and carrier-grade NAT (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16,
 100.64.0.0/10, fc00::/7), which includes the database's network. An
 installation whose people all call from one private network or VPN can set
 `UNIHUB_TURN_ALLOW_PRIVATE_PEERS=true`; loopback and the container's own
-addresses stay refused, but the database and other machines on those networks
-become reachable through the relay for anyone signed in.
+addresses stay refused, but the UDP services of the database's network, of
+other machines on those networks and of this server itself, through Docker's
+gateway, become reachable through the relay for anyone signed in. The relay
+carries UDP only.
 
 **Check it.** `docker compose logs unihub` shows "Starting the relay for
 calls" and coturn's own lines; a warning names a missing `TURN_URLS` or
 secret, or a value the relay refused. From a computer on another network,
 `turnutils_stunclient -p 3478 calls.example.org` (from coturn's tools)
 prints the address it sees; then call from a phone on mobile data to a
-device at home.
+device at home. Should the relay stop, the log says so and the rest of
+UniHub keeps running; relayed calls work again after a restart.
 
 **What it costs.** Only calls without a direct path use the relay. Their
 sound passes through the server, encrypted end to end so the relay cannot
-hear it: about 100 kbit/s in each direction per call. The port range allows
+hear it: about 100 kbit/s in each direction per call. Each relayed
+connection is limited to 512 kbit/s in each direction. The port range allows
 40 relayed connections at once, at least 20 calls.
 
 **TrueNAS.** The catalogue app's form has no fields for the relay's ports

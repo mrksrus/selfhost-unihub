@@ -29,8 +29,8 @@ nginx, forwards shutdown signals, and exits with failure if either service stops
 The existing Docker restart policy can then recover the whole app. With
 `TURN_SECRET` set, the entrypoint first starts the relay for calls (coturn) as
 the API user from a configuration it writes to `/tmp/unihub-turn`; if the relay
-stops, the entrypoint stops the supervisor, which ends the container
-([Calls and the relay](INSTALLATION.md#calls-and-the-relay)). The default
+stops, the entrypoint logs it and the rest of UniHub keeps running until the
+container is restarted ([Calls and the relay](INSTALLATION.md#calls-and-the-relay)). The default
 360-second health startup grace remains unchanged.
 
 Nginx uses long `/api/` proxy timeouts because mail sync and large backup uploads
