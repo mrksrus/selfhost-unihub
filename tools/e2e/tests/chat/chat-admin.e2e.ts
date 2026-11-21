@@ -5,6 +5,7 @@ import { runId, stack } from '../support/env.ts';
 import { ok, signIn } from '../support/api.ts';
 import { onlyOn } from '../support/ui.ts';
 import { acknowledge, addPerson, createGroup, dialogPassword, sweep, type Effective } from '../organisation/organisation-helpers.ts';
+import { joinChat } from './chat-helpers.ts';
 
 // What an administrator and a person decide about Chat.
 // Chat turned off for a group leaves its members' navigation and is refused
@@ -103,6 +104,7 @@ test('presence switched off under Settings › Chat hides the dot for the other 
     await screen.getByLabel('Chat passphrase', { exact: true }).fill(PASSPHRASE);
     await screen.getByLabel('Repeat the passphrase', { exact: true }).fill(PASSPHRASE);
     await screen.getByRole('button', 'Set passphrase and open Chat').tap();
+    await joinChat(browser, PASSPHRASE);
     await appears(screen.getByText('No chats yet', { exact: true }));
 
     const opened = await openBrowser(alex);
@@ -112,6 +114,7 @@ test('presence switched off under Settings › Chat hides the dot for the other 
     await page.getByLabel('Chat passphrase', { exact: true }).fill(PASSPHRASE);
     await page.getByLabel('Repeat the passphrase', { exact: true }).fill(PASSPHRASE);
     await page.getByRole('button', { name: 'Set passphrase and open Chat' }).click();
+    await joinChat(page, PASSPHRASE);
     await shows(page.getByText('No chats yet', { exact: true }));
     await page.goto(`${stack.url}/contacts?book=company&contact=${blair.id}`);
     await page.getByRole('button', { name: 'Message', exact: true }).click();

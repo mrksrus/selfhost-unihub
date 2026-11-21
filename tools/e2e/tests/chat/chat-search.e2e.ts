@@ -50,7 +50,6 @@ test('a word from an earlier message is found and opens the chat at that message
     await s.goto(`${stack.url}/chat`);
     await shows(s.getByRole('heading', { name: 'Enter your chat passphrase' }), 90_000);
     await joinChat(s, PASSPHRASE);
-    await s.reload();
     await shows(s.getByRole('heading', { name: 'Enter your chat passphrase' }), 90_000);
     await s.getByRole('button', { name: 'Not now' }).click();
     await search(s, word);

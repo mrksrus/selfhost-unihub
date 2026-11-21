@@ -154,7 +154,8 @@ export interface ChatProofRequest { value: Base64Url }
  * minutes start again. The joined devices get the hint chat.device and a
  * notification of kind chat_device ("Approve a new device?", for ten
  * minutes, opening /chat?approve=<chat_device_id>). A joined device is
- * answered as it is, nothing asked.
+ * answered as it is, nothing asked. 400 CHAT_APPROVAL_INVALID for a key
+ * that is not one (also on approve, for the key or the sealed key).
  */
 export interface ChatApprovalAskRequest { public_key: Base64Url }
 

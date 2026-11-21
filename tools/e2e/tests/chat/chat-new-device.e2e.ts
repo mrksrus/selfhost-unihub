@@ -73,6 +73,7 @@ test('a new browser reads new messages at once and the earlier ones after the pa
     await expect(screen.getByRole('button', 'Set passphrase and open Chat')).toBeDisabled();
     await screen.getByLabel('Repeat the passphrase', { exact: true }).fill(FIRST_PASSPHRASE);
     await screen.getByRole('button', 'Set passphrase and open Chat').tap();
+    await joinChat(browser, FIRST_PASSPHRASE);
     await appears(screen.getByText('No chats yet', { exact: true }));
 
     // Alex does the same, starts the chat from Blair's entry in the company directory and writes.
@@ -81,6 +82,7 @@ test('a new browser reads new messages at once and the earlier ones after the pa
     await alexPage.getByLabel('Chat passphrase', { exact: true }).fill(FIRST_PASSPHRASE);
     await alexPage.getByLabel('Repeat the passphrase', { exact: true }).fill(FIRST_PASSPHRASE);
     await alexPage.getByRole('button', { name: 'Set passphrase and open Chat' }).click();
+    await joinChat(alexPage, FIRST_PASSPHRASE);
     await shows(alexPage.getByText('No chats yet', { exact: true }));
     await alexPage.goto(`${stack.url}/contacts?book=company&contact=${blair.id}`);
     await alexPage.getByRole('button', { name: 'Message', exact: true }).click();
@@ -104,7 +106,6 @@ test('a new browser reads new messages at once and the earlier ones after the pa
     await second.goto(`${stack.url}/chat`);
     await shows(second.getByRole('heading', { name: 'Enter your chat passphrase' }));
     await joinChat(second, FIRST_PASSPHRASE);
-    await second.reload();
     await shows(second.getByRole('heading', { name: 'Enter your chat passphrase' }));
     const fresh = `After the new browser ${run}`;
     await send(alexPage, blair, fresh);
@@ -140,7 +141,6 @@ test('a new browser reads new messages at once and the earlier ones after the pa
     await third.goto(`${stack.url}/chat`);
     await shows(third.getByRole('heading', { name: 'Enter your chat passphrase' }));
     await joinChat(third, NEW_PASSPHRASE);
-    await third.reload();
     await shows(third.getByRole('heading', { name: 'Enter your chat passphrase' }));
     await enterPassphrase(third, FIRST_PASSPHRASE);
     await shows(third.getByText(/^This is not your chat passphrase\./));
