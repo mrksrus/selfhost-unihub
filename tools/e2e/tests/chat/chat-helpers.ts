@@ -65,12 +65,18 @@ export async function chatBrowser(person: Person, args: string[] = []) {
 /**
  * Joins the page's device to Chat by the proof of the history key, as a
  * device that knows the passphrase does: it unwraps the key backup, opens the
- * server's challenge and sends it back, then reloads the page. For browsers
- * whose screens do not join a waiting device yet. Returns whether it waited.
+ * server's challenge and sends it back. Then it reloads the page, whose
+ * engine was refused Chat while its device was not enrolled or waited. For
+ * browsers whose screens do not join a waiting device yet.
  */
 export async function joinChat(page: Evaluates, passphrase: string) {
   await expect.poll(async () => (await pageApi(page, 'GET', '/api/chat/devices/current')).status, { timeout: 60_000 }).toBe(200);
-  if (ok(await pageApi<{ state: string }>(page, 'GET', '/api/chat/devices/current'), 'the chat device').state === 'joined') return false;
+  if (ok(await pageApi<{ state: string }>(page, 'GET', '/api/chat/devices/current'), 'the chat device').state === 'waiting') await prove(page, passphrase);
+  await page.evaluate(() => { (window as unknown as { reloading?: true }).reloading = true; setTimeout(() => location.reload()); }, null);
+  await expect.poll(() => page.evaluate(() => !('reloading' in window) && document.readyState === 'complete', null).catch(() => false), { timeout: 60_000 }).toBe(true);
+}
+
+async function prove(page: Evaluates, passphrase: string) {
   const { account } = ok(await pageApi<{ account: { key_backup: { salt: string; rounds: number; wrapped: string } } }>(page, 'GET', '/api/chat/account'), 'the key backup');
   const wrapped = Buffer.from(account.key_backup.wrapped, 'base64url');
   const unwrapping = crypto.pbkdf2Sync(passphrase.normalize('NFC'), Buffer.from(account.key_backup.salt, 'base64url'), account.key_backup.rounds, 32, 'sha256');
@@ -90,9 +96,6 @@ export async function joinChat(page: Evaluates, passphrase: string) {
   open.setAuthTag(record.subarray(record.length - 16));
   const padded = Buffer.concat([open.update(record.subarray(0, record.length - 16)), open.final()]);
   ok(await pageApi(page, 'POST', '/api/chat/devices/current/proof', { value: padded.subarray(0, padded.lastIndexOf(2)).toString('base64url') }), 'the proof');
-  await page.evaluate(() => { (window as unknown as { reloading?: true }).reloading = true; setTimeout(() => location.reload()); }, null);
-  await expect.poll(() => page.evaluate(() => !('reloading' in window) && document.readyState === 'complete', null).catch(() => false), { timeout: 60_000 }).toBe(true);
-  return true;
 }
 
 /** A chat's row in the list, its messages when it is open, and a message written into it. */
@@ -137,7 +140,8 @@ export async function choosePassphrase(page: Evaluates) {
   await expect.poll(() => page.evaluate(() => 'chatTest' in window, null), { timeout: 60_000 }).toBe(true);
   const chosen = await page.evaluate((passphrase) => (window as unknown as { chatTest: { passphrase(value: string): Promise<string> } }).chatTest.passphrase(passphrase), PASSPHRASE);
   // The page may enrol only after the passphrase made the account, and then its device waits.
-  if (await joinChat(page, PASSPHRASE)) await expect.poll(() => page.evaluate(() => 'chatTest' in window, null).catch(() => false), { timeout: 60_000 }).toBe(true);
+  await joinChat(page, PASSPHRASE);
+  await expect.poll(() => page.evaluate(() => 'chatTest' in window, null).catch(() => false), { timeout: 60_000 }).toBe(true);
   return chosen;
 }
 
