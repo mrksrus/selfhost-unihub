@@ -4,6 +4,7 @@ import { verifyToken, getAuthTokenFromRequest } from '../auth';
 import { MODULE_CATALOG } from '../services/module-catalog';
 import { getUserModules } from '../services/module-settings';
 import { serverEvents } from '../services/server-events';
+import { chatDeviceJoined } from '../services/chat-devices';
 import { defineRoutes } from '../http/route';
 
 // Modules whose events this user may receive. A disabled module's events are
@@ -13,6 +14,8 @@ async function enabledModules(userId: string) {
   return new Set(MODULE_CATALOG.map(module => module.id)
     .filter(moduleId => modules.find(module => module.id === moduleId)?.enabled === true));
 }
+// A device that has not joined Chat hears nothing of it and does not count as online.
+const withheld = async (userId: string, token: string | null) => await chatDeviceJoined(userId, token) ? [] : ['chat'];
 
 export = defineRoutes({
   // Reached only through request-handler.ts, which has already authenticated
@@ -20,20 +23,23 @@ export = defineRoutes({
   // the handler owns the response and returns nothing; a refusal before that
   // is an ordinary JSON error.
   'GET /api/events': { auth: 'user', module: null, gates: 'exempt', response: 'stream', body: { kind: 'none' }, handler: async (req: AuthRequest, userId: string, body: unknown, res: ServerResponse) => {
+    const token = getAuthTokenFromRequest(req);
     const modules = await enabledModules(userId);
     const attached = serverEvents.attach({
       userId,
       req,
       res,
-      token: getAuthTokenFromRequest(req),
+      token,
       modules,
+      withheld: await withheld(userId, token),
       // Every heartbeat re-checks the session with the same lookup as any API
       // request, so a revoked, expired or deactivated session stops receiving
       // events even when no sign-out path closed it explicitly.
       revalidate: async stream => {
         const current = await verifyToken(req);
         if (!current || String(current) !== String(stream.userId)) return false;
-        stream.modules = await enabledModules(current);
+        stream.withheld = new Set(await withheld(current, token));
+        stream.modules = new Set([...await enabledModules(current)].filter(module => !stream.withheld.has(module)));
         return true;
       },
     });

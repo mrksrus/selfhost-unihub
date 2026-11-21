@@ -4,6 +4,7 @@ import type { UploadBody } from '../http/route';
 import type { ChatAttachmentResponse, ChatRetentionApplyNowResponse, ChatRetentionPreviewResponse } from '../contracts/chat';
 
 import { defineRoutes } from '../http/route';
+import { joinedOnly } from '../services/chat-devices';
 import { confirmPassword } from '../security/reauthentication';
 import { UPLOAD_LIMIT, attachmentFile, storeAttachment } from '../services/chat-attachments';
 import { applyRetentionNow, previewRetention } from '../services/chat-retention';
@@ -15,7 +16,7 @@ type Request = RouteRequest & { url: string; params: Record<string, string> };
 // restore section gates them. Ids are stored in lower case.
 const query = (req: Request) => new URL(req.url, 'http://localhost').searchParams;
 
-export = defineRoutes({
+export = defineRoutes(joinedOnly({
   'POST /api/chat/conversations/:id/attachments': { auth: 'user', module: 'chat', restoreSection: null, body: { kind: 'upload', limit: UPLOAD_LIMIT },
     handler: async (req: Request, userId: string, body: unknown) => {
       return { attachment: await storeAttachment(userId, req.params.id.toLowerCase(), query(req).get('id'), body as UploadBody) } satisfies ChatAttachmentResponse;
@@ -32,4 +33,4 @@ export = defineRoutes({
       if (refused) return refused;
       return { ...await applyRetentionNow(userId, req as AuthRequest) } satisfies ChatRetentionApplyNowResponse;
     } },
-});
+}));

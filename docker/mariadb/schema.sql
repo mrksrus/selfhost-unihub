@@ -3,7 +3,7 @@
 -- Schema changes are numbered migrations in api/src/services/database.ts; the app
 -- creates and upgrades its own schema on startup. This file is a reviewable
 -- reference, and a database test fails when it differs from a freshly migrated database.
--- Through migration 32.
+-- Through migration 33.
 
 CREATE TABLE `address_books` (
   `id` char(36) NOT NULL,
@@ -495,6 +495,10 @@ CREATE TABLE `chat_devices` (
   `preview_p256dh` varchar(128) CHARACTER SET ascii COLLATE ascii_bin DEFAULT NULL,
   `preview_auth` varchar(64) CHARACTER SET ascii COLLATE ascii_bin DEFAULT NULL,
   `created_at` datetime NOT NULL DEFAULT current_timestamp(),
+  `approved_at` datetime DEFAULT NULL,
+  `pair_public` varchar(128) CHARACTER SET ascii COLLATE ascii_bin DEFAULT NULL,
+  `pair_sealed` varchar(2048) CHARACTER SET ascii COLLATE ascii_bin DEFAULT NULL,
+  `pair_requested_at` datetime DEFAULT NULL,
   PRIMARY KEY (`id`),
   UNIQUE KEY `uq_chat_devices_device` (`device_id`),
   KEY `idx_chat_devices_user` (`user_id`),

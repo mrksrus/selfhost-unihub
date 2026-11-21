@@ -284,7 +284,7 @@ async function adoptIn(cx: SqlExecutor, userId: string, token: string | null, ke
 
 interface SummaryRow extends RowDataPacket {
   id: string; kind: string; app_version: string | null; user_agent: string | null; lock_applied: unknown;
-  created_at: Date | string; last_seen_at: Date | string; notifications: number | string; chat: number | string;
+  created_at: Date | string; last_seen_at: Date | string; notifications: number | string; chat: number | string; chat_waiting: number | string;
 }
 
 // Devices with a live session only: a signed-out device keeps its record (and
@@ -294,7 +294,8 @@ async function summaries(userId: string, currentId: string, onlyId: string | nul
   const [rows] = await db.execute<SummaryRow[]>(`SELECT d.id, d.kind, d.app_version, d.user_agent, d.lock_applied, d.created_at, d.last_seen_at,
       EXISTS (SELECT 1 FROM push_subscriptions p JOIN sessions ps ON ps.id = p.session_id
         WHERE p.device_id = d.id AND p.user_id = d.user_id AND ps.expires_at > UTC_TIMESTAMP()) AS notifications,
-      EXISTS (SELECT 1 FROM chat_devices cd WHERE cd.device_id = d.id) AS chat
+      EXISTS (SELECT 1 FROM chat_devices cd WHERE cd.device_id = d.id) AS chat,
+      EXISTS (SELECT 1 FROM chat_devices cd WHERE cd.device_id = d.id AND cd.approved_at IS NULL) AS chat_waiting
     FROM devices d
     WHERE d.user_id = ?${onlyId ? ' AND d.id = ?' : ''}
       AND EXISTS (SELECT 1 FROM sessions s WHERE s.device_id = d.id AND s.user_id = d.user_id AND s.expires_at > UTC_TIMESTAMP())
@@ -312,6 +313,7 @@ async function summaries(userId: string, currentId: string, onlyId: string | nul
       lock: lock && lock.scope.length ? { scope: lock.scope, method: lock.method } : null,
       notifications: Number(row.notifications) > 0,
       chat: Number(row.chat) > 0,
+      chat_waiting: Number(row.chat_waiting) > 0,
     };
   });
 }
@@ -432,6 +434,16 @@ async function personDevices(userId: string): Promise<Omit<DeviceSummary, 'curre
   return (await summaries(userId, '')).map(({ current: _current, ...device }) => device);
 }
 
+/** These devices of the person that have a live session, as the device list names them, by last use. */
+async function signedInDeviceNames(userId: string, deviceIds: readonly string[], executor: SqlExecutor = db): Promise<Pick<DeviceSummary, 'id' | 'kind' | 'app_version' | 'user_agent'>[]> {
+  if (!deviceIds.length) return [];
+  const [rows] = await executor.execute<RowDataPacket[]>(`SELECT d.id, d.kind, d.app_version, d.user_agent FROM devices d
+    WHERE d.user_id = ? AND d.id IN (${deviceIds.map(() => '?').join(', ')})
+      AND EXISTS (SELECT 1 FROM sessions s WHERE s.device_id = d.id AND s.user_id = d.user_id AND s.expires_at > UTC_TIMESTAMP())
+    ORDER BY d.last_seen_at DESC, d.id`, [userId, ...deviceIds]);
+  return rows.map(row => ({ id: String(row.id), kind: KINDS.includes(row.kind as DeviceKind) ? row.kind as DeviceKind : 'web', app_version: row.app_version, user_agent: row.user_agent }));
+}
+
 /** The last use of any of each person's devices, for the People list. */
 async function lastActiveByUser(executor: SqlExecutor = db): Promise<Map<string, string>> {
   const [rows] = await executor.execute<RowDataPacket[]>('SELECT user_id, MAX(last_seen_at) AS last_seen_at FROM devices GROUP BY user_id');
@@ -506,6 +518,6 @@ export {
   deviceFromUserAgent, parseLockApplied, deviceForSession, deviceLockFor, lockCovers, appLockShortfall, appLockRefusal,
   deviceKeyHash, deviceClaim, bindDevice, currentDevice, adoptDeviceKey, listDevices, describeCurrentDevice,
   reportDeviceLock, reportLockState, removeDevice, touchDevice, pruneIdleDevices,
-  personDevices, lastActiveByUser, endPersonDevices,
+  personDevices, signedInDeviceNames, lastActiveByUser, endPersonDevices,
 };
 export type { DeviceLockState, DeviceClaim };

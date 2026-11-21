@@ -19,6 +19,7 @@ import { addSharedContacts, verifySharedContacts } from './shared-contacts-migra
 import { addSharedCalendars, verifySharedCalendars } from './shared-calendars-migration';
 import { addChat, verifyChat } from './chat-migration';
 import { addChatGroups, verifyChatGroups } from './chat-groups-migration';
+import { addChatDeviceApproval, verifyChatDeviceApproval } from './chat-device-approval-migration';
 import { log } from '../log';
 
 type FieldRow = RowDataPacket & { Field: string };
@@ -492,6 +493,17 @@ const MIGRATIONS: readonly Migration[] = [
     verify: async (connection: PoolConnection) => {
       await verifyDatabaseInventory(connection, { throughMigration: 32 });
       await verifyChatGroups(connection);
+    },
+  },
+  {
+    // A chat device waits until it joins: when it joined and an open approval
+    // (chat-device-approval-migration.ts). Every existing chat device is joined.
+    id: 33,
+    name: 'chat-device-approval',
+    up: addChatDeviceApproval,
+    verify: async (connection: PoolConnection) => {
+      await verifyDatabaseInventory(connection, { throughMigration: 33 });
+      await verifyChatDeviceApproval(connection);
     },
   },
 ];

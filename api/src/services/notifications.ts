@@ -164,9 +164,12 @@ interface SourceKind<S> {
   /** At the level 'full', what only this device is sent (a chat preview sealed to its key). */
   deviceContent?(payload: NotificationPayload, deviceId: string, connection: SqlExecutor): Promise<Record<string, unknown>>;
   expiresAt(source: S, payload: NotificationPayload, now: number): Date;
+  /** Sent only to devices that joined Chat. */
+  joinedChatDevices?: true;
 }
 interface FixedKind {
-  module: 'recordings' | 'mail' | null;
+  module: 'recordings' | 'mail' | 'chat' | null;
+  joinedChatDevices?: true;
   current?(row: EventRow, payload: NotificationPayload, connection: SqlExecutor): Promise<boolean>;
   /** The text while the device hides content; without one the fixed text carries nothing private and stays. */
   none?: Rendering;
@@ -266,6 +269,12 @@ async function enqueueScheduledSendProblem({ userId, emailId, scheduleId, sendKe
     body: status === 'failed' ? 'Open Drafts to see why and send it again.' : 'Check Sent before sending it again.',
     url: `/mail?folder=drafts&email=${encodeURIComponent(emailId)}`, expiresAt: new Date(Date.now() + DAY_MS) }, connection));
 }
+/** Asks the person's devices in Chat to approve a waiting one; at most one in ten minutes per device. */
+async function enqueueChatDeviceApproval(userId: string, chatDeviceId: string) {
+  return inTransaction(db, connection => enqueueEvent({ userId, dedupeKey: `chat_device:${chatDeviceId}:${Math.floor(Date.now() / 600000)}`, kind: 'chat_device',
+    sourceId: chatDeviceId, title: 'Approve a new device?', body: 'A device signed in to your account asks to join your chats.',
+    url: `/chat?approve=${encodeURIComponent(chatDeviceId)}`, expiresAt: new Date(Date.now() + 600000) }, connection));
+}
 /** Announces a snoozed message that came back, in the transaction that returned it. */
 async function enqueueSnoozeReturn({ userId, emailId, returnedAt }: { userId: string; emailId: string; returnedAt: string }, connection: SqlExecutor) {
   return enqueueFromSource({ kind: 'snooze', userId, sourceId: emailId, dedupeKey: `snooze:${emailId}:${returnedAt}`,
@@ -357,7 +366,19 @@ const KINDS: Readonly<Record<string, KindSpec>> = Object.freeze({
     },
     deviceContent: (payload, deviceId, connection) => chat().previewFor(payload, deviceId, connection),
     expiresAt: (_message, _payload, now) => new Date(now + DAY_MS),
+    joinedChatDevices: true,
   }),
+  // A waiting chat device of the person asks to be approved (chat-devices.ts),
+  // while its request is open. Nothing private: the same text on a locked device.
+  chat_device: {
+    module: 'chat',
+    joinedChatDevices: true,
+    async current(row: EventRow, _payload: NotificationPayload, connection: SqlExecutor) {
+      const [rows] = await connection.execute<RowDataPacket[]>(`SELECT id FROM chat_devices WHERE id = ? AND user_id = ? AND approved_at IS NULL AND device_id IS NOT NULL
+        AND pair_public IS NOT NULL AND pair_requested_at > UTC_TIMESTAMP() - INTERVAL 10 MINUTE`, [row.source_id, row.user_id]);
+      return rows.length > 0;
+    },
+  },
   recording: {
     module: 'recordings',
     // An upload that moved on, finished or was cancelled needs no warning.
@@ -446,11 +467,13 @@ async function currentPayload(row: EventRow, payload: NotificationPayload, conne
   const own = device?.id && prepared.level === 'full' && kind.deviceContent ? await kind.deviceContent(payload, device.id, connection) : {};
   return { stored, sent: { ...shared, ...own } };
 }
+// A subscription of a device that joined Chat, for the kinds sent only to those.
+const JOINED_CHAT_DEVICE = 'EXISTS (SELECT 1 FROM chat_devices cd WHERE cd.device_id = p.device_id AND cd.user_id = p.user_id AND cd.approved_at IS NOT NULL)';
 // The user's devices that can still be reached: subscriptions of live sessions.
-async function subscribedDevices(userId: string, connection: SqlExecutor, endpointHash: string | null = null) {
+async function subscribedDevices(userId: string, connection: SqlExecutor, endpointHash: string | null = null, kind: string | null = null) {
   const [devices] = await connection.execute<RowDataPacket[]>(`SELECT p.id FROM push_subscriptions p JOIN sessions s ON s.id = p.session_id AND s.user_id = p.user_id
     JOIN users u ON u.id = p.user_id WHERE p.user_id = ? AND s.expires_at > UTC_TIMESTAMP() AND u.is_active = TRUE
-    ${endpointHash ? 'AND p.endpoint_hash = ?' : ''}`, endpointHash ? [userId, endpointHash] : [userId]);
+    ${endpointHash ? 'AND p.endpoint_hash = ?' : ''} ${kind && kindOf(kind)?.joinedChatDevices ? `AND ${JOINED_CHAT_DEVICE}` : ''}`, endpointHash ? [userId, endpointHash] : [userId]);
   return devices as { id: string }[];
 }
 async function queueDeliveries(eventId: string, devices: { id: string }[], connection: SqlExecutor) {
@@ -464,7 +487,7 @@ async function enqueueEvent({ userId, dedupeKey, kind, sourceId = null, title, b
   connection: SqlExecutor = db, render?: () => Promise<(Rendering & { expiresAt: Date }) | null>) {
   const moduleId = kindOf(kind)?.module;
   if (moduleId && !await isModuleBackgroundEnabled(userId, moduleId, connection)) return null;
-  const devices = await subscribedDevices(userId, connection, endpointHash);
+  const devices = await subscribedDevices(userId, connection, endpointHash, kind);
   if (!devices.length) return null;
   const text = render ? await render() : { ...clip({ title: String(title || ''), body: String(body || '') }), expiresAt };
   if (!text) return null;
@@ -817,6 +840,7 @@ export {
   enqueueCalendarNotification,
   enqueueCalendarChange,
   enqueueSnoozeReturn,
+  enqueueChatDeviceApproval,
   enqueueScheduledSendProblem,
   enqueueTestNotification,
   enqueueEvent,

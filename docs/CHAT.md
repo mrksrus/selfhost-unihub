@@ -146,9 +146,51 @@ Security › Devices) that enrolled for Chat.
   (`unihub-chat:<user id>`), written one step at a time, each step in one
   transaction with the MLS state it changed. Several tabs share one device:
   one of them runs it, the others hand it what they send.
-- **Who can be written to.** Any active person with Chat on who has opened
-  UniHub once since Chat arrived. Until then a 1:1 chat says "<name> has not
-  opened UniHub since the update."
+- **A new device waits.** A chat device is *waiting* or *joined*. Only a
+  joined device takes part in chats: it is in the groups, gets chat hints and
+  chat notifications, and makes its person online. A waiting device enrols
+  as above (so joining later is instant), but every chat route answers it
+  `403 CHAT_DEVICE_WAITING`, except the account, enrolling, its own device and
+  key packages, and the three routes it joins by. The rest of UniHub works.
+  Settings › Security › Devices marks it "Waiting for Chat"
+  (`chat_waiting`).
+- **How a device joins.** Four ways, nothing else:
+  - It enrols while its person has no chat account yet (no passphrase
+    chosen): it joins at once, so a colleague can be written to before they
+    open Chat. From the moment the account exists, every new device waits.
+  - The first passphrase, or "Start a new key", chosen on it.
+  - **The proof.** The device asks for a challenge: a value the server seals
+    to the person's history public key (the Web Push sealing it uses for
+    notifications), bound to this chat device and the current key and good
+    for five minutes; nothing is stored for it. Only a device that holds
+    the history key opens it: one that unwrapped the key backup with the
+    passphrase, or one that still holds the key (after an instance restore,
+    or a store that survived). It sends the value back and joins. The
+    server never sees the passphrase or the key.
+  - **An approval.** The waiting device makes a one-time key pair and asks
+    with its public half; both devices show a code made from it. The
+    person's joined devices get the hint `chat.device` and a notification
+    "Approve a new device?" (for ten minutes). "Approve" on one of them
+    hands over the history key sealed to the one-time key, and the device
+    joins; it reads the sealed key once, and has the history without typing
+    anything. "This was not me" drops the request; the device keeps
+    waiting and can be signed out. A request lives ten minutes and can be
+    made again. Only a joined device of the same person, signed in, can
+    list and answer requests; an administrator cannot approve for anyone.
+- **"Start a new key"** is refused (`409 CHAT_DEVICE_SIGNED_IN`, naming the
+  devices) while another joined device of the person is signed in: that
+  device holds the key, or must be signed out first. Otherwise the account
+  password alone would join every chat. A new key is written to the
+  activity log (`chat.new_key`).
+- **Devices from before 0.35.0** stayed joined when the upgrade ran.
+- **What it does not protect.** A waiting device can fetch the key backup
+  (it must, to check the passphrase), so someone with the account password
+  can still guess the passphrase offline: this rule is as strong as the
+  passphrase against them. Someone who can write to the database can still
+  add a device; the server's lists stay trusted.
+- **Who can be written to.** Any active person with Chat on who has a
+  joined device. Until then a 1:1 chat says "<name> has not opened UniHub
+  since the update."
 - **A group never changes.** One MLS group holds the devices of the chat's
   people. When those devices change (a new browser, a removed phone, a
   person added or removed), the next device that sends makes a new group
@@ -192,8 +234,8 @@ Security › Devices) that enrolled for Chat.
   until the site's data is cleared.
 - **A device that was not in a group** (new, or away while the group was
   made) cannot read that group's messages through MLS. It reads them from
-  the archive after the passphrase (below). That is the only case that needs
-  the passphrase.
+  the archive with the history key, from the passphrase or an approval
+  (below).
 
 ## History and the passphrase
 
@@ -621,7 +663,8 @@ Every route under `/api/chat/` is in the module `chat` and the app lock area
 `chat`, and none is gated by a restore section. The request and response
 shapes are in [`api/src/contracts/chat.ts`](../api/src/contracts/chat.ts).
 Shared refusals: `403 MODULE_DISABLED` while Chat is off for the person,
-`403 APP_LOCK_REQUIRED` for a device short of a required lock on Chat, and
+`403 APP_LOCK_REQUIRED` for a device short of a required lock on Chat,
+`403 CHAT_DEVICE_WAITING` for a device that has not joined (above), and
 `404 CONVERSATION_NOT_FOUND` for a chat the person is not in (a missing one
 included).
 
@@ -634,6 +677,12 @@ included).
 | `POST /api/chat/devices` | Enrol this device; an earlier chat device of it is removed |
 | `GET /api/chat/devices/current` | This device's chat device (`404 CHAT_DEVICE_NOT_ENROLLED` without one) |
 | `POST /api/chat/devices/current/key-packages` | More key packages, at most 100 unclaimed; a new last resort replaces the old one |
+| `POST /api/chat/devices/current/challenge` | A value sealed to the history key, for the proof (`404 CHAT_ACCOUNT_NOT_FOUND` without an account) |
+| `POST /api/chat/devices/current/proof` | The opened value; the device joins (`403 CHAT_PROOF_INVALID`) |
+| `POST /api/chat/devices/current/approval` | A waiting device asks to be approved, with its one-time public key |
+| `GET /api/chat/devices/approvals` | The person's open requests, with each device's name |
+| `POST /api/chat/devices/:id/approve` | Hand over the sealed history key; the device joins (`404 CHAT_APPROVAL_NOT_FOUND`) |
+| `DELETE /api/chat/devices/:id/approval` | "This was not me": drop the request |
 | `GET /api/chat/conversations` | The person's chats, latest first, with unread counts, marks, the notification choice, the retention, the other person's or the group's state and presence |
 | `POST /api/chat/conversations` | Find or make the 1:1 chat with a person; with `kind: 'group'`, a group chat of people (`user_ids`) or following a group or everyone (`follow`); `400 CHAT_TOO_MANY_PEOPLE`, `403 CHAT_OUT_OF_REACH` |
 | `PUT /api/chat/conversations/:id` | A manager renames a group chat |
@@ -670,8 +719,9 @@ chat `409 CHAT_FOLLOWS_GROUP` to add, remove and leave.
 
 ### Live hints
 
-Two events on the existing live update stream (`GET /api/events`), withheld
-from a page whose person has Chat off. They carry ids only; the page fetches
+Events on the existing live update stream (`GET /api/events`), withheld
+from a page whose person has Chat off, and, but for `chat.device`, from a
+page of a device that has not joined. They carry ids only; the page fetches
 through the routes above. There is no WebSocket: messages and files travel
 only in ordinary requests ([Architecture](ARCHITECTURE.md#live-status-events)).
 
@@ -680,6 +730,10 @@ only in ordinary requests ([Architecture](ARCHITECTURE.md#live-status-events)).
   receipts off, is told only to the reader.
 - `chat.presence` (`user_id`, `online`): a person someone shares a chat with
   opened their first page or closed their last.
+- `chat.device` (`chat_device_id`): to every page of the person, a device
+  asked for an approval, was answered or dropped, or joined. A page of a
+  device that joined takes the other chat hints from the stream's next check
+  (within 25 seconds) or when the stream reconnects.
 
 The page also fetches when the stream reconnects and when it becomes
 visible. With the Android app in the background, a message arrives as its
@@ -696,7 +750,7 @@ instance backup carries each as stored. The manifest is
 | Table | Holds | Owner | Class |
 | --- | --- | --- | --- |
 | `chat_accounts` | The history public key and the passphrase-wrapped key backup | person | ciphertext |
-| `chat_devices` | Chat devices and their preview keys; a removed one has no device | person | installation |
+| `chat_devices` | Chat devices and their preview keys, when each joined and its open approval; a removed one has no device | person | installation |
 | `chat_key_packages` | Unclaimed key packages and last resorts | person | installation |
 | `chat_conversations` | Chats, a group chat's name, the current group, the last sequence number, and the retention in force with the moment deleting starts | organisation | org |
 | `chat_members` | Each person's read, delivered and joined marks and notification choice | person | org |
