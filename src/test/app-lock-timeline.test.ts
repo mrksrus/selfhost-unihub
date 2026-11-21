@@ -54,7 +54,7 @@ function reload() { window.dispatchEvent(new Event('pagehide')); }
 function server(initial: Partial<DeviceSettingValues> = {}, compliance: AppLockCompliance = { meets: true, required: [], max_background: null, reason: null }) {
   const state = { values: { ...DEFAULT_DEVICE_SETTINGS, ...initial }, compliance, lock: null as AppLockApplied | null };
   const answer = (): CurrentDeviceResponse => ({
-    device: { id: 'device-1', current: true, kind: 'web', app_version: null, user_agent: null, created_at: '', last_seen_at: '', lock: state.lock && { scope: state.lock.scope, method: state.lock.method }, notifications: false, chat: false },
+    device: { id: 'device-1', current: true, kind: 'web', app_version: null, user_agent: null, created_at: '', last_seen_at: '', lock: state.lock && { scope: state.lock.scope, method: state.lock.method }, notifications: false, chat: false, chat_waiting: false },
     settings: defaultsResolved(state.values),
     compliance: state.compliance,
     policy: { screenshots: 'allowed' },
@@ -335,7 +335,7 @@ describe('a lost PIN and the sign-out', () => {
     fake.state.lock = { scope: ['app'], relock_after: '60', on_device_lock: false, method: 'pin' };
     let answer!: () => void;
     fake.fetchCurrentDevice.mockImplementationOnce(() => new Promise(resolve => { answer = () => resolve({
-      device: { id: 'device-1', current: true, kind: 'web', app_version: null, user_agent: null, created_at: '', last_seen_at: '', lock: { scope: ['app'], method: 'pin' }, notifications: false, chat: false },
+      device: { id: 'device-1', current: true, kind: 'web', app_version: null, user_agent: null, created_at: '', last_seen_at: '', lock: { scope: ['app'], method: 'pin' }, notifications: false, chat: false, chat_waiting: false },
       settings: defaultsResolved({ ...DEFAULT_DEVICE_SETTINGS, app_lock_scope: ['app'] }), compliance: { meets: true, required: [], max_background: null, reason: null }, policy: { screenshots: 'allowed' },
     }); }));
     const page = tab(fake);
@@ -389,7 +389,7 @@ describe('account and session safety', () => {
     const before = page.controller.getSnapshot();
     page.controller.stop();
     answer({
-      device: { id: 'device-1', current: true, kind: 'web', app_version: null, user_agent: null, created_at: '', last_seen_at: '', lock: null, notifications: false, chat: false },
+      device: { id: 'device-1', current: true, kind: 'web', app_version: null, user_agent: null, created_at: '', last_seen_at: '', lock: null, notifications: false, chat: false, chat_waiting: false },
       settings: defaultsResolved({ ...DEFAULT_DEVICE_SETTINGS, app_lock_scope: ['app'] }), compliance: { meets: false, required: ['app'], max_background: null, reason: 'x' }, policy: { screenshots: 'forbidden' },
     });
     await page.started;

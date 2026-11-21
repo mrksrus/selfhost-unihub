@@ -5,6 +5,7 @@ import { runId, signInPassword, stack } from '../support/env.ts';
 import { ok, signIn } from '../support/api.ts';
 import { onlyOn } from '../support/ui.ts';
 import { addPerson, type Effective } from '../organisation/organisation-helpers.ts';
+import { joinChat } from './chat-helpers.ts';
 
 // Blair's chat on a new browser. New messages arrive there at once;
 // the earlier ones come with the chat passphrase, through the real screens,
@@ -102,6 +103,9 @@ test('a new browser reads new messages at once and the earlier ones after the pa
     const second = await open(blair, 'blair-second', 'second browser');
     await second.goto(`${stack.url}/chat`);
     await shows(second.getByRole('heading', { name: 'Enter your chat passphrase' }));
+    await joinChat(second, FIRST_PASSPHRASE);
+    await second.reload();
+    await shows(second.getByRole('heading', { name: 'Enter your chat passphrase' }));
     const fresh = `After the new browser ${run}`;
     await send(alexPage, blair, fresh);
     await second.getByRole('button', { name: 'Not now' }).click();
@@ -134,6 +138,9 @@ test('a new browser reads new messages at once and the earlier ones after the pa
     // A third browser: the old passphrase no longer opens the history, the new one does.
     const third = await open(blair, 'blair-third', 'third browser');
     await third.goto(`${stack.url}/chat`);
+    await shows(third.getByRole('heading', { name: 'Enter your chat passphrase' }));
+    await joinChat(third, NEW_PASSPHRASE);
+    await third.reload();
     await shows(third.getByRole('heading', { name: 'Enter your chat passphrase' }));
     await enterPassphrase(third, FIRST_PASSPHRASE);
     await shows(third.getByText(/^This is not your chat passphrase\./));

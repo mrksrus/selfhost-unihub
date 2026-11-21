@@ -3,7 +3,7 @@ import { expect } from 'e2e';
 import type { Page } from 'playwright-core';
 import { runId, stack } from '../support/env.ts';
 import { onlyOn } from '../support/ui.ts';
-import { chatBrowser, chatRow, escape, leave, messagesOf, secondBrowser, shows, startChat, twoPeople, write } from './chat-helpers.ts';
+import { chatBrowser, chatRow, escape, joinChat, leave, messagesOf, secondBrowser, shows, startChat, twoPeople, write } from './chat-helpers.ts';
 
 // Search looks through what a device holds: Blair finds an old message on the
 // browser that received it, and on a newly signed-in one only after the chat
@@ -48,6 +48,9 @@ test('a word from an earlier message is found and opens the chat at that message
     opened.push(second);
     const s = second.page;
     await s.goto(`${stack.url}/chat`);
+    await shows(s.getByRole('heading', { name: 'Enter your chat passphrase' }), 90_000);
+    await joinChat(s, PASSPHRASE);
+    await s.reload();
     await shows(s.getByRole('heading', { name: 'Enter your chat passphrase' }), 90_000);
     await s.getByRole('button', { name: 'Not now' }).click();
     await search(s, word);
