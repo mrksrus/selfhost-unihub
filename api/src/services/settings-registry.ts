@@ -245,6 +245,7 @@ export const POLICIES: { readonly [K in PolicyKey]: PolicyEntry<PolicyValues[K]>
     kind: { type: 'enum', values: ['own_groups', 'organisation'] }, default: 'own_groups', strictness: ['organisation', 'own_groups'], refuses: [],
     reasons: { organisation: 'You can add anyone in the organisation to a group chat, as your administrator set.' },
   },
+  'chat.calls': allowance('Your administrator turned calls off.'),
   'notifications.detail': {
     kind: { type: 'enum', values: ['full', 'sender', 'none'] }, default: 'full', strictness: ['full', 'sender', 'none'], refuses: [],
     reasons: {
@@ -310,6 +311,7 @@ export const POLICY_EFFECTS: Readonly<Partial<Record<PolicyKey | 'bin.min_retent
   'chat.retention_days': 'Messages older than this are deleted from the chats it applies to, starting 24 hours after a chat\'s time gets shorter; devices delete their copies when next opened. Instance backups made before keep them.',
   'chat.attachment_max_mb': 'Applies to files sent from now on; files already sent stay.',
   'chat.reach': 'Applies to people added from now on; nobody is removed from a chat.',
+  'chat.calls': 'Applies to calls started from now on; a call going on is not ended. Nobody can call these people, and they can call nobody.',
   'pages.music': 'Only the Music page goes; recordings keep working.',
   'notifications.detail': 'Applies to notifications sent from now on.',
   'contacts.phone_sync': 'Phones remove UniHub contacts at their next sync; they stay in UniHub. Changes made on a phone since its last sync are lost.',

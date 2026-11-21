@@ -642,7 +642,7 @@ class Engine implements ChatEngine {
       return;
     }
     try {
-      await this.keep(mls => mls.decrypt(encode(message.group_id), fromBase64Url(message.ciphertext!)), plain => {
+      await this.keep(mls => mls.decrypt(encode(message.group_id!), fromBase64Url(message.ciphertext!)), plain => {
         const content = parseContent(plain);
         return [{ ...record, text: content.text, reply_to: content.reply_to, sender_name: content.name, mentions: content.mentions, files: content.files }];
       }, next);

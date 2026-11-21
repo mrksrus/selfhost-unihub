@@ -88,6 +88,8 @@ export interface PolicyValues {
   'chat.attachment_max_mb': 10 | 25 | 50 | 100;
   /** Whom a member may add to a group chat: the people who share an organisation group with them, or anyone. Administrators add anyone. */
   'chat.reach': 'own_groups' | 'organisation';
+  /** Voice calls; forbidden for the caller or the callee, a call between them is refused. A call already going on is not ended. */
+  'chat.calls': Allowance;
   /** The Music page alone (recordings keep working). */
   'pages.music': Allowance;
   /** The least detail notifications may show: the floor of each mail account's and the reminders' detail. */

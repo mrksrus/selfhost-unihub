@@ -36,6 +36,8 @@ export interface DeviceCapabilities {
   recents_hidden: boolean;
   /** The device can tell when its screen locks. */
   device_lock_signal: boolean;
+  /** The Android app rings for a call while it is closed (a notification of kind call); absent from apps that cannot. */
+  calls?: boolean;
 }
 
 /** What the device enforces now, as it reports it. The server takes its word: a modified app can lie. */

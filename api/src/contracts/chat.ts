@@ -496,17 +496,24 @@ export interface ChatMessageCreateRequest {
 export interface ChatMessage {
   id: string;
   seq: number;
-  group_id: string;
+  /** null for a 'call' entry, which belongs to no MLS group. */
+  group_id: string | null;
   /** null once the sender was deleted. */
   sender_user_id: string | null;
   sender_chat_device_id: string | null;
-  /** 'delete' entries name in `replaces` the message that was deleted for both sides. */
-  kind: 'message' | 'delete';
+  /**
+   * 'delete' entries name in `replaces` the message that was deleted for both
+   * sides. 'call' entries are written by the server when a call ends: no
+   * ciphertext, no group, the caller as sender; nobody can edit or delete one.
+   */
+  kind: 'message' | 'delete' | 'call';
   replaces: string | null;
   format: number;
   /** null once the message was deleted. */
   ciphertext: Base64Url | null;
   created_at: string;
+  /** Only on a 'call' entry. */
+  call?: ChatCallEntry;
 }
 export interface ChatMessageResponse { message: ChatMessage }
 
@@ -618,3 +625,187 @@ export interface ChatArchiveStoredResponse { stored: number }
 /** GET /api/chat/archive?cursor=<cursor>&limit=<n>: the caller's copies for a restore, in conversation and seq order. */
 export interface ChatArchiveEntry extends ChatArchiveCopy { conversation_id: string; seq: number }
 export interface ChatArchiveResponse { copies: ChatArchiveEntry[]; cursor: string | null }
+
+// --- Calls ---------------------------------------------------------------------------------
+
+/*
+ * Voice calls between the two people of a direct chat. Media is peer to
+ * peer (WebRTC, DTLS-SRTP); the server carries the ring, the signals (offer,
+ * answer, candidates as opaque text) and the call's record, never the sound.
+ * Every call route names the call by id and the call names its
+ * conversation. One call per person at a time.
+ *
+ * Refusals every call route shares, besides the chat routes' own: 404
+ * CHAT_CALL_NOT_FOUND for anyone who is not one of the call's two people,
+ * and 403 CHAT_CALL_DEVICE for a device of theirs that is not an end of the
+ * call where the route needs one (the calling device, and once answered the
+ * answering device).
+ *
+ * The live hint chat.call (ChatCallHint, module chat, joined devices only)
+ * goes to both people's pages when a call starts, is answered or ends, and to
+ * the other end when a signal is posted: refetch GET /api/chat/calls/current
+ * or the call's signals.
+ */
+
+/** ringing (45 seconds at most), active once answered, ended. */
+export type ChatCallState = 'ringing' | 'active' | 'ended';
+
+/**
+ * How a call ended: answered (then hung up by either), missed (nobody answered
+ * within the ring time), cancelled (the caller ended it while it rang),
+ * declined (the callee ended it while it rang), busy (the callee was in
+ * another call), failed (a device reported that it could not connect or lost
+ * the connection, the devices stopped sending signs of life, or the server
+ * restarted from a backup). A missed, cancelled or busy call is a missed call
+ * for the callee: a call_missed notification, and its entry counts as unread
+ * for them.
+ */
+export type ChatCallOutcome = 'answered' | 'missed' | 'cancelled' | 'declined' | 'busy' | 'failed';
+
+/** One entry of RTCConfiguration.iceServers: the relay's addresses with credentials made for this call, good for twelve hours. */
+export interface ChatIceServer { urls: string[]; username: string; credential: string }
+
+/** A call as one of its two people sees it from the request's device. */
+export interface ChatCall {
+  id: string;
+  conversation_id: string;
+  /** null once the person was deleted. */
+  caller_user_id: string | null;
+  callee_user_id: string | null;
+  /** The directory's names now; 'Deleted person' once deleted. */
+  caller_name: string;
+  callee_name: string;
+  state: ChatCallState;
+  /** null until it ended. */
+  outcome: ChatCallOutcome | null;
+  /**
+   * Whether the request's device is an end of the call: the calling device,
+   * or the device that answered. false on the callee's devices while it
+   * rings (any of them may answer) and on every other device of the two
+   * people; an active call with this_device false on the callee's side was
+   * answered on another device.
+   */
+  this_device: boolean;
+  created_at: string;
+  answered_at: string | null;
+  ended_at: string | null;
+}
+
+/**
+ * The call of a 'call' chat entry (ChatMessage.call). Its length is
+ * ended_at minus answered_at for an answered call.
+ */
+export interface ChatCallEntry {
+  call_id: string;
+  outcome: ChatCallOutcome;
+  /** null once the person was deleted (the entry stays). */
+  caller_user_id: string | null;
+  callee_user_id: string | null;
+  started_at: string;
+  answered_at: string | null;
+  ended_at: string;
+}
+
+/**
+ * POST /api/chat/calls: calls the other person of a direct chat, named by the
+ * person (the direct chat is found or made, as POST /api/chat/conversations
+ * does) or by the chat. The request's device is the calling device; it then
+ * posts its offer as the first signal. The callee's joined devices ring for
+ * 45 seconds: their pages by the hint, Android apps that can ring by a
+ * notification of kind call.
+ *
+ * Refused: 400 CHAT_SELF; 400 CHAT_CALL_INVALID without exactly one of the
+ * two, 400 CHAT_NOT_DIRECT for a group chat; 404 USER_NOT_FOUND; 403
+ * CHAT_UNAVAILABLE with the reason when the callee cannot be written to
+ * (deactivated, Chat off, no joined device); 403 POLICY_FORBIDS
+ * (PolicyForbidsDetails, policy chat.calls) when calls are forbidden for the
+ * caller or for the callee, with the reason; 409 CHAT_CALL_IN_PROGRESS while
+ * the caller has a ringing or active call; 409 CHAT_CALL_BUSY while the
+ * callee has one: the callee then gets a missed call (an ended call with
+ * outcome busy, its entry and a call_missed notification).
+ *
+ * When the callee is already calling the caller, nothing new starts: the
+ * answer is that ringing call (started false), to be answered.
+ */
+export type ChatCallStartRequest = { user_id: string } | { conversation_id: string };
+export interface ChatCallStartResponse { call: ChatCall; started: boolean; ice_servers: ChatIceServer[] }
+
+/** GET /api/chat/calls/current: the person's ringing or active call; null when there is none. */
+export interface ChatCurrentCallResponse { call: ChatCall | null }
+
+/**
+ * POST /api/chat/calls/:id/answer: a joined device of the callee answers a
+ * ringing call; it becomes the call's other end and reads the offer next.
+ * The first answer wins; the person's other devices stop ringing. 409
+ * CHAT_CALL_ANSWERED once another device answered (the same device answering
+ * again is answered as it is), 409 CHAT_CALL_ENDED once it ended; 403
+ * CHAT_CALL_DEVICE for the caller.
+ */
+export interface ChatCallAnswerResponse { call: ChatCall; ice_servers: ChatIceServer[] }
+
+/**
+ * POST /api/chat/calls/:id/end: declines, cancels or hangs up, with failed
+ * when the device could not connect or lost the connection. While it rings:
+ * the calling device (cancelled) or any joined device of the callee
+ * (declined); once answered: either end (answered, or failed). The signals
+ * are deleted and the call's entry is written. An ended call is answered as
+ * it is.
+ */
+export interface ChatCallEndRequest { failed?: boolean }
+export interface ChatCallResponse { call: ChatCall }
+
+/**
+ * POST /api/chat/calls/:id/signals: a signal from one end to the other, text
+ * the devices define (an offer, an answer, a batch of candidates, a request
+ * for a restart), at most 16,384 characters. The calling device may post
+ * while it rings; the answering device once it answered. 400
+ * CHAT_CALL_SIGNAL_INVALID; 409 CHAT_CALL_ENDED; 409 CHAT_CALL_SIGNALS_LIMIT
+ * after 1,000 signals in one call. The server logs none of it and deletes
+ * every signal when the call ends.
+ */
+export interface ChatCallSignalRequest { payload: string }
+export interface ChatCallSignalPostedResponse { id: number }
+
+/** A signal from the other end. */
+export interface ChatCallSignal { id: number; payload: string; created_at: string }
+
+/**
+ * GET /api/chat/calls/:id/signals?after=<id>: the other end's signals after
+ * that id, oldest first (at most 100); `after` is the cursor for the next
+ * read (the last id answered, or the one asked). Either end; an ended call
+ * has none.
+ */
+export interface ChatCallSignalsResponse { signals: ChatCallSignal[]; after: number }
+
+/**
+ * POST /api/chat/calls/:id/alive: an end's sign of life, every 30 seconds
+ * while the call rings or is active. An active call without one for 90
+ * seconds ends as failed. Answers the call as it is now.
+ */
+
+/** GET /api/chat/calls/:id/ice: fresh connection servers for a restart, to either end of a call that has not ended. */
+export interface ChatIceServersResponse { ice_servers: ChatIceServer[] }
+
+/** The live hint chat.call. */
+export interface ChatCallHint { call_id: string }
+
+/*
+ * Notifications (services/notifications.ts), to joined chat devices only:
+ *
+ * - call: to the callee's Android apps that can ring (their device reported
+ *   the capability `calls: true` in PUT /api/devices/current/lock), sent at
+ *   once. The payload carries `call: { id, event }`: 'ring' when it starts
+ *   (expires with the ring time), 'end' once it stopped ringing (answered on
+ *   another device or ended; never sent to the device that answered), with
+ *   a dedupe key of its own for each. `title` is the caller's name at the
+ *   person's Chat detail 'full' or 'sender', 'Incoming call' at 'none' or on
+ *   a device whose lock hides Chat; url /call?id=<call id>. Browsers and
+ *   older apps ring only in an open page, from the hint.
+ * - call_missed: to every joined device of the callee, for a missed,
+ *   cancelled or busy call: "Missed call from <name>" ("Missed call" at
+ *   'none'), for a day or until its entry is read; url /chat?c=<conversation>.
+ */
+export interface ChatCallNotification { id: string; event: 'ring' | 'end' }
+
+/** GET /api/admin/settings/signup-mode also answers whether the relay for calls is configured (TURN_URLS and a secret), for the Server page. */
+export interface ServerCallsRelay { calls_relay: boolean }
