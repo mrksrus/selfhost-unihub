@@ -150,15 +150,17 @@ Security › Devices) that enrolled for Chat.
   joined device takes part in chats: it is in the groups, gets chat hints and
   chat notifications, and makes its person online. A waiting device enrols
   as above (so joining later is instant), but every chat route answers it
-  `403 CHAT_DEVICE_WAITING`, except the account, enrolling, its own device and
-  key packages, and the three routes it joins by. The rest of UniHub works.
+  `403 CHAT_DEVICE_WAITING`, except reading and creating the account and
+  "Start a new key", enrolling, its own device and key packages, and the
+  three routes it joins by. Every new device waits, also before its person
+  set Chat up. The rest of UniHub works.
   Settings › Security › Devices marks it "Waiting for Chat"
   (`chat_waiting`).
-- **How a device joins.** Four ways, nothing else:
-  - It enrols while its person has no chat account yet (no passphrase
-    chosen): it joins at once, so a colleague can be written to before they
-    open Chat. From the moment the account exists, every new device waits.
-  - The first passphrase, or "Start a new key", chosen on it.
+- **How a device joins.** Three ways, nothing else:
+  - The first passphrase (setting Chat up), or "Start a new key", chosen on
+    it after it enrolled. When two devices of a person choose a first
+    passphrase at once, one wins; the other is answered `409
+    CHAT_ACCOUNT_EXISTS`, keeps waiting and joins with that passphrase.
   - **The proof.** The device asks for a challenge: a value the server seals
     to the person's history public key (the Web Push sealing it uses for
     notifications), bound to this chat device and the current key and good
@@ -189,8 +191,10 @@ Security › Devices) that enrolled for Chat.
   passphrase against them. Someone who can write to the database can still
   add a device; the server's lists stay trusted.
 - **Who can be written to.** Any active person with Chat on who has a
-  joined device. Until then a 1:1 chat says "<name> has not opened UniHub
-  since the update."
+  joined device: a colleague can be written to once they have set Chat up.
+  Until then a 1:1 chat says "<name> has not set up Chat yet."; someone who
+  set it up but has no joined device now (they signed every device out)
+  gets "<name> is not signed in to Chat on any device."
 - **A group never changes.** One MLS group holds the devices of the chat's
   people. When those devices change (a new browser, a removed phone, a
   person added or removed), the next device that sends makes a new group
@@ -335,8 +339,9 @@ starts one.
   has; the remove dialog says "They keep nothing in UniHub. A copy they made
   elsewhere cannot be taken back." The chat shows "<name> left the chat"
   (also for a removal: a device cannot tell them apart).
-- **People without a device.** Someone who has not opened UniHub since Chat
-  arrived, or is deactivated, has no device in the chat. They do not block
+- **People without a device.** Someone who has not set up Chat yet, is not
+  signed in to Chat on any device, or is deactivated has no device in the
+  chat. They do not block
   it: the people panel lists them with the reason, and they read from the
   first group that holds a device of theirs. What was written before stays
   unreadable for them: end-to-end encryption gives them no key for it,
@@ -528,7 +533,8 @@ Settings › Chat tells each person how long their messages are kept.
 ## Presence and read receipts
 
 - **Presence** is "has a UniHub page open": a person counts as online while
-  a page of theirs holds the live update stream. The Android app's
+  a page of theirs on a device in Chat (not one waiting to join) holds the
+  live update stream. The Android app's
   background notification connection does not count. It is shown as a dot,
   only between people who share a chat, and only while both have it on. A
   change goes out at most once in ten seconds per person.
@@ -729,11 +735,10 @@ only in ordinary requests ([Architecture](ARCHITECTURE.md#live-status-events)).
   deletion, mark, name or people. A mark that only records reading, with
   receipts off, is told only to the reader.
 - `chat.presence` (`user_id`, `online`): a person someone shares a chat with
-  opened their first page or closed their last.
+  opened their first page of a device in Chat or closed their last.
 - `chat.device` (`chat_device_id`): to every page of the person, a device
   asked for an approval, was answered or dropped, or joined. A page of a
-  device that joined takes the other chat hints from the stream's next check
-  (within 25 seconds) or when the stream reconnects.
+  device that joined takes the other chat hints from then on.
 
 The page also fetches when the stream reconnects and when it becomes
 visible. With the Android app in the background, a message arrives as its

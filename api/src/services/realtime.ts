@@ -15,7 +15,7 @@ import { OPERATION_STATES } from './mail-engine/operation-states';
 import { JOB_KINDS } from './mail-engine/job-kinds';
 
 type Bus = Pick<typeof serverEvents, 'publish' | 'hasListeners' | 'closeUser' | 'closeToken' | 'closeTokenHash' | 'setUserModules' | 'stats'>;
-type BrowserBus = Bus & Pick<typeof serverEvents, 'onPresence'>;
+type BrowserBus = Bus & Pick<typeof serverEvents, 'onPresence' | 'revalidateUser'>;
 interface PublishOptions<T> {
   module?: string | null;
   throttleKey?: string | null;
@@ -104,7 +104,11 @@ function createRealtime({ browser, devices }: { browser: BrowserBus; devices: Bu
     return { browser: browser.stats(), devices: devices.stats() };
   }
 
-  return { publishToUser, publishToUsers, publishToBrowsers, closeSession, closeSessionKey, closeUser, isOnline, isPresent, onPresence, setUserModules, stats };
+  function revalidateUser(userId: unknown) {
+    return browser.revalidateUser(userId);
+  }
+
+  return { publishToUser, publishToUsers, publishToBrowsers, revalidateUser, closeSession, closeSessionKey, closeUser, isOnline, isPresent, onPresence, setUserModules, stats };
 }
 
 const realtime = createRealtime({ browser: serverEvents, devices: androidStreams });
@@ -226,6 +230,8 @@ function publishChatPresence(userId: unknown, subjectId: string, online: boolean
 /** A chat device of the person asked to be approved, was answered or joined: refetch the requests or the current device. */
 function publishChatDevice(userId: unknown, chatDeviceId: string, hub: Realtime = realtime) {
   hub.publishToBrowsers(userId, 'chat.device', { chat_device_id: chatDeviceId });
+  // A device that joined takes chat hints and counts for presence now, not at the next heartbeat.
+  void hub.revalidateUser(userId);
 }
 
 export {

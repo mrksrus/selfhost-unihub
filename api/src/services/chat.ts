@@ -96,26 +96,29 @@ async function peerState(peerId: string | null, executor: SqlExecutor = db): Pro
   if (!peerId || !user) return { user_id: null, name: 'Deleted person', reason: 'This person was deleted.', ready: false, active: false };
   const name = String(user.name);
   const off = !user.is_active ? `${name} is deactivated.` : !await isModuleEnabled(peerId!, 'chat', executor) ? chatOff(name) : null;
-  const reason = off ?? ((await validDevices([peerId!], executor)).length ? null : notOpened(name));
+  const reason = off ?? ((await validDevices([peerId!], executor)).length ? null : noDevice(name, (await setUp([peerId!], executor)).has(peerId!)));
   return { user_id: peerId, name, reason, ready: !off, active: !!user.is_active };
 }
 const chatOff = (name: string) => `Chat is off for ${name}.`;
-const notOpened = (name: string) => `${name} has not opened UniHub since the update.`;
+// Without a joined chat device: never chose a chat passphrase, or signed every device out of Chat.
+const noDevice = (name: string, setUpChat: boolean) => setUpChat ? `${name} is not signed in to Chat on any device.` : `${name} has not set up Chat yet.`;
+const setUp = async (ids: readonly string[], executor: SqlExecutor) => new Set((await executor.execute<RowDataPacket[]>(
+  `SELECT user_id FROM chat_accounts WHERE user_id IN (${placeholders(ids)})`, [...ids]))[0].map(row => String(row.user_id)));
 
 interface PersonState { name: string; email: string; active: boolean; reason: string | null; presence: boolean; receipts: boolean }
 
 /** Several people as peerState sees them, with their presence and read-receipt choices, in a fixed number of reads; a deleted person is absent. */
 async function peopleStates(ids: readonly string[], executor: SqlExecutor = db): Promise<Map<string, PersonState>> {
   if (!ids.length) return new Map();
-  const [[users], devices, chatOn, settings] = await Promise.all([
+  const [[users], devices, chatOn, settings, accounts] = await Promise.all([
     executor.execute<RowDataPacket[]>(`SELECT id, email, COALESCE(NULLIF(full_name, ''), email) AS name, is_active FROM users WHERE id IN (${placeholders(ids)})`, [...ids]),
-    validDevices(ids, executor), moduleEnabledAmong(ids, 'chat', executor), userSettingValuesOf(ids, executor),
+    validDevices(ids, executor), moduleEnabledAmong(ids, 'chat', executor), userSettingValuesOf(ids, executor), setUp(ids, executor),
   ]);
   const enrolled = new Set(devices.map(device => device.user_id));
   return new Map(users.map(user => {
     const id = String(user.id);
     const name = String(user.name);
-    const reason = !user.is_active ? `${name} is deactivated.` : !chatOn.has(id) ? chatOff(name) : enrolled.has(id) ? null : notOpened(name);
+    const reason = !user.is_active ? `${name} is deactivated.` : !chatOn.has(id) ? chatOff(name) : enrolled.has(id) ? null : noDevice(name, accounts.has(id));
     const values = settings.get(id)!;
     return [id, { name, email: String(user.email), active: !!user.is_active, reason, presence: values.chat_presence, receipts: values.chat_read_receipts }];
   }));

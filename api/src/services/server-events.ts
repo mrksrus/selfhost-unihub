@@ -88,8 +88,12 @@ function createServerEvents(options: BusOptions = {}) {
   const throttles = new Map<string, ThrottleState>();
   let heartbeat: NodeJS.Timeout | null = null;
   let closing = false;
-  // Told when a person's first stream opens and their last one closes.
+  // Told when whether a person holds a stream that takes chat events flips.
   let presence: ((userId: string, present: boolean) => void) | null = null;
+  const takesChat = (userId: string) => [...byUser.get(userId) || []].some(stream => stream.modules.has('chat'));
+  function presenceSince(userId: string, before: boolean) {
+    if (!closing && takesChat(userId) !== before) presence?.(userId, !before);
+  }
 
   function startHeartbeat() {
     if (heartbeat || !config.heartbeatMs) return;
@@ -124,14 +128,13 @@ function createServerEvents(options: BusOptions = {}) {
     }
     stream.closed = true;
     streams.delete(stream);
+    const before = takesChat(stream.userId);
     const own = byUser.get(stream.userId);
     if (own) {
       own.delete(stream);
-      if (!own.size) {
-        byUser.delete(stream.userId);
-        if (!closing) presence?.(stream.userId, false);
-      }
+      if (!own.size) byUser.delete(stream.userId);
     }
+    presenceSince(stream.userId, before);
     for (const event of ['close', 'error']) stream.res.off?.(event, stream.onClose!);
     try { stream.res.end(); } catch { /* already ended */ }
     if (!streams.size) stopHeartbeat();
@@ -144,15 +147,20 @@ function createServerEvents(options: BusOptions = {}) {
     for (const stream of [...streams]) {
       if (stream.closed) continue;
       if (!write(stream, ': ping\n\n')) continue;
-      if (typeof stream.revalidate !== 'function' || stream.revalidating) continue;
-      stream.revalidating = true;
-      try {
-        if (await stream.revalidate(stream) === false) close(stream, { reason: 'session_ended' });
-      } catch {
-        // A transient database error keeps the stream; the next tick retries.
-      } finally {
-        stream.revalidating = false;
-      }
+      await revalidate(stream);
+    }
+  }
+  async function revalidate(stream: EventStream) {
+    if (typeof stream.revalidate !== 'function' || stream.revalidating) return;
+    stream.revalidating = true;
+    const before = takesChat(stream.userId);
+    try {
+      if (await stream.revalidate(stream) === false) close(stream, { reason: 'session_ended' });
+      else presenceSince(stream.userId, before);
+    } catch {
+      // A transient database error keeps the stream; the next tick retries.
+    } finally {
+      stream.revalidating = false;
     }
   }
 
@@ -181,10 +189,10 @@ function createServerEvents(options: BusOptions = {}) {
     stream.onClose = () => close(stream);
     for (const event of ['close', 'error']) res.on?.(event, stream.onClose);
     streams.add(stream);
-    const first = !byUser.has(user);
-    if (first) byUser.set(user, new Set());
+    const before = takesChat(user);
+    if (!byUser.has(user)) byUser.set(user, new Set());
     byUser.get(user)!.add(stream);
-    if (first) presence?.(user, true);
+    presenceSince(user, before);
     res.writeHead(200, {
       'Content-Type': 'text/event-stream; charset=utf-8',
       'Cache-Control': 'no-store, no-transform',
@@ -279,7 +287,9 @@ function createServerEvents(options: BusOptions = {}) {
   }
 
   function setUserModules(userId: unknown, modules: Iterable<string>) {
+    const before = takesChat(String(userId));
     for (const stream of byUser.get(String(userId)) || []) stream.modules = new Set([...modules].filter(module => !stream.withheld.has(module)));
+    presenceSince(String(userId), before);
   }
 
   return {
@@ -291,6 +301,8 @@ function createServerEvents(options: BusOptions = {}) {
     closeAll,
     setUserModules,
     tick,
+    /** Checks the person's streams again now, as the heartbeat does (a device that joined Chat takes its events at once). */
+    revalidateUser: (userId: unknown) => Promise.all([...byUser.get(String(userId)) || []].map(revalidate)),
     /** Whether the person holds a stream; with `module`, one that takes that module's events. */
     hasListeners: (userId: unknown, module: string | null = null) =>
       module ? [...byUser.get(String(userId)) || []].some(stream => stream.modules.has(module)) : byUser.has(String(userId)),

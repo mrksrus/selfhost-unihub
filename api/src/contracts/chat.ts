@@ -94,7 +94,7 @@ export interface ChatPreviewKey { p256dh: Base64Url; auth: Base64Url }
  * that device enrolled earlier is removed (it lost its keys), so every group
  * that names it is out of date. key_packages: 1 to 100 MLS key packages;
  * last_resort: the package handed out when none is left. The new chat
- * device waits, unless its person has no chat account yet.
+ * device waits (ChatDeviceState).
  */
 export interface ChatDeviceEnrolRequest { preview: ChatPreviewKey | null; key_packages: Base64Url[]; last_resort: Base64Url }
 
@@ -106,11 +106,12 @@ export interface ChatDeviceEnrolRequest { preview: ChatPreviewKey | null; key_pa
  * account (GET, POST, POST new-key), enrolling, the current device, its key
  * packages, the challenge, the proof and asking for an approval.
  *
- * A device joins in one of four ways: it enrols while its person has no chat
- * account yet; the first passphrase or "Start a new key" on it; the proof
- * that it holds the history key (challenge, then proof); an approval from a
- * joined device of the same person. Devices that existed before waiting was
- * introduced are joined.
+ * Every device waits from its enrolment. It joins in one of three ways: the
+ * first passphrase (creating the chat account) or "Start a new key" on it,
+ * after it enrolled; the proof that it holds the history key (challenge,
+ * then proof); an approval from a joined device of the same person. So a
+ * person can be written to once they have set Chat up. Devices that existed
+ * before waiting was introduced are joined.
  */
 export type ChatDeviceState = 'waiting' | 'joined';
 
@@ -252,7 +253,7 @@ export interface ChatPeer {
   name: string;
   /** false while they are deactivated or once deleted: their messages show the name they carry, marked as a former colleague. */
   active: boolean;
-  /** Whether the caller can write to them now; false while they are deactivated, deleted, have Chat off or have no chat device yet. */
+  /** Whether the caller can write to them now; false while they are deactivated, deleted, have Chat off or have no joined chat device (not set Chat up yet, or signed out of Chat everywhere). */
   can_write: boolean;
   /** Why not, in plain words; null while they can be written to. */
   reason: string | null;
@@ -376,7 +377,7 @@ export interface ChatMember {
   role: ChatRole;
   /** false while deactivated. */
   active: boolean;
-  /** Why their devices are not in the chat ("has not opened UniHub since the update", Chat off, deactivated); null while they are. */
+  /** Why their devices are not in the chat ("has not set up Chat yet", "is not signed in to Chat on any device", Chat off, deactivated); null while they are. */
   reason: string | null;
   /** As ChatPeer.online. */
   online: boolean | null;

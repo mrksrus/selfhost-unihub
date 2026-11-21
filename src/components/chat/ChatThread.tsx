@@ -223,7 +223,7 @@ export function ChatThread({ engine, conversation, draft, onDraft }: Props) {
 
       {peer.can_write
         ? <ChatComposer peerName={peer.name} mode={mode} draft={draft} people={group ? members?.filter(member => member.active && member.user_id !== user?.id) : undefined} onDraft={onDraft} onSend={send} onCancel={() => setMode(null)} fieldRef={field} attachRef={attach} />
-        // The server's words: the person is deactivated, has Chat off, or has not opened UniHub since the update.
+        // The server's words: the person is deactivated, has Chat off, has not set up Chat yet or is not signed in to Chat on any device.
         : <p className="shrink-0 border-t border-border px-4 py-3 text-sm text-muted-foreground max-md:pb-[calc(0.75rem+env(safe-area-inset-bottom,0px))]">{peer.reason ?? `${peer.name} cannot be written to now.`}</p>}
 
       <AlertDialog open={!!deleting} onOpenChange={open => { if (!open) setDeleting(null); }}>

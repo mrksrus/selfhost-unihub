@@ -28,12 +28,13 @@ import { publishChatDevice } from './realtime';
 // device record went (the foreign key does it), it signed out or it
 // enrolled again; the row stays while a current group names it.
 //
-// A chat device waits until it joins (approved_at): only joined devices are
-// valid, and a waiting one is refused the chat routes (joinedOnly). It joins
-// by the first passphrase or a new key on it, by opening a challenge sealed
-// to the history key, or by an approval from a joined device of the person,
-// which hands the history key over sealed to the waiting device's one-time
-// key (pair_*).
+// A chat device waits from its enrolment until it joins (approved_at): only
+// joined devices are valid, and a waiting one is refused the chat routes
+// (joinedOnly). It joins by the first passphrase or a new key on it, by
+// opening a challenge sealed to the history key, or by an approval from a
+// joined device of the person, which hands the history key over sealed to
+// the waiting device's one-time key (pair_*). So a person can be written to
+// once they have set Chat up.
 
 const MAX_KEY_PACKAGES = 100;
 const PROOF_MS = 5 * 60 * 1000;
@@ -149,9 +150,12 @@ async function ownChatDevice(userId: string, token: string | null, executor: Sql
   return row ? String(row.id) : null;
 }
 const notEnrolled = () => notFound('CHAT_DEVICE_NOT_ENROLLED', 'This device is not enrolled for chat');
-// An approval request that is still open.
+// An approval request that is still open, of a device that is still signed in.
 const OPEN_REQUEST = `cd.approved_at IS NULL AND cd.device_id IS NOT NULL AND cd.pair_public IS NOT NULL
-  AND cd.pair_requested_at > UTC_TIMESTAMP() - INTERVAL ${APPROVAL_MINUTES} MINUTE`;
+  AND cd.pair_requested_at > UTC_TIMESTAMP() - INTERVAL ${APPROVAL_MINUTES} MINUTE
+  AND EXISTS (SELECT 1 FROM sessions s WHERE s.device_id = cd.device_id AND s.user_id = cd.user_id AND s.expires_at > UTC_TIMESTAMP())`;
+// A chat device's removal: it leaves its device record and any request it made or answer it was handed.
+const REMOVED = 'device_id = NULL, pair_public = NULL, pair_sealed = NULL, pair_requested_at = NULL';
 
 async function deviceAnswer(chatDeviceId: string, executor: SqlExecutor = db): Promise<ChatDeviceResponse> {
   const [[row]] = await executor.execute<RowDataPacket[]>(`SELECT cd.approved_at, IF(${OPEN_REQUEST}, cd.pair_requested_at, NULL) AS requested_at,
@@ -217,12 +221,10 @@ async function enrolDevice(userId: string, token: string | null, input: unknown)
   const lastResort = bytes(body.last_resort, 32, 1024, 'CHAT_KEY_PACKAGES_INVALID');
   return withTransaction(async cx => {
     const { deviceId } = await currentDevice(userId, token, cx);
-    await cx.execute('UPDATE chat_devices SET device_id = NULL WHERE device_id = ? AND user_id = ?', [deviceId, userId]);
+    await cx.execute(`UPDATE chat_devices SET ${REMOVED} WHERE device_id = ? AND user_id = ?`, [deviceId, userId]);
     const id = crypto.randomUUID();
-    // The one condition for joining at enrolment: a person without a chat account has no chats a device could be let into yet.
-    await cx.execute(`INSERT INTO chat_devices (id, user_id, device_id, preview_p256dh, preview_auth, approved_at)
-      VALUES (?, ?, ?, ?, ?, IF(EXISTS (SELECT 1 FROM chat_accounts WHERE user_id = ?), NULL, UTC_TIMESTAMP()))`,
-    [id, userId, deviceId, preview?.p256dh ?? null, preview?.auth ?? null, userId]);
+    await cx.execute('INSERT INTO chat_devices (id, user_id, device_id, preview_p256dh, preview_auth) VALUES (?, ?, ?, ?, ?)',
+      [id, userId, deviceId, preview?.p256dh ?? null, preview?.auth ?? null]);
     await insertKeyPackages(cx, id, packages, false);
     await insertKeyPackages(cx, id, [lastResort], true);
     return deviceAnswer(id, cx);
@@ -415,11 +417,13 @@ async function claimKeyPackages(userId: string, token: string | null, conversati
 /** Sign-out removes the chat device of the session's device; a session that only expires keeps it. */
 async function removeChatDeviceOfSession(userId: string, token: string | null) {
   const session = await liveSession(userId, token);
-  if (session?.device_id) await db.execute('UPDATE chat_devices SET device_id = NULL WHERE device_id = ? AND user_id = ?', [session.device_id, userId]);
+  if (session?.device_id) await db.execute(`UPDATE chat_devices SET ${REMOVED} WHERE device_id = ? AND user_id = ?`, [session.device_id, userId]);
 }
 
 /** Deletes removed chat devices that no conversation's current group names; returns how many. */
 async function pruneRemovedChatDevices(executor: SqlExecutor = db): Promise<number> {
+  // A device record deleted (the foreign key set device_id NULL) leaves its pairing columns behind.
+  await executor.execute(`UPDATE chat_devices SET ${REMOVED} WHERE device_id IS NULL AND (pair_public IS NOT NULL OR pair_sealed IS NOT NULL)`);
   const [result] = await executor.execute<ResultSetHeader>(`DELETE FROM chat_devices WHERE device_id IS NULL AND NOT EXISTS (
     SELECT 1 FROM chat_group_devices gd JOIN chat_conversations c ON c.current_group_id = gd.group_id WHERE gd.chat_device_id = chat_devices.id)`);
   return result.affectedRows;
