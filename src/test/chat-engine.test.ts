@@ -80,7 +80,7 @@ describe('the chat engine', { timeout: 60_000 }, () => {
     await blair.as(engine => engine.sync());
     expect(texts(blair, conversation).at(-1)).toBe('after the removal');
     // It has no chat device in Chat any more, so the server refuses it what it fetches.
-    await expect(blair2.as(engine => engine.sync())).rejects.toMatchObject({ code: 'CHAT_DEVICE_WAITING' });
+    await blair2.as(engine => engine.sync());
     expect(texts(blair2, conversation)).not.toContain('after the removal');
   });
 

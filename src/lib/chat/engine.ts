@@ -9,7 +9,7 @@
 // a BroadcastChannel. A new device waits and fetches no chat until it joins
 // (pairing.ts); any tab can join it, and the others learn it from the store.
 import { AppLockRequired, hasCode } from '@/lib/api-error';
-import { emitAppEvent, onAppEvent } from '@/lib/app-events';
+import { onAppEvent } from '@/lib/app-events';
 import { chatApi, unreachable } from '@/lib/chat-api';
 import { fetchDevices } from '@/lib/devices-api';
 import type {
@@ -266,7 +266,6 @@ class Engine implements ChatEngine {
       store.get<ChatDeviceRecord>('keys', 'device'), store.get<boolean>('keys', 'waiting')]);
     const joining = this.loaded && (this.enrolled !== !!record?.chat_device_id || this.waiting !== !!waiting);
     this.enrolled = !!record?.chat_device_id;
-    if (this.waiting && !waiting) emitAppEvent('unihub:chat-joined');
     this.waiting = !!waiting;
     this.restorePending = !!restore;
     this.messages = new Map(messages.map(record => [record.id, record]));
@@ -463,6 +462,8 @@ class Engine implements ChatEngine {
     } catch (error) {
       // The device must meet the person's app lock rule before Chat answers it.
       if (error instanceof AppLockRequired) this.fail(error);
+      // The store said joined and the server does not: the device's answer says what it is now.
+      else if (hasCode(error, 'CHAT_DEVICE_WAITING')) await chatApi.device().then(answer => this.note(answer)).catch(() => undefined);
       else if (!unreachable(error)) throw error;
     }
   }
@@ -1084,10 +1085,7 @@ class Engine implements ChatEngine {
     this.requestedAt = answer.approval_requested_at;
     if (this.waiting === (answer.state === 'waiting')) return;
     this.waiting = !this.waiting;
-    if (!this.waiting) {
-      [this.code, this.newKeyRefused] = [null, null];
-      emitAppEvent('unihub:chat-joined');
-    }
+    if (!this.waiting) [this.code, this.newKeyRefused] = [null, null];
     clearTimeout(this.poll);
     this.channel?.postMessage('changed');
     this.changed();

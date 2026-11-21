@@ -112,6 +112,12 @@ describe('joining Chat on a device', { timeout: 60_000 }, () => {
     const again = tab(blair.browser);
     await until(again, engine => engine.snapshot().readiness.state === 'ready' && !!own(BLAIR, 'b1')?.joined);
     expect(again.engine.snapshot().holds_history_key).toBe(true);
+
+    // A refusal for a device the store holds as joined says it waits, and it proves itself again.
+    own(BLAIR, 'b1').joined = false;
+    await again.as(engine => engine.sync());
+    await until(again, () => own(BLAIR, 'b1').joined);
+    expect(state(again)).toBe('ready');
   });
 
   it('a device joined without the history key cannot approve; a new key is refused while another device is in Chat', async () => {

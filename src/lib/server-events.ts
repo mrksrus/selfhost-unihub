@@ -193,11 +193,8 @@ export function startServerEvents({
     connect();
   };
 
-  const onChatJoined = () => { attempts = 0; connect(); };
-
   doc.addEventListener('visibilitychange', onVisible);
   win.addEventListener('online', onOnline);
-  win.addEventListener('unihub:chat-joined', onChatJoined);
   connect();
 
   return () => {
@@ -207,7 +204,6 @@ export function startServerEvents({
     timers.clear();
     doc.removeEventListener('visibilitychange', onVisible);
     win.removeEventListener('online', onOnline);
-    win.removeEventListener('unihub:chat-joined', onChatJoined);
     close();
   };
 }
