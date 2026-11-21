@@ -1,7 +1,7 @@
 // Chat files in the screens: what may be drawn, and fetching and saving one.
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ChatEngine } from '@/lib/chat/types';
-import { saveFile } from '@/lib/platform';
+import { handOverFile, saveFile, type AppHandOver } from '@/lib/platform';
 import { useSessionScope } from '@/lib/session-scope';
 import { useToast } from '@/hooks/use-toast';
 
@@ -59,13 +59,17 @@ export function useChatFile(engine: ChatEngine, messageId: string, fileId: strin
   return { blob, progress, failed, fetch };
 }
 
-/** Saves a Blob as a file on this device (in the Android app: to Downloads); says so when that fails. */
+/**
+ * Saves a Blob as a file on this device (in the Android app: to Downloads), or
+ * hands it to Android's Open with or Share where the app offers them
+ * (`appHandsOverFiles`); says so when that fails.
+ */
 export function useSaveFile() {
   const { toast } = useToast();
   const scope = useSessionScope();
-  return useCallback((blob: Blob, name: string) => {
-    saveFile(blob, name).catch((error: unknown) => {
-      if (!scope.ended) toast({ title: 'Could not save the file', description: error instanceof Error ? error.message : undefined, variant: 'destructive' });
+  return useCallback((blob: Blob, name: string, target?: AppHandOver) => {
+    (target ? handOverFile(blob, name, target) : saveFile(blob, name)).catch((error: unknown) => {
+      if (!scope.ended) toast({ title: target ? 'Could not hand over the file' : 'Could not save the file', description: error instanceof Error ? error.message : undefined, variant: 'destructive' });
     });
   }, [toast, scope]);
 }

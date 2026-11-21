@@ -7,6 +7,7 @@ import { Dialog, DialogClose, DialogContent, DialogDescription, DialogTitle } fr
 import { EmptyState, LoadingState } from '@/components/ui/page-states';
 import { ImagePreview, PdfPreview } from '@/components/mail/AttachmentViewer';
 import { pictureType, useChatFile, useObjectUrl, useSaveFile } from '@/components/chat/chat-files';
+import { HandOverButtons } from '@/components/chat/ChatFiles';
 
 interface Props {
   engine: ChatEngine;
@@ -54,6 +55,7 @@ function Content({ engine, messageId, file }: { engine: ChatEngine; messageId: s
           <Button type="button" variant="ghost" className="hidden w-14 px-0 tabular-nums sm:inline-flex" aria-label={`Fit to width (now ${Math.round(scale * 100)}%)`} onClick={() => setZoom(null)}>{Math.round(scale * 100)}%</Button>
           <Button type="button" variant="ghost" size="icon" aria-label="Zoom in" disabled={scale >= 3} onClick={() => zoomBy(0.25)}><Plus aria-hidden="true" /></Button>
         </>}
+        <HandOverButtons name={file.name} disabled={!blob} onPick={target => blob && save(blob, file.name, target)} />
         <Button type="button" variant="ghost" size="icon" aria-label="Save" disabled={!blob} onClick={() => blob && save(blob, file.name)}><Download aria-hidden="true" /></Button>
         <DialogClose asChild><Button type="button" variant="ghost" size="icon" aria-label="Close"><X aria-hidden="true" /></Button></DialogClose>
       </header>

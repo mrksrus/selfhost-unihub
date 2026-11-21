@@ -42,7 +42,8 @@ export function androidApp(userAgent = typeof navigator === 'undefined' ? '' : n
 /**
  * The messages the app's bridge understands (MainActivity.BRIDGE_LEVEL, sent
  * as "UniHubBridge/<level>" in the user agent): 1 for apps up to 0.24, which do
- * not say, 2 from 0.25 (file actions). 0 outside the app.
+ * not say, 2 from 0.25 (file actions), 3 from 0.29 (the app lock), 4 from 0.34
+ * (Open with and Share of a file the page made). 0 outside the app.
  */
 export function appBridgeLevel(userAgent = typeof navigator === 'undefined' ? '' : navigator.userAgent) {
   if (!androidApp(userAgent)) return 0;
@@ -148,12 +149,30 @@ function askApp(bridge: AndroidBridge, message: { type: string; id: string } & R
   });
 }
 
-async function sendFileToApp(bridge: AndroidBridge, blob: Blob, filename: string) {
+/** The first bridge level whose file hand-over takes a target (`handOverFile`). */
+export const FILE_HAND_OVER_BRIDGE_LEVEL = 4;
+
+export type AppHandOver = 'open' | 'share';
+
+/** Whether the Android app takes a file made in the page to Open with and Share; older apps only save it. */
+export const appHandsOverFiles = () => appBridgeLevel() >= FILE_HAND_OVER_BRIDGE_LEVEL && !!window.UniHubAndroid;
+
+/**
+ * Hands data made in the page (a decrypted chat file) to Android's Open with
+ * or Share sheet: the app keeps a copy in its cache for the app the person
+ * picks. Only where `appHandsOverFiles()`; rejects when it could not.
+ */
+export async function handOverFile(blob: Blob, filename: string, target: AppHandOver) {
+  if (!appHandsOverFiles()) throw new Error('Update the app to open or share files.');
+  await sendFileToApp(window.UniHubAndroid!, blob, filename, target);
+}
+
+async function sendFileToApp(bridge: AndroidBridge, blob: Blob, filename: string, target: 'save' | AppHandOver = 'save') {
   const id = crypto.randomUUID();
-  const failure = 'The app could not save the file';
+  const failure = target === 'save' ? 'The app could not save the file' : 'The app could not hand over the file';
   try {
     // A start that times out may still open the file later; the abort closes it.
-    await askApp(bridge, { type: 'saveFileStart', id, name: filename, mime: blob.type }, { failure });
+    await askApp(bridge, { type: 'saveFileStart', id, name: filename, mime: blob.type, target }, { failure });
     for (let offset = 0; offset < blob.size; offset += FILE_CHUNK_BYTES) {
       const data = await blobBase64(blob.slice(offset, offset + FILE_CHUNK_BYTES));
       await askApp(bridge, { type: 'saveFileChunk', id, data }, { failure });

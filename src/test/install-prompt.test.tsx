@@ -4,7 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import InstallPrompt from '@/components/pwa/InstallPrompt';
 import { api } from '@/lib/api';
 import { INSTALLED_AT_KEY } from '@/lib/install-prompt';
-import { canInstallAndroidApp, saveFile, showThemeInApp } from '@/lib/platform';
+import { appHandsOverFiles, canInstallAndroidApp, handOverFile, saveFile, showThemeInApp } from '@/lib/platform';
 
 vi.mock('@/lib/api', () => ({ api: { get: vi.fn() } }));
 
@@ -115,6 +115,21 @@ describe('messages to the Android app', () => {
     await vi.advanceTimersByTimeAsync(60_000);
     await saving;
     expect(postMessage.mock.calls.map(([raw]) => JSON.parse(raw).type)).toEqual(['saveFileStart', 'saveFileAbort']);
+  });
+
+  it('offers Open with and Share only to an app whose bridge takes a target, which older apps would save to Downloads', async () => {
+    window.UniHubAndroid = { postMessage: vi.fn() };
+    useUserAgent(`${ANDROID_BROWSER} UniHubAndroid/0.33.0 (33000) UniHubBridge/3`);
+    expect(appHandsOverFiles()).toBe(false);
+    await expect(handOverFile(new Blob(['%PDF']), 'report.pdf', 'open')).rejects.toThrow();
+    expect(window.UniHubAndroid.postMessage).not.toHaveBeenCalled();
+    useUserAgent(`${ANDROID_BROWSER} UniHubAndroid/0.34.0 (34000) UniHubBridge/4`);
+    let listener: ((event: { data: string }) => void) | undefined;
+    const postMessage = vi.fn((raw: string) => { setTimeout(() => listener?.({ data: JSON.stringify({ id: JSON.parse(raw).id, ok: true }) }), 0); });
+    window.UniHubAndroid = { postMessage, addEventListener: (_type, handler) => { listener = handler; } };
+    expect(appHandsOverFiles()).toBe(true);
+    await handOverFile(new Blob(['%PDF'], { type: 'application/pdf' }), 'report.pdf', 'open');
+    expect(JSON.parse(postMessage.mock.calls[0][0])).toMatchObject({ type: 'saveFileStart', name: 'report.pdf', mime: 'application/pdf', target: 'open' });
   });
 
   it('tells the app the theme only inside the app', () => {

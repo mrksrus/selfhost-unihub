@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
-import { Download, FileText, Loader2, Pause, Play } from 'lucide-react';
+import { Download, FileText, Loader2, Pause, Play, Share2, SquareArrowOutUpRight } from 'lucide-react';
 import type { ChatEngine, ChatThreadFile } from '@/lib/chat/types';
 import { formatBytes } from '@/lib/recording-format';
+import { appHandsOverFiles, type AppHandOver } from '@/lib/platform';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { AUDIO, isPdf, pictureType, useChatFile, useObjectUrl, useSaveFile } from '@/components/chat/chat-files';
@@ -22,6 +23,16 @@ function Upload({ file }: { file: ChatThreadFile }) {
 
 const sizeLine = (file: ChatThreadFile, progress: number | null) => (progress !== null ? `Getting it… ${Math.round(progress * 100)}%`
   : `${formatBytes(file.size)}${file.state === 'uploading' ? `, ${Math.round((file.progress ?? 0) * 100)}% sent` : file.state === 'waiting' ? ', waiting to be sent' : ''}`);
+
+/** Open with and Share beside Save, where the Android app offers them; nothing elsewhere. */
+export function HandOverButtons({ name, disabled, onPick }: { name: string; disabled?: boolean; onPick: (target: AppHandOver) => void }) {
+  const [offered] = useState(appHandsOverFiles);
+  if (!offered) return null;
+  return <>
+    <Button type="button" variant="ghost" size="icon" className="shrink-0" disabled={disabled} aria-label={`Open ${name} with…`} title="Open with…" onClick={() => onPick('open')}><SquareArrowOutUpRight aria-hidden="true" /></Button>
+    <Button type="button" variant="ghost" size="icon" className="shrink-0" disabled={disabled} aria-label={`Share ${name}`} title="Share" onClick={() => onPick('share')}><Share2 aria-hidden="true" /></Button>
+  </>;
+}
 
 /** A picture at its proportions, so the thread does not jump when its preview arrives; a tap opens it. */
 function Picture({ engine, messageId, file, onOpen }: FileProps & { onOpen: () => void }) {
@@ -85,6 +96,7 @@ function Voice({ engine, messageId, file }: FileProps) {
           {failed ?? (file.state !== 'sent' ? sizeLine(file, null) : playing || at > 0 ? `${clock(at)} of ${clock(length)}` : `Voice message, ${clock(length)}`)}
         </p>
       </div>
+      {unplayable && <HandOverButtons name={file.name} disabled={progress !== null} onPick={target => { if (blob) save(blob, file.name, target); else void fetch(false).then(got => { if (got) save(got, file.name, target); }); }} />}
       {src && <audio ref={audio} src={src} autoPlay className="hidden" onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onEnded={() => { setPlaying(false); setAt(0); }}
         onTimeUpdate={event => setAt(event.currentTarget.currentTime)} onError={() => setUnplayable(true)} />}
       <Upload file={file} />
@@ -92,7 +104,7 @@ function Voice({ engine, messageId, file }: FileProps) {
   );
 }
 
-/** Any other file: its name and size, and Save. A PDF also opens in the reader. */
+/** Any other file: its name and size, and Save (in the app also Open with and Share). A PDF also opens in the reader. */
 function FileRow({ engine, messageId, file, onOpen }: FileProps & { onOpen?: () => void }) {
   const { progress, failed, fetch } = useChatFile(engine, messageId, file.id);
   const save = useSaveFile();
@@ -107,6 +119,7 @@ function FileRow({ engine, messageId, file, onOpen }: FileProps & { onOpen?: () 
     <div className="relative flex w-72 max-w-full items-center gap-1 overflow-hidden rounded-lg bg-background/60 py-1 pl-2.5 pr-1">
       {onOpen ? <button type="button" onClick={onOpen} aria-label={`Open ${file.name}`} className="flex min-h-10 min-w-0 flex-1 items-center gap-2.5 rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">{icon}{words}</button>
         : <span className="flex min-h-10 min-w-0 flex-1 items-center gap-2.5">{icon}{words}</span>}
+      <HandOverButtons name={file.name} disabled={progress !== null} onPick={target => void fetch(false).then(got => { if (got) save(got, file.name, target); })} />
       <Button type="button" variant="ghost" size="icon" className="shrink-0" disabled={progress !== null} aria-label={`Save ${file.name}`} onClick={() => void fetch(false).then(got => { if (got) save(got, file.name); })}>
         {progress !== null ? <Loader2 aria-hidden="true" className="motion-safe:animate-spin" /> : <Download aria-hidden="true" />}
       </Button>
