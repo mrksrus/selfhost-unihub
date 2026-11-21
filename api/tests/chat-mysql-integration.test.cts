@@ -26,14 +26,14 @@ test('chat: conversations, groups, messages in order, edits and deletes, marks a
   assert.match(started.conversation.peer.reason, /has not opened UniHub/);
   assert.deepEqual(await refused(alex, 'POST', '/api/chat/conversations', { user_id: ids.manager }), [400, 'CHAT_SELF']);
   assert.deepEqual(await refused(alex, 'POST', '/api/chat/conversations', { user_id: crypto.randomUUID() }), [404, 'USER_NOT_FOUND']);
-  const again = await call(blair, 'POST', '/api/chat/conversations', { user_id: ids.manager });
-  assert.deepEqual([again.created, again.conversation.id], [false, conversation], 'one conversation per pair, whoever starts it');
   const url = (path: string) => `/api/chat/conversations/${conversation}/${path}`;
   const lonely = await group(alex, conversation, null, [a1]);
   assert.deepEqual(await refused(alex, 'POST', url('messages'), message(lonely)), [403, 'CHAT_UNAVAILABLE'], 'nobody could read it');
 
   // ── Blair and Alex's laptop enrol: the group is out of date until one of the three devices is made ──
   const b1 = await enrol(blair);
+  const again = await call(blair, 'POST', '/api/chat/conversations', { user_id: ids.manager });
+  assert.deepEqual([again.created, again.conversation.id], [false, conversation], 'one conversation per pair, whoever starts it');
   const alexLaptop = await signIn('manager');
   const a2 = await enrol(alexLaptop);
   const outdated = await alex.request('POST', url('messages'), message(lonely));
@@ -124,9 +124,12 @@ test('chat: conversations, groups, messages in order, edits and deletes, marks a
   // ── Unread counts are the person's, on every device ──
   const alexTablet = await signIn('manager');
   await send(blair, conversation, message(g2));
+  await enrol(alexTablet);
   assert.deepEqual([(await listed(alex)).unread, (await listed(alexTablet)).unread], [2, 2], "Blair's two messages; deleted ones and Alex's own do not count");
   await call(alex, 'PUT', url('marks'), { read_seq: (await listed(alex)).last_seq });
   assert.equal((await listed(alexTablet)).unread, 0);
+  // Signed out again, so the chat's devices are as before.
+  await call(alexTablet, 'POST', '/api/auth/signout', {});
 
   // ── Presence: a page open, seen only by people who share a conversation, both with it on ──
   const online = async () => (await listed(alex)).peer.online;

@@ -48,6 +48,11 @@ function createRealtime({ browser, devices }: { browser: BrowserBus; devices: Bu
     return delivered;
   }
 
+  // Every page of the person, whatever its modules: a device waiting to join Chat hears that it was answered.
+  function publishToBrowsers<T>(userId: unknown, type: string, data: T) {
+    return browser.publish(userId, type, data);
+  }
+
   function publishToUsers<T>(userIds: Iterable<unknown>, type: string, data: T, options: PublishOptions<T> = {}) {
     let delivered = 0;
     for (const userId of new Set(userIds)) delivered += publishToUser(userId, type, data, options);
@@ -79,10 +84,11 @@ function createRealtime({ browser, devices }: { browser: BrowserBus; devices: Bu
     return buses.some(bus => bus.hasListeners(userId));
   }
 
-  // Presence: a page of the person holds a browser stream. A phone's
-  // notification stream alone does not count, or every phone would be online.
+  // Presence: a page of the person holds a browser stream that takes chat
+  // hints (a device that joined Chat). A phone's notification stream alone
+  // does not count, or every phone would be online.
   function isPresent(userId: unknown) {
-    return browser.hasListeners(userId);
+    return browser.hasListeners(userId, 'chat');
   }
   function onPresence(listener: (userId: string, present: boolean) => void) {
     browser.onPresence(listener);
@@ -98,7 +104,7 @@ function createRealtime({ browser, devices }: { browser: BrowserBus; devices: Bu
     return { browser: browser.stats(), devices: devices.stats() };
   }
 
-  return { publishToUser, publishToUsers, closeSession, closeSessionKey, closeUser, isOnline, isPresent, onPresence, setUserModules, stats };
+  return { publishToUser, publishToUsers, publishToBrowsers, closeSession, closeSessionKey, closeUser, isOnline, isPresent, onPresence, setUserModules, stats };
 }
 
 const realtime = createRealtime({ browser: serverEvents, devices: androidStreams });
@@ -217,6 +223,11 @@ function publishChatPresence(userId: unknown, subjectId: string, online: boolean
   hub.publishToUser(userId, 'chat.presence', { user_id: subjectId, online }, { module: 'chat' });
 }
 
+/** A chat device of the person asked to be approved, was answered or joined: refetch the requests or the current device. */
+function publishChatDevice(userId: unknown, chatDeviceId: string, hub: Realtime = realtime) {
+  hub.publishToBrowsers(userId, 'chat.device', { chat_device_id: chatDeviceId });
+}
+
 export {
   createRealtime,
   realtime,
@@ -228,5 +239,6 @@ export {
   publishCalendarShares,
   publishChatChanged,
   publishChatPresence,
+  publishChatDevice,
 };
 export type { Realtime, PublishOptions };

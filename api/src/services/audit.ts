@@ -37,6 +37,7 @@ const AUDIT_ACTIONS = [
   'calendar.handed_over', 'admin.calendar_handed_over', 'admin.calendar_archived', 'admin.calendar_unarchived', 'admin.calendar_binned',
   // The owner started deleting chat messages under a shorter retention before its 24 hours were over.
   'admin.chat_retention_applied',
+  'chat.new_key',
 ] as const;
 type AuditAction = typeof AUDIT_ACTIONS[number];
 type AuditDetails = Record<string, string | number | boolean | null>;

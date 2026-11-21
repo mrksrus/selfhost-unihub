@@ -71,8 +71,10 @@ test('chat devices: enrolment, key packages, device lists, removal, the module a
   assert.deepEqual(devices.find(device => device.chat_device_id === a2.chat_device_id).preview, push);
   assert.ok(devices.every(device => device.preview?.auth), 'every device has a preview key');
 
-  // ── Nobody outside the conversation reads its devices or claims their packages ──
-  for (const [name, client] of [['Casey', casey], ['Drew', drew], ['the administrator', admin]] as const) {
+  // ── Nobody outside the conversation reads its devices or claims their packages, from a device in Chat ──
+  const outsiders = { stranger: await signIn('stranger'), revoked: await signIn('revoked'), admin: await signIn('admin') };
+  for (const [name, client] of [['Casey', outsiders.stranger], ['Drew', outsiders.revoked], ['the administrator', outsiders.admin]] as const) {
+    await enrol(client, 1);
     assert.deepEqual(await refused(client, 'GET', devicesUrl), [404, 'CONVERSATION_NOT_FOUND'], name);
     assert.deepEqual(await refused(client, 'POST', claimUrl), [404, 'CONVERSATION_NOT_FOUND'], name);
   }
@@ -91,7 +93,7 @@ test('chat devices: enrolment, key packages, device lists, removal, the module a
   assert.equal(third[a2.chat_device_id][1], true, "the phone's two packages are gone");
   assert.equal((await call(blair, 'GET', '/api/chat/devices/current')).key_packages, 0);
   assert.ok(!Object.keys(await claim(blair)).includes(b1.chat_device_id));
-  assert.deepEqual(await refused(await signIn('member'), 'POST', claimUrl), [404, 'CHAT_DEVICE_NOT_ENROLLED'], 'only an enrolled device makes groups');
+  assert.deepEqual(await refused(await signIn('member'), 'POST', claimUrl), [403, 'CHAT_DEVICE_WAITING'], 'only a device in Chat makes groups');
 
   // ── Topping up: at most 100 unclaimed, a new last resort replaces the old ──
   assert.equal((await call(blair, 'POST', '/api/chat/devices/current/key-packages', { key_packages: packages(60) })).key_packages, 60);
@@ -189,7 +191,7 @@ test('chat devices: enrolment, key packages, device lists, removal, the module a
   assert.deepEqual((await call(blair, 'GET', '/api/chat/account')).account.key_backup, made.key_backup, 'a refused change changes nothing');
   assert.deepEqual((await call(blair, 'PUT', '/api/chat/account/key-backup', { ...rewrap, current_password: password })).account.key_backup, rewrap.key_backup);
   assert.deepEqual(await refused(blair, 'PUT', '/api/chat/account/key-backup', { history_public: pointKey(), key_backup: backup(), current_password: password }), [409, 'CHAT_KEY_CHANGED']);
-  assert.deepEqual(await refused(casey, 'PUT', '/api/chat/account/key-backup', { ...rewrap, current_password: password }), [404, 'CHAT_ACCOUNT_NOT_FOUND']);
+  assert.deepEqual(await refused(outsiders.stranger, 'PUT', '/api/chat/account/key-backup', { ...rewrap, current_password: password }), [404, 'CHAT_ACCOUNT_NOT_FOUND']);
   // A new key drops the copies only the old one opens.
   const message = crypto.randomUUID();
   await pool.execute("INSERT INTO chat_messages (id, conversation_id, seq, group_id, sender_user_id, ciphertext) VALUES (?, ?, 1, ?, ?, ?)", [message, conversation, group, ids.member, random(400)]);

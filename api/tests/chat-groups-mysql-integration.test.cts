@@ -28,6 +28,7 @@ test('group chats: reach, following a group, joining and removal, the limit, man
   const policy = (values: Record<string, unknown>, group?: string) =>
     call(admin, 'PUT', group ? `/api/admin/groups/${group}/policies` : '/api/admin/policies', { current_password: password, values });
   const [a1, b1, c1, d1] = [await enrol(alex), await enrol(blair), await enrol(casey), await enrol(drew)];
+  await enrol(admin);
 
   // ── Reach: Alex adds the people of his groups; anyone once chat.reach is 'organisation'; his group can set it back ──
   assert.deepEqual(await refused(alex, 'POST', NEW, { kind: 'group', name: 'Launch', user_ids: [ids.member, ids.stranger] }), [403, 'CHAT_OUT_OF_REACH']);
@@ -146,13 +147,15 @@ test('group chats: reach, following a group, joining and removal, the limit, man
   await call(blair, 'PUT', url(launch, '/notify'), { notify: 'none' });
   await post({ mentions: [ids.member] });
   assert.deepEqual([await shown(), (await listed(blair, launch)).notify, (await listed(blair, launch)).unread > 0], [[], 'none', true], 'nothing, while unread still counts');
-  // Someone in the chat without a chat device is served no message, so none is announced to them.
+  // Someone in the chat whose device has not joined Chat is served no message, so none is announced to them.
   const waiting = 'https://fcm.googleapis.com/fcm/send/chat-groups-test-admin';
   await call(admin, 'POST', '/api/notifications/subscription', { subscription: { endpoint: waiting, keys: pushKeys().keys } });
+  await pool.execute('UPDATE chat_devices SET approved_at = NULL WHERE user_id = ?', [ids.admin]);
   await call(alex, 'POST', url(launch, '/members'), { user_ids: [ids.admin] });
   await post();
   assert.deepEqual(await shown(waiting), []);
   await call(alex, 'DELETE', url(launch, `/members/${ids.admin}`));
+  await pool.execute('UPDATE chat_devices SET approved_at = UTC_TIMESTAMP() WHERE user_id = ?', [ids.admin]);
   await lock.query(`SELECT RELEASE_LOCK(${NAME})`);
 
   // ── The limit: 100 people in one chat ──
@@ -208,7 +211,8 @@ test('group chats: reach, following a group, joining and removal, the limit, man
 // Every message and read mark makes each person's devices fetch the list again: its cost must not grow with the chats or the people.
 test('the conversation list and the members list read a fixed number of statements', { skip: !process.env.MYSQL_TEST_HOST, timeout: 300000 }, async t => {
   const pool = await withTestDatabase(t);
-  const { ids, groups, clients, call } = await chatPeople(t, pool);
+  const { ids, groups, clients, call, enrol } = await chatPeople(t, pool);
+  await enrol(clients.admin);
   const chat = require('../dist/src/services/chat') as typeof import('../src/services/chat');
   const statements = installSqlHooks(pool as FixtureValue).watch(/./);
   const counted = async (work: () => Promise<unknown[]>, length: number) => {

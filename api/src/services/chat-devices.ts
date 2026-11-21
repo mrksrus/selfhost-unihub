@@ -1,15 +1,23 @@
+import type { ServerResponse } from 'node:http';
 import type { ResultSetHeader, RowDataPacket } from 'mysql2/promise';
-import type { SqlExecutor } from '../types';
-import type { ChatAccount, ChatClaimedKeyPackage, ChatDevice, ChatDeviceResponse, ChatKeyBackup, ChatPreviewKey } from '../contracts/chat';
+import type { AuthRequest, RouteRequest, SqlExecutor } from '../types';
+import type { RouteSpec, RouteTable } from '../http/route';
+import type {
+  ChatAccount, ChatApproval, ChatChallengeResponse, ChatClaimedKeyPackage, ChatDevice, ChatDeviceResponse, ChatDeviceSignedInDetails, ChatKeyBackup, ChatPreviewKey,
+} from '../contracts/chat';
 
 import crypto from 'node:crypto';
 import { db } from '../state';
-import { badRequest, conflict, notFound } from '../http/errors';
+import { JWT_SECRET } from '../config';
+import { getAuthTokenFromRequest } from '../auth';
+import { badRequest, conflict, forbidden, notFound } from '../http/errors';
 import { withTransaction } from './transactions';
-import { currentDevice } from './devices';
+import { currentDevice, signedInDeviceNames } from './devices';
 import { liveSession } from './sessions';
 import { assertCan, conversationPeople } from './access';
 import { normalizeKeys } from './notification-rules';
+import { recordAudit } from './audit';
+import { publishChatDevice } from './realtime';
 
 // Chat accounts, chat devices and key packages (F5, F14). A chat device is
 // one F5 device of the person that enrolled for chat; it is keyed by the
@@ -19,8 +27,19 @@ import { normalizeKeys } from './notification-rules';
 // server's code). A chat device is removed by setting device_id NULL: its
 // device record went (the foreign key does it), it signed out or it
 // enrolled again; the row stays while a current group names it.
+//
+// A chat device waits until it joins (approved_at): only joined devices are
+// valid, and a waiting one is refused the chat routes (joinedOnly). It joins
+// by the first passphrase or a new key on it, by opening a challenge sealed
+// to the history key, or by an approval from a joined device of the person,
+// which hands the history key over sealed to the waiting device's one-time
+// key (pair_*).
 
 const MAX_KEY_PACKAGES = 100;
+const PROOF_MS = 5 * 60 * 1000;
+const APPROVAL_MINUTES = 10;
+// Archive copies and challenges are sealed to the history key with a fixed auth secret.
+const HISTORY_AUTH = Buffer.alloc(16).toString('base64url');
 
 // Base64url text of a length in bytes; anything else is refused with `code`.
 function bytes(value: unknown, min: number, max: number, code: string): string {
@@ -62,15 +81,19 @@ async function getAccount(userId: string, executor: SqlExecutor = db): Promise<C
 const accountValues = (userId: string, { history_public, key_backup }: ReturnType<typeof parseAccount>) =>
   [userId, history_public, key_backup.wrapped, key_backup.salt, key_backup.rounds, key_backup.format];
 
-/** The first passphrase: 409 CHAT_ACCOUNT_EXISTS when the person has an account. */
-async function createAccount(userId: string, input: ReturnType<typeof parseAccount>): Promise<ChatAccount> {
-  try {
-    await db.execute(`INSERT INTO chat_accounts (user_id, history_public, key_backup, backup_salt, backup_rounds, backup_format)
-      VALUES (?, ?, ?, ?, ?, ?)`, accountValues(userId, input));
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException)?.code === 'ER_DUP_ENTRY') throw conflict('CHAT_ACCOUNT_EXISTS', 'You already chose a chat passphrase');
-    throw error;
-  }
+/** The first passphrase, which joins the request's device: 409 CHAT_ACCOUNT_EXISTS when the person has an account. */
+async function createAccount(userId: string, token: string | null, input: ReturnType<typeof parseAccount>): Promise<ChatAccount> {
+  const joined = await withTransaction(async cx => {
+    try {
+      await cx.execute(`INSERT INTO chat_accounts (user_id, history_public, key_backup, backup_salt, backup_rounds, backup_format)
+        VALUES (?, ?, ?, ?, ?, ?)`, accountValues(userId, input));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException)?.code === 'ER_DUP_ENTRY') throw conflict('CHAT_ACCOUNT_EXISTS', 'You already chose a chat passphrase');
+      throw error;
+    }
+    return joinOwnDevice(userId, token, cx);
+  });
+  if (joined) publishChatDevice(userId, joined);
   return (await getAccount(userId))!;
 }
 
@@ -87,16 +110,28 @@ async function replaceKeyBackup(userId: string, input: ReturnType<typeof parseAc
 
 /**
  * A new history key and passphrase, after the route confirmed the account
- * password. The person's archive copies were sealed to the old key, which no
- * device holds any more, so they go with it.
+ * password; it joins the request's device. The person's archive copies were
+ * sealed to the old key, which no device holds any more, so they go with it.
+ * Refused while another joined device of the person is signed in: otherwise
+ * the account password alone would join every chat.
  */
-async function startNewKey(userId: string, input: ReturnType<typeof parseAccount>): Promise<ChatAccount> {
-  await withTransaction(async cx => {
+async function startNewKey(userId: string, token: string | null, input: ReturnType<typeof parseAccount>, req: AuthRequest): Promise<ChatAccount> {
+  const joined = await withTransaction(async cx => {
+    const { deviceId } = await currentDevice(userId, token, cx);
+    const [joined] = await cx.execute<RowDataPacket[]>('SELECT device_id FROM chat_devices WHERE user_id = ? AND approved_at IS NOT NULL AND device_id <> ?', [userId, deviceId]);
+    const others = await signedInDeviceNames(userId, joined.map(row => String(row.device_id)), cx);
+    if (others.length) {
+      throw conflict('CHAT_DEVICE_SIGNED_IN', 'Another of your devices is still in Chat. Enter your passphrase there or approve this device from it, or sign it out first.',
+        { devices: others } satisfies ChatDeviceSignedInDetails);
+    }
     await cx.execute(`INSERT INTO chat_accounts (user_id, history_public, key_backup, backup_salt, backup_rounds, backup_format) VALUES (?, ?, ?, ?, ?, ?)
       ON DUPLICATE KEY UPDATE history_public = VALUES(history_public), key_backup = VALUES(key_backup), backup_salt = VALUES(backup_salt),
         backup_rounds = VALUES(backup_rounds), backup_format = VALUES(backup_format), updated_at = UTC_TIMESTAMP()`, accountValues(userId, input));
     await cx.execute('DELETE FROM chat_archive WHERE user_id = ?', [userId]);
+    await recordAudit({ action: 'chat.new_key', actorId: userId, targetUserId: userId, req }, cx);
+    return joinOwnDevice(userId, token, cx);
   });
+  if (joined) publishChatDevice(userId, joined);
   return (await getAccount(userId))!;
 }
 
@@ -114,10 +149,53 @@ async function ownChatDevice(userId: string, token: string | null, executor: Sql
   return row ? String(row.id) : null;
 }
 const notEnrolled = () => notFound('CHAT_DEVICE_NOT_ENROLLED', 'This device is not enrolled for chat');
+// An approval request that is still open.
+const OPEN_REQUEST = `cd.approved_at IS NULL AND cd.device_id IS NOT NULL AND cd.pair_public IS NOT NULL
+  AND cd.pair_requested_at > UTC_TIMESTAMP() - INTERVAL ${APPROVAL_MINUTES} MINUTE`;
 
 async function deviceAnswer(chatDeviceId: string, executor: SqlExecutor = db): Promise<ChatDeviceResponse> {
-  const [[row]] = await executor.execute<RowDataPacket[]>('SELECT COUNT(*) AS n FROM chat_key_packages WHERE chat_device_id = ? AND last_resort = FALSE', [chatDeviceId]);
-  return { chat_device_id: chatDeviceId, key_packages: Number(row.n) };
+  const [[row]] = await executor.execute<RowDataPacket[]>(`SELECT cd.approved_at, IF(${OPEN_REQUEST}, cd.pair_requested_at, NULL) AS requested_at,
+      (SELECT COUNT(*) FROM chat_key_packages k WHERE k.chat_device_id = cd.id AND k.last_resort = FALSE) AS n
+    FROM chat_devices cd WHERE cd.id = ?`, [chatDeviceId]);
+  return { chat_device_id: chatDeviceId, key_packages: Number(row.n), state: row.approved_at ? 'joined' : 'waiting',
+    approval_requested_at: row.requested_at ? utcIso(row.requested_at) : null, sealed_key: null };
+}
+
+/** Joins the request's chat device, ending any request it made; returns its id when it was waiting. */
+async function joinOwnDevice(userId: string, token: string | null, cx: SqlExecutor): Promise<string | null> {
+  const id = await ownChatDevice(userId, token, cx);
+  if (!id) return null;
+  const [result] = await cx.execute<ResultSetHeader>(`UPDATE chat_devices SET approved_at = UTC_TIMESTAMP(), pair_public = NULL, pair_sealed = NULL, pair_requested_at = NULL
+    WHERE id = ? AND approved_at IS NULL`, [id]);
+  return result.affectedRows ? id : null;
+}
+
+/** Whether the request's device has a joined chat device; every other chat route is refused it. */
+async function chatDeviceJoined(userId: string, token: string | null, executor: SqlExecutor = db): Promise<boolean> {
+  const session = await liveSession(userId, token, executor);
+  if (!session?.device_id) return false;
+  const [[row]] = await executor.execute<RowDataPacket[]>('SELECT 1 AS joined FROM chat_devices WHERE device_id = ? AND user_id = ? AND approved_at IS NOT NULL',
+    [session.device_id, userId]);
+  return !!row;
+}
+
+/**
+ * The guard of the chat routes of a route file: a device that has not joined
+ * gets 403 CHAT_DEVICE_WAITING on every /api/chat/ route but the `open` ones,
+ * which it needs to join.
+ */
+function joinedOnly<T extends RouteTable>(table: T, open: readonly (keyof T & string)[] = []): T {
+  for (const [key, spec] of Object.entries(table)) {
+    if (!key.includes(' /api/chat/') || open.includes(key)) continue;
+    const { handler } = spec;
+    (table as RouteTable)[key] = { ...spec, handler: async (req: RouteRequest, userId: string | null, body: unknown, res: ServerResponse) => {
+      if (!await chatDeviceJoined(String(userId), getAuthTokenFromRequest(req))) {
+        throw forbidden('CHAT_DEVICE_WAITING', 'Chat opens on this device after your chat passphrase or an approval from another of your devices.');
+      }
+      return handler(req, userId as string, body, res);
+    } } as RouteSpec;
+  }
+  return table;
 }
 
 async function insertKeyPackages(cx: SqlExecutor, chatDeviceId: string, packages: readonly string[], lastResort: boolean) {
@@ -141,19 +219,122 @@ async function enrolDevice(userId: string, token: string | null, input: unknown)
     const { deviceId } = await currentDevice(userId, token, cx);
     await cx.execute('UPDATE chat_devices SET device_id = NULL WHERE device_id = ? AND user_id = ?', [deviceId, userId]);
     const id = crypto.randomUUID();
-    await cx.execute('INSERT INTO chat_devices (id, user_id, device_id, preview_p256dh, preview_auth) VALUES (?, ?, ?, ?, ?)',
-      [id, userId, deviceId, preview?.p256dh ?? null, preview?.auth ?? null]);
+    // The one condition for joining at enrolment: a person without a chat account has no chats a device could be let into yet.
+    await cx.execute(`INSERT INTO chat_devices (id, user_id, device_id, preview_p256dh, preview_auth, approved_at)
+      VALUES (?, ?, ?, ?, ?, IF(EXISTS (SELECT 1 FROM chat_accounts WHERE user_id = ?), NULL, UTC_TIMESTAMP()))`,
+    [id, userId, deviceId, preview?.p256dh ?? null, preview?.auth ?? null, userId]);
     await insertKeyPackages(cx, id, packages, false);
     await insertKeyPackages(cx, id, [lastResort], true);
     return deviceAnswer(id, cx);
   });
 }
 
-/** The request's chat device with its unclaimed key packages; 404 CHAT_DEVICE_NOT_ENROLLED. */
+/** The request's chat device with its unclaimed key packages and the sealed history key of an approval, which is handed out once; 404 CHAT_DEVICE_NOT_ENROLLED. */
 async function describeChatDevice(userId: string, token: string | null): Promise<ChatDeviceResponse> {
+  return withTransaction(async cx => {
+    const id = await ownChatDevice(userId, token, cx);
+    if (!id) throw notEnrolled();
+    const [[row]] = await cx.execute<RowDataPacket[]>('SELECT pair_sealed FROM chat_devices WHERE id = ? FOR UPDATE', [id]);
+    if (row.pair_sealed) await cx.execute('UPDATE chat_devices SET pair_public = NULL, pair_sealed = NULL, pair_requested_at = NULL WHERE id = ?', [id]);
+    return { ...await deviceAnswer(id, cx), sealed_key: row.pair_sealed ? String(row.pair_sealed) : null };
+  });
+}
+
+// --- Joining: the proof of the history key, and approvals ---------------------------------
+
+let proofKey: Buffer | null = null;
+// The value a challenge seals: when it was made, and a keyed hash binding that
+// time to this chat device and the current history key; nothing is stored.
+function proofValue(chatDeviceId: string, historyPublic: string, issued: bigint) {
+  proofKey ??= Buffer.from(crypto.hkdfSync('sha256', String(JWT_SECRET), Buffer.alloc(0), 'unihub chat device proof v1', 32));
+  const time = Buffer.alloc(8);
+  time.writeBigUInt64BE(issued);
+  return Buffer.concat([time, crypto.createHmac('sha256', proofKey).update(`${chatDeviceId}\n${historyPublic}\n`).update(time).digest()]);
+}
+
+/** POST /api/chat/devices/current/challenge: a value only a holder of the history key can open. */
+async function deviceChallenge(userId: string, token: string | null): Promise<ChatChallengeResponse> {
   const id = await ownChatDevice(userId, token);
   if (!id) throw notEnrolled();
+  const account = await getAccount(userId);
+  if (!account) throw notFound('CHAT_ACCOUNT_NOT_FOUND', 'Choose a chat passphrase first');
+  const webPush = require('web-push') as typeof import('web-push');
+  const { cipherText } = webPush.encrypt(account.history_public, HISTORY_AUTH, proofValue(id, account.history_public, BigInt(Date.now())), 'aes128gcm');
+  return { sealed: Buffer.from(cipherText).toString('base64url') };
+}
+
+/** POST /api/chat/devices/current/proof: the opened challenge joins the device. */
+async function proveDevice(userId: string, token: string | null, input: unknown): Promise<ChatDeviceResponse> {
+  const value = Buffer.from(bytes(object(input).value, 40, 40, 'CHAT_PROOF_INVALID'), 'base64url');
+  const { answer, joined } = await withTransaction(async cx => {
+    const id = await ownChatDevice(userId, token, cx);
+    if (!id) throw notEnrolled();
+    const account = await getAccount(userId, cx);
+    const issued = value.readBigUInt64BE(0);
+    const age = Date.now() - Number(issued);
+    if (!account || age < 0 || age > PROOF_MS || !crypto.timingSafeEqual(value, proofValue(id, account.history_public, issued))) {
+      throw forbidden('CHAT_PROOF_INVALID', 'This device could not prove that it holds your chat key. Open Chat again.');
+    }
+    return { joined: await joinOwnDevice(userId, token, cx), answer: await deviceAnswer(id, cx) };
+  });
+  if (joined) publishChatDevice(userId, joined);
+  return answer;
+}
+
+/** POST /api/chat/devices/current/approval: a waiting device asks the person's joined devices, with its one-time public key. */
+async function askApproval(userId: string, token: string | null, input: unknown): Promise<ChatDeviceResponse> {
+  const publicKey = bytes(object(input).public_key, 65, 65, 'CHAT_APPROVAL_INVALID');
+  if (Buffer.from(publicKey, 'base64url')[0] !== 4) throw badRequest('CHAT_APPROVAL_INVALID', 'Invalid chat data');
+  const id = await ownChatDevice(userId, token);
+  if (!id) throw notEnrolled();
+  const [asked] = await db.execute<ResultSetHeader>(`UPDATE chat_devices SET pair_public = ?, pair_sealed = NULL, pair_requested_at = UTC_TIMESTAMP()
+    WHERE id = ? AND approved_at IS NULL`, [publicKey, id]);
+  if (asked.affectedRows) {
+    publishChatDevice(userId, id);
+    const notifications = require('./notifications') as typeof import('./notifications');
+    await notifications.enqueueChatDeviceApproval(userId, id);
+    void notifications.processNotificationJobs().catch(() => { /* the next pass sends it */ });
+  }
   return deviceAnswer(id);
+}
+
+/** GET /api/chat/devices/approvals: the person's open requests, the latest first. */
+async function listApprovals(userId: string): Promise<ChatApproval[]> {
+  const [rows] = await db.execute<RowDataPacket[]>(`SELECT cd.id, cd.device_id, cd.pair_public, cd.pair_requested_at FROM chat_devices cd WHERE cd.user_id = ? AND ${OPEN_REQUEST}
+    ORDER BY cd.pair_requested_at DESC, cd.id`, [userId]);
+  const names = new Map((await signedInDeviceNames(userId, rows.map(row => String(row.device_id)))).map(device => [device.id, device]));
+  return rows.filter(row => names.has(String(row.device_id))).map(row => ({ chat_device_id: String(row.id), device: names.get(String(row.device_id))!,
+    public_key: String(row.pair_public), requested_at: utcIso(row.pair_requested_at) }));
+}
+
+/** Whether a chat device of the person has a request open for this key (any key without one). */
+async function openRequest(userId: string, chatDeviceId: string, publicKey: string | null, cx: SqlExecutor) {
+  const [[row]] = await cx.execute<RowDataPacket[]>(`SELECT cd.id FROM chat_devices cd WHERE cd.id = ? AND cd.user_id = ? AND ${OPEN_REQUEST}
+    AND (? IS NULL OR cd.pair_public = ?) FOR UPDATE`, [chatDeviceId, userId, publicKey, publicKey]);
+  if (!row) throw notFound('CHAT_APPROVAL_NOT_FOUND', 'This request is no longer open. Ask again on the new device.');
+}
+
+/** POST /api/chat/devices/:id/approve: a joined device of the person hands over the sealed history key; the waiting device joins. */
+async function approveDevice(userId: string, chatDeviceId: string, input: unknown) {
+  const body = object(input);
+  const publicKey = bytes(body.public_key, 65, 65, 'CHAT_APPROVAL_INVALID');
+  const sealed = bytes(body.sealed_key, 32, 1500, 'CHAT_APPROVAL_INVALID');
+  await withTransaction(async cx => {
+    await openRequest(userId, chatDeviceId, publicKey, cx);
+    await cx.execute('UPDATE chat_devices SET approved_at = UTC_TIMESTAMP(), pair_sealed = ?, pair_requested_at = NULL WHERE id = ?', [sealed, chatDeviceId]);
+  });
+  publishChatDevice(userId, chatDeviceId);
+  return { approved: true as const };
+}
+
+/** DELETE /api/chat/devices/:id/approval: "This was not me"; the device keeps waiting. */
+async function dropApproval(userId: string, chatDeviceId: string) {
+  await withTransaction(async cx => {
+    await openRequest(userId, chatDeviceId, null, cx);
+    await cx.execute('UPDATE chat_devices SET pair_public = NULL, pair_requested_at = NULL WHERE id = ?', [chatDeviceId]);
+  });
+  publishChatDevice(userId, chatDeviceId);
+  return { dropped: true as const };
 }
 
 /** More key packages, and a new last resort that replaces the old one; at most 100 unclaimed are kept. */
@@ -181,8 +362,8 @@ async function addKeyPackages(userId: string, token: string | null, input: unkno
 // --- Devices of a conversation's people -------------------------------------------------
 
 /**
- * The valid chat devices of these people: enrolled, with their device record
- * still there, of an active person. An Android device's previews are sealed
+ * The valid chat devices of these people: enrolled and joined, with their
+ * device record still there, of an active person. An Android device's previews are sealed
  * to its push channel's key.
  */
 async function validDevices(userIds: readonly string[], executor: SqlExecutor = db): Promise<ChatDevice[]> {
@@ -192,7 +373,7 @@ async function validDevices(userIds: readonly string[], executor: SqlExecutor = 
   const [rows] = await executor.execute<RowDataPacket[]>(`SELECT cd.id, cd.user_id, cd.created_at,
       COALESCE(cd.preview_p256dh, ${push('p256dh')}) AS p256dh, COALESCE(cd.preview_auth, ${push('auth')}) AS auth
     FROM chat_devices cd JOIN users u ON u.id = cd.user_id AND u.is_active = TRUE
-    WHERE cd.device_id IS NOT NULL AND cd.user_id IN (${userIds.map(() => '?').join(', ')})
+    WHERE cd.device_id IS NOT NULL AND cd.approved_at IS NOT NULL AND cd.user_id IN (${userIds.map(() => '?').join(', ')})
     ORDER BY cd.user_id, cd.created_at, cd.id`, [...userIds]);
   return rows.map(row => ({
     chat_device_id: String(row.id), user_id: String(row.user_id),
@@ -245,8 +426,9 @@ async function pruneRemovedChatDevices(executor: SqlExecutor = db): Promise<numb
 }
 
 export {
-  bytes, object, utcIso, ownChatDevice, notEnrolled,
+  bytes, object, utcIso, ownChatDevice, notEnrolled, chatDeviceJoined, joinedOnly,
   parseAccount, getAccount, createAccount, replaceKeyBackup, startNewKey,
   enrolDevice, describeChatDevice, addKeyPackages, validDevices, conversationDevices, claimKeyPackages,
+  deviceChallenge, proveDevice, askApproval, listApprovals, approveDevice, dropApproval,
   removeChatDeviceOfSession, pruneRemovedChatDevices,
 };

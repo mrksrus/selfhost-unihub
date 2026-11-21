@@ -16,9 +16,9 @@ import type { RowDataPacket } from 'mysql2/promise';
 //     a group calendar with the group's contribute share and a point a member
 //     added; and the administrator's calendar shared with another person and
 //     offered to them; a chat of two people with their accounts, a chat
-//     device each with key packages, the conversation's grants and marks, a
-//     group with its Welcome, messages (one edited, one deleted) and archive
-//     copies.
+//     device each (one joined, one waiting for an approval) with key
+//     packages, the conversation's grants and marks, a group with its
+//     Welcome, messages (one edited, one deleted) and archive copies.
 //   DRILL_MODE=report: what belongs to the whole installation, not to one
 //     person's recovery sections: every table the installation's data
 //     inventory declares as owned by the installation or an organisation, row
@@ -128,7 +128,10 @@ async function main() {
       const [sent, edit, gone2, deletion] = Array.from({ length: 4 }, () => crypto.randomUUID());
       for (const [user, device, chat] of [[admin, adminDevice, adminChat], [other.id, otherDevice, otherChat]]) {
         await db.execute("INSERT INTO devices (id, user_id, key_hash, kind, created_at, last_seen_at) VALUES (?, ?, SHA2(UUID(), 256), 'web', UTC_TIMESTAMP(), UTC_TIMESTAMP())", [device, user]);
-        await db.execute('INSERT INTO chat_devices (id, user_id, device_id, preview_p256dh, preview_auth) VALUES (?, ?, ?, ?, ?)', [chat, user, device, bytes(65), bytes(16)]);
+        // The administrator's chat device joined; the other one waits with an open approval request.
+        const joined = chat === adminChat;
+        await db.execute(`INSERT INTO chat_devices (id, user_id, device_id, preview_p256dh, preview_auth, approved_at, pair_public, pair_requested_at)
+          VALUES (?, ?, ?, ?, ?, ${joined ? 'UTC_TIMESTAMP(), NULL, NULL' : 'NULL, ?, UTC_TIMESTAMP()'})`, [chat, user, device, bytes(65), bytes(16), ...joined ? [] : [bytes(65)]]);
         await db.execute('INSERT INTO chat_key_packages (chat_device_id, key_package, last_resort) VALUES (?, ?, FALSE), (?, ?, TRUE)', [chat, bytes(313), chat, bytes(313)]);
         await db.execute('INSERT INTO chat_accounts (user_id, history_public, key_backup, backup_salt, backup_rounds, backup_format) VALUES (?, ?, ?, ?, 600000, 1)', [user, bytes(65), bytes(60), bytes(16)]);
       }

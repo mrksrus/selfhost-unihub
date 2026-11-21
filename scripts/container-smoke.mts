@@ -123,11 +123,11 @@ try {
   await primary.request('POST', '/api/recordings/uploads/start', {}, { expected: 403 });
   primary.csrf = savedCsrf;
   // Chat files: a 60 MB body reaches the API through its own location (refused
-  // there for a chat the person is not in); container-smoke.sh sends one elsewhere.
+  // there: this session's device has not joined Chat); container-smoke.sh sends one elsewhere.
   const large = new Uint8Array(60 * 1024 * 1024);
   const chatUpload = await primary.request<{ code: string }>('POST', `/api/chat/conversations/${crypto.randomUUID()}/attachments?id=${crypto.randomUUID()}`, large,
-    { expected: 404, rawBody: true, headers: { 'Content-Type': 'application/octet-stream' } });
-  assert.equal(chatUpload.data.code, 'CONVERSATION_NOT_FOUND');
+    { expected: 403, rawBody: true, headers: { 'Content-Type': 'application/octet-stream' } });
+  assert.equal(chatUpload.data.code, 'CHAT_DEVICE_WAITING');
 
   // One second of 8 kHz mono PCM with a valid WAV header, generated without external tooling.
   const sampleRate = 8000; const wav = Buffer.alloc(44 + sampleRate * 2);

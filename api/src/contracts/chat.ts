@@ -10,7 +10,8 @@
 //
 // Refusals every route shares: 403 MODULE_DISABLED while Chat is off for the
 // person (their switch or a policy), 403 APP_LOCK_REQUIRED for a device
-// short of the lock the person's policies require for Chat, and 404
+// short of the lock the person's policies require for Chat, 403
+// CHAT_DEVICE_WAITING for a device that has not joined Chat (below), and 404
 // CONVERSATION_NOT_FOUND for a conversation the person is not a member of.
 // A route only a chat's managers may use answers 403 CHAT_FORBIDDEN to its
 // other members.
@@ -26,6 +27,8 @@
 
 /** Binary data as base64url text without padding. */
 export type Base64Url = string;
+
+import type { DeviceSummary } from './devices';
 
 // --- The person's chat account: the history key and its backup ----------------
 
@@ -53,7 +56,7 @@ export interface ChatAccount {
 /** GET /api/chat/account: the signed-in person's own account; null before they chose a passphrase. */
 export interface ChatAccountResponse { account: ChatAccount | null }
 
-/** POST /api/chat/account: the first passphrase. 409 CHAT_ACCOUNT_EXISTS when the person has one. */
+/** POST /api/chat/account: the first passphrase; it joins the device of the request. 409 CHAT_ACCOUNT_EXISTS when the person has one. */
 export interface ChatAccountCreateRequest { history_public: Base64Url; key_backup: ChatKeyBackup }
 
 /**
@@ -69,7 +72,11 @@ export interface ChatKeyBackupUpdateRequest { current_password: string; history_
  * POST /api/chat/account/new-key: a new history key and passphrase when no
  * device holds the old key and its passphrase is forgotten. The account
  * password is asked as above. Every archive copy sealed to the old key is
- * dropped: nobody can open it any more. Answers ChatAccountResponse.
+ * dropped: nobody can open it any more. It joins the device of the request
+ * and is written to the activity log (chat.new_key). Answers
+ * ChatAccountResponse. 409 CHAT_DEVICE_SIGNED_IN (ChatDeviceSignedInDetails)
+ * while another joined device of the person has a live session: that device
+ * still holds the key, or must be signed out first.
  */
 export interface ChatNewKeyRequest { current_password: string; history_public: Base64Url; key_backup: ChatKeyBackup }
 
@@ -86,16 +93,110 @@ export interface ChatPreviewKey { p256dh: Base64Url; auth: Base64Url }
  * POST /api/chat/devices: enrols the device of the request. A chat device
  * that device enrolled earlier is removed (it lost its keys), so every group
  * that names it is out of date. key_packages: 1 to 100 MLS key packages;
- * last_resort: the package handed out when none is left.
+ * last_resort: the package handed out when none is left. The new chat
+ * device waits, unless its person has no chat account yet.
  */
 export interface ChatDeviceEnrolRequest { preview: ChatPreviewKey | null; key_packages: Base64Url[]; last_resort: Base64Url }
 
-/** The answer of POST /api/chat/devices, GET /api/chat/devices/current and its key-packages route. */
+/**
+ * A chat device waits or has joined. A waiting device enrolled (its key
+ * packages are up) but is in no chat: it is never handed out for a group,
+ * gets no chat hint and no chat notification, does not make its person
+ * online, and every chat route answers it 403 CHAT_DEVICE_WAITING except the
+ * account (GET, POST, POST new-key), enrolling, the current device, its key
+ * packages, the challenge, the proof and asking for an approval.
+ *
+ * A device joins in one of four ways: it enrols while its person has no chat
+ * account yet; the first passphrase or "Start a new key" on it; the proof
+ * that it holds the history key (challenge, then proof); an approval from a
+ * joined device of the same person. Devices that existed before waiting was
+ * introduced are joined.
+ */
+export type ChatDeviceState = 'waiting' | 'joined';
+
+/** The answer of POST /api/chat/devices, GET /api/chat/devices/current, its key-packages, proof and approval routes. */
 export interface ChatDeviceResponse {
   chat_device_id: string;
   /** Key packages not yet claimed, the last resort not counted. */
   key_packages: number;
+  state: ChatDeviceState;
+  /** When this waiting device asked for an approval that is still open (ten minutes); null otherwise. */
+  approval_requested_at: string | null;
+  /**
+   * Once, on GET /api/chat/devices/current after an approval: the history
+   * private key sealed by the approving device to the one-time key; that read
+   * clears it. null otherwise.
+   */
+  sealed_key: Base64Url | null;
 }
+
+/**
+ * POST /api/chat/devices/current/challenge: a value sealed to the person's
+ * history_public (RFC 8188 aes128gcm as in RFC 8291, with the history key's
+ * fixed auth secret), bound to this chat device and the current history key,
+ * good for five minutes. Only a device that holds the history private key
+ * can open it. 404 CHAT_ACCOUNT_NOT_FOUND without an account.
+ */
+export interface ChatChallengeResponse { sealed: Base64Url }
+
+/**
+ * POST /api/chat/devices/current/proof: the opened value; the device joins.
+ * 403 CHAT_PROOF_INVALID for a wrong value, one made for another device or
+ * key, or one older than five minutes. A joined device is answered as it is.
+ */
+export interface ChatProofRequest { value: Base64Url }
+
+/**
+ * POST /api/chat/devices/current/approval: a waiting device asks the person's
+ * joined devices to approve it, with the public half of a one-time P-256 key
+ * (uncompressed, 65 bytes) the history key is to be sealed to; both devices
+ * show a code made from it. Asking again replaces the key and the ten
+ * minutes start again. The joined devices get the hint chat.device and a
+ * notification of kind chat_device ("Approve a new device?", for ten
+ * minutes, opening /chat?approve=<chat_device_id>). A joined device is
+ * answered as it is, nothing asked. 400 CHAT_APPROVAL_INVALID for a key
+ * that is not one (also on approve, for the key or the sealed key).
+ */
+export interface ChatApprovalAskRequest { public_key: Base64Url }
+
+/** A device as the device list names it: its record's id (for "Sign that device out", DELETE /api/devices/:id) and the fields of its label. */
+export type ChatDeviceName = Pick<DeviceSummary, 'id' | 'kind' | 'app_version' | 'user_agent'>;
+
+/** An open request of a waiting device of the person. */
+export interface ChatApproval {
+  chat_device_id: string;
+  device: ChatDeviceName;
+  public_key: Base64Url;
+  requested_at: string;
+}
+
+/** GET /api/chat/devices/approvals: the person's open requests (at most ten minutes old), the latest first. */
+export interface ChatApprovalsResponse { approvals: ChatApproval[] }
+
+/**
+ * POST /api/chat/devices/:id/approve (:id a chat device id): a joined device
+ * of the same person hands over the history private key sealed to the
+ * request's one-time key (public_key names it: a request asked again with
+ * another key is not this one), and the waiting device joins. 404
+ * CHAT_APPROVAL_NOT_FOUND for another person's device, a request older than
+ * ten minutes, dropped, answered or for another key.
+ */
+export interface ChatApproveRequest { public_key: Base64Url; sealed_key: Base64Url }
+export interface ChatApprovedResponse { approved: true }
+
+/**
+ * DELETE /api/chat/devices/:id/approval: "This was not me": a joined device
+ * of the person drops the request; the device keeps waiting and can be
+ * signed out from the device list. 404 CHAT_APPROVAL_NOT_FOUND as above.
+ */
+export interface ChatApprovalDroppedResponse { dropped: true }
+
+/**
+ * The live hint chat.device, to the person's joined devices and to the
+ * device it names: a request was made, answered or dropped, or the device
+ * joined. Refetch GET /api/chat/devices/approvals or the current device.
+ */
+export interface ChatDeviceHint { chat_device_id: string }
 
 /**
  * GET /api/chat/devices/current: the chat device of the request's device;
@@ -120,7 +221,8 @@ export interface ChatDevice {
 /**
  * GET /api/chat/conversations/:id/devices: the valid chat devices of the
  * people the conversation reaches, the caller's own included. A device is
- * valid while its F5 device exists and is enrolled and its person is active.
+ * valid while its F5 device exists and is enrolled and joined, and its
+ * person is active.
  */
 export interface ChatDevicesResponse { devices: ChatDevice[] }
 
@@ -345,6 +447,9 @@ export interface ChatGroupCreateRequest {
   chat_device_ids: string[];
 }
 export interface ChatGroupResponse { group_id: string; current: true }
+
+/** The details of 409 CHAT_DEVICE_SIGNED_IN: the person's other joined devices, as Settings › Security › Devices lists them. */
+export interface ChatDeviceSignedInDetails { devices: ChatDeviceName[] }
 
 /** The details of 409 CHAT_GROUP_STALE, also answered to a message for an old group or a group whose devices are out of date. */
 export interface ChatGroupStaleDetails { current_group_id: string | null }

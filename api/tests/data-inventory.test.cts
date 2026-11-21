@@ -29,7 +29,7 @@ function sourceColumns(source: FixtureValue) {
 }
 const serviceSource = (name: FixtureValue) => fs.readFileSync(path.join(__dirname, '../src/services', `${name}.ts`), 'utf8');
 function productionColumns() {
-  return sourceColumns(['database-baseline', 'database', 'database-migrations', 'contacts-migration', 'devices-migration', 'organisation-migration', 'shared-contacts-migration', 'shared-calendars-migration', 'chat-migration', 'chat-groups-migration'].map(serviceSource).join('\n'));
+  return sourceColumns(['database-baseline', 'database', 'database-migrations', 'contacts-migration', 'devices-migration', 'organisation-migration', 'shared-contacts-migration', 'shared-calendars-migration', 'chat-migration', 'chat-groups-migration', 'chat-device-approval-migration'].map(serviceSource).join('\n'));
 }
 
 // Devices (0.29, F5) are installation state: no personal backup carries a
@@ -123,7 +123,8 @@ test('chat tables never travel in a personal backup, and a backup says where cha
   const { backupContents } = require('../dist/src/services/backup-classes') as typeof import('../src/services/backup-classes');
   const chat = Object.keys(TABLE_DECLARATIONS).filter(table => TABLE_DECLARATIONS[table].module === 'chat').sort();
   assert.deepEqual(chat, ['chat_accounts', 'chat_archive', 'chat_attachments', 'chat_conversations', 'chat_devices', 'chat_group_devices', 'chat_groups', 'chat_key_packages', 'chat_members', 'chat_messages']);
-  const later: Record<string, number> = { 'chat_conversations.name': 32, 'chat_conversations.retention_days': 32, 'chat_conversations.retention_from': 32, 'chat_members.notify': 32 };
+  const later: Record<string, number> = { 'chat_conversations.name': 32, 'chat_conversations.retention_days': 32, 'chat_conversations.retention_from': 32, 'chat_members.notify': 32,
+    ...Object.fromEntries(['approved_at', 'pair_public', 'pair_sealed', 'pair_requested_at'].map(column => [`chat_devices.${column}`, 33])) };
   for (const table of chat) {
     assert.equal(TABLE_POLICIES[table], undefined, `${table} is in no backup section`);
     for (const column of NON_ARCHIVE_POLICIES[table].columns) {

@@ -29,7 +29,7 @@ const CHAT_MANIFEST = Object.freeze({
   module: Object.freeze({ id: 'chat', label: 'Chat', backgroundSupported: false, recoverySection: null }),
   pages: Object.freeze([Object.freeze({ id: 'chat', label: 'Chat', module: 'chat' })]),
   // Its notification kinds; services/notifications.ts renders them and refuses to start without each.
-  notificationKinds: Object.freeze(['chat']),
+  notificationKinds: Object.freeze(['chat', 'chat_device']),
   // Upgrade step 31 (chat-migration.ts).
   introducedIn: 31,
   excludedReason: 'Chats are not in a personal backup: the server cannot read them, and they are restored with the chat passphrase. Only the instance backup carries them, as stored.',
@@ -37,7 +37,8 @@ const CHAT_MANIFEST = Object.freeze({
     chat_accounts: { owner: 'user', shareable: false, dataClass: 'ciphertext', restore: `${INSTANCE_ONLY} The history key stays wrapped by the passphrase.`,
       columns: 'user_id history_public key_backup backup_salt backup_rounds backup_format created_at updated_at' },
     chat_devices: { owner: 'user', shareable: false, dataClass: 'installation', restore: `${INSTANCE_ONLY} An instance restore deletes the devices, which removes every chat device; devices enrol again.`,
-      columns: 'id user_id device_id preview_p256dh preview_auth created_at' },
+      columns: 'id user_id device_id preview_p256dh preview_auth created_at approved_at pair_public pair_sealed pair_requested_at',
+      added: { approved_at: 33, pair_public: 33, pair_sealed: 33, pair_requested_at: 33 } },
     chat_key_packages: { owner: 'user', shareable: false, dataClass: 'installation', restore: `${INSTANCE_ONLY} A removed device's packages are never handed out.`,
       columns: 'id chat_device_id key_package last_resort created_at' },
     chat_conversations: { owner: 'organisation', shareable: true, dataClass: 'org', restore: `${INSTANCE_ONLY} Its people reach it through their grants.`,

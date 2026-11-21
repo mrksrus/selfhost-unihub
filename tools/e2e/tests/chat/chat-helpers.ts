@@ -1,7 +1,8 @@
+import crypto from 'node:crypto';
 import { expect } from 'e2e';
 import { chromium, type Browser, type Locator, type Page } from 'playwright-core';
 import { signInPassword, stack } from '../support/env.ts';
-import { ok, signIn } from '../support/api.ts';
+import { ok, pageApi, signIn } from '../support/api.ts';
 import { addPerson, type Effective } from '../organisation/organisation-helpers.ts';
 
 // What the chat tests share. Each test writes between two people of its own,
@@ -61,6 +62,39 @@ export async function chatBrowser(person: Person, args: string[] = []) {
   return opened;
 }
 
+/**
+ * Joins the page's device to Chat by the proof of the history key, as a
+ * device that knows the passphrase does: it unwraps the key backup, opens the
+ * server's challenge and sends it back, then reloads the page. For browsers
+ * whose screens do not join a waiting device yet. Returns whether it waited.
+ */
+export async function joinChat(page: Evaluates, passphrase: string) {
+  await expect.poll(async () => (await pageApi(page, 'GET', '/api/chat/devices/current')).status, { timeout: 60_000 }).toBe(200);
+  if (ok(await pageApi<{ state: string }>(page, 'GET', '/api/chat/devices/current'), 'the chat device').state === 'joined') return false;
+  const { account } = ok(await pageApi<{ account: { key_backup: { salt: string; rounds: number; wrapped: string } } }>(page, 'GET', '/api/chat/account'), 'the key backup');
+  const wrapped = Buffer.from(account.key_backup.wrapped, 'base64url');
+  const unwrapping = crypto.pbkdf2Sync(passphrase.normalize('NFC'), Buffer.from(account.key_backup.salt, 'base64url'), account.key_backup.rounds, 32, 'sha256');
+  const unwrap = crypto.createDecipheriv('aes-256-gcm', unwrapping, wrapped.subarray(0, 12));
+  unwrap.setAuthTag(wrapped.subarray(wrapped.length - 16));
+  const jwk = JSON.parse(Buffer.concat([unwrap.update(wrapped.subarray(12, wrapped.length - 16)), unwrap.final()]).toString('utf8')) as { d: string };
+  const history = crypto.createECDH('prime256v1');
+  history.setPrivateKey(Buffer.from(jwk.d, 'base64url'));
+  // RFC 8291 with the history key's fixed auth secret, as the page's seal.ts opens it.
+  const sealed = Buffer.from(ok(await pageApi<{ sealed: string }>(page, 'POST', '/api/chat/devices/current/challenge'), 'the challenge').sealed, 'base64url');
+  const salt = sealed.subarray(0, 16);
+  const sender = sealed.subarray(21, 21 + sealed[20]);
+  const record = sealed.subarray(21 + sealed[20]);
+  const hkdf = (key: Buffer, ikm: Buffer, info: string | Buffer, length: number) => Buffer.from(crypto.hkdfSync('sha256', ikm, key, info, length));
+  const ikm = hkdf(Buffer.alloc(16), history.computeSecret(sender), Buffer.concat([Buffer.from('WebPush: info\0'), history.getPublicKey(), sender]), 32);
+  const open = crypto.createDecipheriv('aes-128-gcm', hkdf(salt, ikm, 'Content-Encoding: aes128gcm\0', 16), hkdf(salt, ikm, 'Content-Encoding: nonce\0', 12));
+  open.setAuthTag(record.subarray(record.length - 16));
+  const padded = Buffer.concat([open.update(record.subarray(0, record.length - 16)), open.final()]);
+  ok(await pageApi(page, 'POST', '/api/chat/devices/current/proof', { value: padded.subarray(0, padded.lastIndexOf(2)).toString('base64url') }), 'the proof');
+  await page.evaluate(() => { (window as unknown as { reloading?: true }).reloading = true; setTimeout(() => location.reload()); }, null);
+  await expect.poll(() => page.evaluate(() => !('reloading' in window) && document.readyState === 'complete', null).catch(() => false), { timeout: 60_000 }).toBe(true);
+  return true;
+}
+
 /** A chat's row in the list, its messages when it is open, and a message written into it. */
 export const chatRow = (page: Page, chat: string) => page.getByRole('list', { name: 'Chats' }).getByRole('link', { name: new RegExp(`^${escape(chat)}`) });
 export const messagesOf = (page: Page, chat: string) => page.getByRole('list', { name: `Messages with ${chat}` });
@@ -101,7 +135,10 @@ export const chatWithHook = '/chat#chat-test';
  */
 export async function choosePassphrase(page: Evaluates) {
   await expect.poll(() => page.evaluate(() => 'chatTest' in window, null), { timeout: 60_000 }).toBe(true);
-  return page.evaluate((passphrase) => (window as unknown as { chatTest: { passphrase(value: string): Promise<string> } }).chatTest.passphrase(passphrase), PASSPHRASE);
+  const chosen = await page.evaluate((passphrase) => (window as unknown as { chatTest: { passphrase(value: string): Promise<string> } }).chatTest.passphrase(passphrase), PASSPHRASE);
+  // The page may enrol only after the passphrase made the account, and then its device waits.
+  if (await joinChat(page, PASSPHRASE)) await expect.poll(() => page.evaluate(() => 'chatTest' in window, null).catch(() => false), { timeout: 60_000 }).toBe(true);
+  return chosen;
 }
 
 /** Waits for a Playwright locator to show (Blair's browser has no `screen`). */

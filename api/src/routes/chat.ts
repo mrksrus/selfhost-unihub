@@ -7,6 +7,7 @@ import type {
 
 import { getAuthTokenFromRequest } from '../auth';
 import { defineRoutes } from '../http/route';
+import { joinedOnly } from '../services/chat-devices';
 import {
   addChatMembers, chatCandidates, chatMembers, confirmJoined, createGroup, deleteMessage, fetchMessages, leaveChat, listArchive, listConversations, moveMarks,
   postMessage, removeChatMember, renameChat, setNotify, startConversation, storeArchive, unfollowChat,
@@ -23,7 +24,7 @@ const token = (req: Request) => getAuthTokenFromRequest(req);
 // Ids are stored in lower case.
 const id = (req: Request) => req.params.id.toLowerCase();
 
-export = defineRoutes({
+export = defineRoutes(joinedOnly({
   'GET /api/chat/conversations': { auth: 'user', module: 'chat', handler: async (_req: Request, userId: string) => {
     return { conversations: await listConversations(userId) } satisfies ChatConversationsResponse;
   } },
@@ -79,4 +80,4 @@ export = defineRoutes({
   'GET /api/chat/archive': { auth: 'user', module: 'chat', handler: async (req: Request, userId: string) => {
     return await listArchive(userId, query(req)) satisfies ChatArchiveResponse;
   } },
-});
+}));

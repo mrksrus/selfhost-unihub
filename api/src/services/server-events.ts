@@ -22,6 +22,8 @@ interface EventStream {
   userId: string;
   tokenHash: string | null;
   modules: Set<string>;
+  /** Modules kept out of this stream even while the person has them on (Chat on a device that has not joined it). */
+  withheld: Set<string>;
   revalidate: ((stream: EventStream) => Promise<boolean>) | null;
   req: IncomingMessage;
   res: ServerResponse;
@@ -35,6 +37,7 @@ interface AttachOptions {
   res: ServerResponse;
   token?: string | null;
   modules?: Iterable<string> | null;
+  withheld?: Iterable<string> | null;
   revalidate?: ((stream: EventStream) => Promise<boolean>) | null;
 }
 interface PendingEvent { type: string; data: unknown; module: string | null }
@@ -153,7 +156,7 @@ function createServerEvents(options: BusOptions = {}) {
     }
   }
 
-  function attach({ userId, req, res, token = null, modules = null, revalidate = null }: AttachOptions) {
+  function attach({ userId, req, res, token = null, modules = null, withheld = null, revalidate = null }: AttachOptions) {
     const user = userId === null || userId === undefined || userId === '' ? null : String(userId);
     if (!user) return { ok: false, status: 401, error: 'Unauthorized' };
     if (closing) return { ok: false, status: 503, error: 'Server is shutting down' };
@@ -164,7 +167,8 @@ function createServerEvents(options: BusOptions = {}) {
     const stream: EventStream = {
       userId: user,
       tokenHash: hashToken(token),
-      modules: modules instanceof Set ? modules : new Set(modules || []),
+      modules: new Set([...modules || []].filter(module => !new Set(withheld || []).has(module))),
+      withheld: new Set(withheld || []),
       revalidate,
       req,
       res,
@@ -275,7 +279,7 @@ function createServerEvents(options: BusOptions = {}) {
   }
 
   function setUserModules(userId: unknown, modules: Iterable<string>) {
-    for (const stream of byUser.get(String(userId)) || []) stream.modules = new Set(modules);
+    for (const stream of byUser.get(String(userId)) || []) stream.modules = new Set([...modules].filter(module => !stream.withheld.has(module)));
   }
 
   return {
@@ -287,7 +291,9 @@ function createServerEvents(options: BusOptions = {}) {
     closeAll,
     setUserModules,
     tick,
-    hasListeners: (userId: unknown) => byUser.has(String(userId)),
+    /** Whether the person holds a stream; with `module`, one that takes that module's events. */
+    hasListeners: (userId: unknown, module: string | null = null) =>
+      module ? [...byUser.get(String(userId)) || []].some(stream => stream.modules.has(module)) : byUser.has(String(userId)),
     onPresence: (listener: typeof presence) => { presence = listener; },
     stats: () => ({ streams: streams.size, users: byUser.size, throttled: throttles.size }),
     config,
