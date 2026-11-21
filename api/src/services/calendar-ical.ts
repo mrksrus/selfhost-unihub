@@ -63,6 +63,12 @@ function zonedWallTimeToUtc({ year, month, day, hour = 0, minute = 0, second = 0
   return guess;
 }
 
+// A time moved as its clock in the zone shows it: by the edited date's move, measured on that date (the anchor), so a date on the other side of a clock change keeps its hour.
+function shiftInZone(ms: number, deltaMs: number, anchorMs: number, timeZone: string) {
+  const wall = new Date(ms + zoneOffsetMs(ms, timeZone) + deltaMs + zoneOffsetMs(anchorMs + deltaMs, timeZone) - zoneOffsetMs(anchorMs, timeZone));
+  return zonedWallTimeToUtc({ year: wall.getUTCFullYear(), month: wall.getUTCMonth() + 1, day: wall.getUTCDate(), hour: wall.getUTCHours(), minute: wall.getUTCMinutes(), second: wall.getUTCSeconds() }, timeZone);
+}
+
 function resolveUserTimeZone(value: unknown): string {
   if (isValidTimeZone(value)) return value;
   const server = Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -401,7 +407,7 @@ function addTimeProperty(vevent: Component, name: string, time: Time | { value: 
 
 // Excluded and modified occurrences are identified by their original time, so
 // they move with the series; otherwise they would no longer match anything.
-function shiftSeriesExceptions(root: Component, master: Component, deltaMs: number, userTimeZone: string) {
+function shiftSeriesExceptions(root: Component, master: Component, deltaMs: number, userTimeZone: string, move: (ms: number) => number) {
   const shift = (component: Component, name: string) => {
     for (const property of component.getAllProperties(name)) {
       const values = property.getValues().map((time: Time) => {
@@ -411,7 +417,7 @@ function shiftSeriesExceptions(root: Component, master: Component, deltaMs: numb
           return copy;
         }
         const scratch = new ICAL.Component('vevent');
-        setTimeProperty(scratch, 'x-time', icalTimeToMillis(time, userTimeZone) + deltaMs, { template: time, userTimeZone });
+        setTimeProperty(scratch, 'x-time', move(icalTimeToMillis(time, userTimeZone)), { template: time, userTimeZone });
         return (scratch.getFirstPropertyValue('x-time') as Time);
       });
       if (property.isMultiValue) property.setValues(values);
@@ -456,9 +462,11 @@ function updateEventIcs(ics: unknown, fields: Fields, { recurrenceId = '', scope
       // Moving one occurrence of a series by N minutes moves the whole series.
       const delta = fields.startMs - previousStartMs!;
       const length = fields.endMs! - fields.startMs;
-      const masterStart = icalTimeToMillis(start, userTimeZone) + delta;
+      // UniHub's own series (tzid) moves by the clock of its zone; a synced one by the same instant, as before.
+      const move = (ms: number) => tzid ? shiftInZone(ms, delta, previousStartMs!, tzid) : ms + delta;
+      const masterStart = move(icalTimeToMillis(start, userTimeZone));
       next = { ...fields, startMs: masterStart, endMs: masterStart + length };
-      if (delta && !!fields.allDay === !!start.isDate) shiftSeriesExceptions(root, master, delta, userTimeZone);
+      if (delta && !!fields.allDay === !!start.isDate) shiftSeriesExceptions(root, master, delta, userTimeZone, move);
     }
     applyFields(target, next, { template: { start, end }, userTimeZone, tzid });
     return root.toString();
@@ -522,6 +530,7 @@ export {
   isValidTimeZone,
   resolveUserTimeZone,
   zonedWallTimeToUtc,
+  shiftInZone,
   utcToZonedFields,
   allDayRange,
   expandCalendarObject,

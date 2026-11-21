@@ -252,4 +252,17 @@ test('repeating local events: dates in place, one or all, the bin, levels, remin
   const kept = await backup.importBackupForUser(ids.member, later.backup, { mode: 'apply', conflict_mode: 'keep_existing', fileSourcesByPath: later.fileSourcesByPath });
   assert.equal(kept.valid, true, (kept as FixtureValue).errors?.join('\n'));
   assert.deepEqual((await datesOf(review.series_key)).map(date => [date.id, date.title]), reviewDates);
+
+  // ── Saturdays moved to Sundays from a date after the clock change: the date before it keeps its id, tick and hour ──
+  const weekend = (await call(blair, 'POST', '/api/calendar/events', { title: 'Weekend duty', start_time: at(change - 1, 8), end_time: at(change - 1, 9), calendar_id: team.id,
+    repeat: { freq: 'WEEKLY', by_day: ['SA'], count: 3 }, time_zone: 'Europe/Berlin' })).event;
+  const [w1, w2, w3] = (await datesOf(weekend.series_key)).map(date => date.id);
+  await call(blair, 'PUT', ev(w1, '/todo-status'), { todo_status: 'done' });
+  await call(blair, 'PUT', ev(w2), { start_time: at(change + 7, 7), end_time: at(change + 7, 8), repeat: { freq: 'WEEKLY', by_day: ['SU'], count: 3 } });
+  assert.deepEqual((await datesOf(weekend.series_key)).map(date => [date.id, date.start_time, date.todo_status]),
+    [[w1, at(change, 7), 'done'], [w2, at(change + 7, 7), null], [w3, at(change + 14, 7), null]], '09:00 in Berlin on each Sunday');
+  // Back to Saturdays: a removed date stays removed.
+  await call(blair, 'DELETE', ev(w1));
+  await call(blair, 'PUT', ev(w2), { start_time: at(change + 6, 7), end_time: at(change + 6, 8), repeat: { freq: 'WEEKLY', by_day: ['SA'], count: 3 } });
+  assert.deepEqual((await datesOf(weekend.series_key)).map(date => [date.id, date.start_time]), [[w2, at(change + 6, 7)], [w3, at(change + 13, 7)]]);
 });

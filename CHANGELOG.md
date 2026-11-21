@@ -97,6 +97,14 @@ chat, who was mentioned and how large each file is.
   new file root `chat`; a backup made before still restores. Personal
   backups still carry no chats and stay data schema 8.
 
+### Fixed
+
+- Moving a repeating event of one of UniHub's own calendars for all its
+  dates across a clock change (a Saturday series moved to Sunday, for
+  example) keeps every date: the dates on the other side of the change no
+  longer lose their ToDo progress and subtasks, a date removed earlier does
+  not come back, and the series keeps its hour.
+
 ## 0.33.0
 
 Chat: 1:1 chats between the people of your UniHub, on the web and in the

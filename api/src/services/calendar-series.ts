@@ -39,8 +39,8 @@ const utcKey = (ms: number) => new Date(ms).toISOString().replace(/[-:]/g, '').r
 // A recurrence key (calendar-ical.ts recurrenceKey: a date, or a UTC time) as a time.
 const keyMs = (key: string) => key.length === 8 ? Date.UTC(+key.slice(0, 4), +key.slice(4, 6) - 1, +key.slice(6, 8))
   : Date.parse(key.replace(/^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z$/, '$1-$2-$3T$4:$5:$6Z'));
-const shiftedKey = (key: string, deltaMs: number) => key.length === 8
-  ? new Date(keyMs(key) + Math.round(deltaMs / DAY_MS) * DAY_MS).toISOString().slice(0, 10).replace(/-/g, '') : utcKey(keyMs(key) + deltaMs);
+const shiftedKey = (key: string, deltaMs: number, anchorMs: number, timeZone: string) => key.length === 8
+  ? new Date(keyMs(key) + Math.round(deltaMs / DAY_MS) * DAY_MS).toISOString().slice(0, 10).replace(/-/g, '') : utcKey(ical.shiftInZone(keyMs(key), deltaMs, anchorMs, timeZone));
 
 /** The RRULE of a rule the boundary accepts; UNTIL is the end of that day in the series' zone. */
 function ruleText(input: unknown, { allDay, timeZone, weekStart }: { allDay: boolean; timeZone: string; weekStart: string }) {
@@ -268,7 +268,7 @@ async function changeSeriesEvent(userId: string, target: { event: CalendarEvent;
       const deltaMs = fields.startMs !== undefined && previousStartMs !== null && !!fields.allDay === !!Number(row.all_day) ? fields.startMs - previousStartMs : 0;
       if (deltaMs) {
         const [dates] = await cx.execute<Row[]>(`SELECT id, recurrence_id FROM calendar_events WHERE series_id = ? ORDER BY recurrence_id ${deltaMs > 0 ? 'DESC' : 'ASC'} FOR UPDATE`, [series.id]);
-        for (const date of dates) await cx.execute('UPDATE calendar_events SET recurrence_id = ? WHERE id = ?', [shiftedKey(String(date.recurrence_id), deltaMs), date.id]);
+        for (const date of dates) await cx.execute('UPDATE calendar_events SET recurrence_id = ? WHERE id = ?', [shiftedKey(String(date.recurrence_id), deltaMs, previousStartMs!, timeZone), date.id]);
       }
       const calendarId = moveTo ?? series.calendar_id;
       if (moveTo) {
