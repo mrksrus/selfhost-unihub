@@ -309,6 +309,11 @@ object AppNotifications {
         if (payload.optInt("version") != 1 || payload.optString("userId") != device.user) return true
         val dedupe = payload.optString("dedupeKey").takeIf { it.isNotEmpty() && it.length <= 512 } ?: return true
         if (!firstTime(context, "${device.user}:$dedupe")) return true
+        // A call rings through Android's call handling instead of showing as a notification.
+        CallMessage.parse(payload)?.let { call ->
+            Calls.receive(context, origin, call, AppLock.hides(context, origin, "chat"))
+            return true
+        }
         val tag = payload.optString("tag").takeIf { it.isNotEmpty() && it.length <= 128 } ?: dedupe
         val path = targetPath(payload)
         val open = Intent(context, MainActivity::class.java)
