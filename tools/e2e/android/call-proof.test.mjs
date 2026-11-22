@@ -334,11 +334,12 @@ test('a WebView call rings through Telecom on a locked phone and holds with the 
 
   // An `end` right behind its `ring`, before Telecom has the call: nothing keeps ringing.
   const brief = crypto.randomUUID();
-  stub.ring(brief, 'Eli Example');
-  stub.stopRing(brief);
+  const rang = stub.ring(brief, 'Eli Example');
+  const stopped = stub.stopRing(brief);
   await sleep(10_000);
-  results.endRightAfterRing = { telecom: ourCall(), notification: shownCallNotification() };
-  assert.deepEqual(results.endRightAfterRing, { telecom: false, notification: false });
+  // Both reached the app (it acknowledges what it read), and nothing rings.
+  results.endRightAfterRing = { reached: stub.acknowledged(rang) && stub.acknowledged(stopped), telecom: ourCall(), notification: shownCallNotification() };
+  assert.deepEqual(results.endRightAfterRing, { reached: true, telecom: false, notification: false });
 
   // The checks of 3 and 4, after the numbers are kept.
   assert.ok(last.appReceived30s > 500 && last.deskReceived30s > 500, `packets at ${minutes} minutes: ${JSON.stringify(last)}`);

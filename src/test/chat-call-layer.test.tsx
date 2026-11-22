@@ -7,7 +7,7 @@ import type { CallView, ChatCalls } from '@/lib/chat/call';
 
 // The call's screens over a page, with a fixed call in place of the server's: what the keyboard may and may not do to a call.
 const state: { held: { calls: ChatCalls; call: CallView | null } | null } = { held: null };
-vi.mock('@/hooks/use-chat-calls', () => ({ useChatCalls: () => state.held }));
+vi.mock('@/hooks/use-chat-calls', () => ({ useChatCalls: () => state.held, useHandCallsToApp: () => undefined }));
 
 const view = (fields: Partial<CallView>): CallView => ({
   id: 'call-1', conversation_id: 'chat-blair', peer: { user_id: 'user-blair', name: 'Blair Example' }, incoming: false, state: 'active', ended: null, reason: null,

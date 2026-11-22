@@ -59,11 +59,18 @@ const appPage = `<!doctype html><meta name="viewport" content="width=device-widt
 const side = 'app';
 ${common}
 const bridge = window.UniHubAndroid;
-const tell = action => bridge.postMessage(JSON.stringify({ type: 'call', action }));
-let pending = [];
+// The page reports the call's state, as the server's /call page does (CallActivity).
+const tell = state => bridge.postMessage(JSON.stringify({ type: 'call', state, id: call, muted: false }));
+let pending = [], routes = [], state = 'ringing';
+const report = next => { state = next; document.getElementById('state').textContent = next; log('state', next); tell(next); };
 async function onSignal(data) {
-  if (data.kind === 'command') { if (data.action === 'hangUp') hangUp(); else tell(data.action); return; }
-  if (data.kind === 'hangup') { stop(); tell('hangUp'); return; }
+  if (data.kind === 'command') {
+    if (data.action === 'hangUp') hangUp();
+    const route = routes.find(r => r.kind === data.action);
+    if (route) bridge.postMessage(JSON.stringify({ type: 'call', action: 'route', route: route.id }));
+    return;
+  }
+  if (data.kind === 'hangup') { stop(); report('ended'); setTimeout(() => tell('none'), 500); return; }
   if (!pc) { pending.push(data); return; }
   if (data.kind === 'offer') {
     await pc.setRemoteDescription(data.description);
@@ -75,33 +82,37 @@ async function onSignal(data) {
 }
 let starting = false;
 async function start() {
-  if (starting) return;
+  if (starting || ended) return;
   starting = true;
+  report('connecting');
   let stream;
   try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
   catch (error) { log('microphone-failed', error.name + ': ' + error.message); return; }
   log('microphone', stream.getAudioTracks()[0].label);
   connect(stream.getAudioTracks()[0]);
+  pc.addEventListener('connectionstatechange', () => { if (pc.connectionState === 'connected' && state !== 'active') report('active'); });
   const queued = pending; pending = [];
   for (const data of queued) await onSignal(data);
 }
-function hangUp() { if (ended) return; signal({ kind: 'hangup' }); stop(); tell('hangUp'); }
+function hangUp() { if (ended) return; signal({ kind: 'hangup' }); stop(); report('ended'); setTimeout(() => tell('none'), 500); }
 bridge.addEventListener('message', event => {
   const message = JSON.parse(event.data);
-  if (message.type !== 'call' || !message.state) return;
-  document.getElementById('state').textContent = message.state;
-  log('state', message.state);
-  if (message.state === 'active' && !ended) start();
-  if (message.state === 'ended' && !ended) { signal({ kind: 'hangup' }); stop(); }
+  if (message.type !== 'call') return;
+  if (message.routes) { routes = message.routes; log('routes', routes.map(r => r.kind + (r.active ? '*' : '')).join(' ')); }
+  if (!message.command) return;
+  log('command', message.command);
+  if (message.command === 'answer') start();
+  if ((message.command === 'hangUp' || message.command === 'decline') && !ended) { signal({ kind: 'hangup' }); stop(); report('ended'); }
 });
-document.getElementById('answer').onclick = () => tell('answer');
+document.getElementById('answer').onclick = start;
 document.getElementById('hangup').onclick = hangUp;
 // Where its buttons are, so the test can touch them as a finger would.
 const layout = () => log('layout', JSON.stringify({ ratio: devicePixelRatio, buttons: Object.fromEntries([...document.querySelectorAll('button')]
   .map(b => { const r = b.getBoundingClientRect(); return [b.textContent, { x: r.x + r.width / 2, y: r.y + r.height / 2 }]; })) }));
 addEventListener('resize', layout);
 layout();
-tell('hello');
+// Ready for the app's commands.
+tell(state);
 poll();
 </script>`;
 

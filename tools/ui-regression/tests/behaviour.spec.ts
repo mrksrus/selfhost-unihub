@@ -359,6 +359,35 @@ test.describe('P-11 touch targets are big enough and never overlap', () => {
     expectOnlyKnown(await touchViolations(page, 'section[aria-label="Chat with Blair Example"]'), []);
   });
 
+  test('Calls: on the app\'s call screen at 360 px the sound button keeps one row, and "Hang up" is not where "Answer" was', async ({ page, open, settle }) => {
+    await withChat(page, { threads: CHAT_CALL_THREAD });
+    // The app's call screen: its user agent, and a bridge that names two routes and answers every question.
+    await page.addInitScript(() => {
+      const agent = `${navigator.userAgent} UniHubAndroid/0.35.0 (35000) UniHubBridge/5 UniHubCallScreen`;
+      Object.defineProperty(navigator, 'userAgent', { configurable: true, get: () => agent });
+      const routes = [{ id: 'earpiece', kind: 'earpiece', name: 'Earpiece', active: true }, { id: 'speaker', kind: 'speaker', name: 'Speaker', active: false }];
+      const listeners = new Set<(event: { data: string }) => void>();
+      const tell = (data: unknown) => listeners.forEach(listener => listener({ data: JSON.stringify(data) }));
+      (window as unknown as { UniHubAndroid: unknown }).UniHubAndroid = {
+        postMessage: (raw: string) => { const { id } = JSON.parse(raw); if (id) setTimeout(() => tell({ id, ok: true, due: false })); },
+        addEventListener: (_type: string, listener: (event: { data: string }) => void) => { listeners.add(listener); setTimeout(() => tell({ type: 'call', routes })); },
+        removeEventListener: (_type: string, listener: (event: { data: string }) => void) => { listeners.delete(listener); },
+      };
+    });
+    await page.setViewportSize({ width: 360, height: 780 });
+    await withCall(page, { incoming: true, state: 'ringing', here: false });
+    await open('/call?id=call-1');
+    const answer = (await page.getByRole('button', { name: 'Answer' }).boundingBox())!;
+    await withCall(page, { incoming: true, state: 'connecting' });
+    await open('/call?id=call-1');
+    await expect(page.getByRole('button', { name: 'Sound: Earpiece' })).toBeVisible();
+    await settle();
+    const [hangUp, mute, sound] = await Promise.all(['Hang up', 'Mute', 'Sound: Earpiece'].map(async name => (await page.getByRole('button', { name }).boundingBox())!));
+    expect(new Set([hangUp.y, mute.y, sound.y]).size, 'one row').toBe(1);
+    expect(hangUp.x + hangUp.width <= answer.x || hangUp.x >= answer.x + answer.width || hangUp.y + hangUp.height <= answer.y || hangUp.y >= answer.y + answer.height).toBe(true);
+    expectOnlyKnown(await touchViolations(page, 'main'), []);
+  });
+
   test('Chat: files in a chat with two waiting to be sent, the recorder and search results', async ({ page, open, settle }) => {
     await withChat(page);
     await silentMicrophone(page);
