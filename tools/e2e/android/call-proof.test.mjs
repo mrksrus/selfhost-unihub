@@ -1,5 +1,5 @@
 // A voice call in the app's own call WebView under Android's call handling
-// (Telecom, a self-managed ConnectionService), against a desktop Chromium,
+// (Telecom, through Jetpack's Core-Telecom), against a desktop Chromium,
 // through the throwaway server of support/call-stub.mjs (the server's call
 // routes are not used). It shows, with numbers:
 // 1. with the app closed and the phone locked, a `call` message over the
@@ -9,15 +9,23 @@
 // 3. it still flows after five minutes with the screen off and the phone in
 //    Doze (the app exempt, as "Allow in background" makes it);
 // 4. Telecom takes a change of route and the WebView does not undo it;
-// 5. hanging up on either side ends the call, the service and the screen.
+// 5. hanging up on either side ends the call, the service and the screen, and
+//    the microphone is released;
+// 6. answered by a headset's button (Telecom's own answer, not the app's
+//    screen or notification) with the app in the background and the phone
+//    locked, the call runs with the microphone and sound both ways: (a) over
+//    the call screen the ring put on the lock screen; (b) with full-screen
+//    call screens off, where Android refuses the call screen and the
+//    microphone until the person unlocks and opens the call notification.
+// And an `end` right behind its `ring` leaves nothing ringing.
 // Needs a desktop Chromium (PLAYWRIGHT_BROWSERS_PATH); skipped without one.
-// About twelve minutes: UNIHUB_E2E_CALL_MINUTES shortens the wait of 3.
+// About fifteen minutes: UNIHUB_E2E_CALL_MINUTES shortens the wait of 3.
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import { _android as android, chromium } from 'playwright-core';
 import {
-  PACKAGE, adb, answerSlowDialogs, bridgeMessage, dumpScreen, clearDevicePin, keyguardShowing, setDevicePin, sleep, sleepScreen, tapNative, unlockKeyguard,
+  PACKAGE, adb, answerSlowDialogs, bridgeMessage, dumpScreen, screenNodes, clearDevicePin, keyguardShowing, setDevicePin, sleep, sleepScreen, tapNative, unlockKeyguard,
 } from '../support/android.mjs';
 import { startCallStub } from '../support/call-stub.mjs';
 
@@ -27,18 +35,22 @@ const browserMissing = !launched && 'no desktop Chromium for the far end of the 
 const sdk = Number(adb('shell', 'getprop', 'ro.build.version.sdk').trim());
 const results = {};
 const browser = launched;
-let stub, savedServer;
+let stub, savedServer, shadeTitle;
 
 const shell = (...args) => adb('shell', ...args);
-const telecomCalls = () => shell('dumpsys', 'telecom').split('\n').filter(line => /^\s*Call TC@/.test(line) || /state=|mState=/.test(line));
 // Telecom's live calls (mCalls), not its history.
 const liveCalls = () => { const text = shell('dumpsys', 'telecom'); return text.slice(text.indexOf('mCalls:'), text.indexOf('mCallAudioManager:')); };
-const ourCall = () => /TC@/.test(liveCalls()) && liveCalls().includes('io.github.mrksrus.unihub');
+const ourCall = (state = '\\w+') => new RegExp(`state=${state}, tpac=ComponentInfo\\{io\\.github\\.mrksrus\\.unihub/`).test(liveCalls());
 const callService = () => shell('dumpsys', 'activity', 'services', `${PACKAGE}/.CallService`);
 const callServiceRunning = () => /ServiceRecord\{\w+ u0 io\.github\.mrksrus\.unihub\/\.CallService\}/.test(callService());
 // The microphone's last state in Android's recording log: "not silenced" while the app may record.
 const microphone = () => [...shell('dumpsys', 'audio').matchAll(/rec (\w+) riid:\d+ uid:\d+ session:\d+ src:(\w+) (not silenced|silenced) pack:io\.github\.mrksrus\.unihub/g)].at(-1)?.slice(1).join(' ') ?? '';
+// After a hang-up the log's last entry for the app is the recording's end.
+const released = () => { const last = microphone(); return /^(stop|release)\b/.test(last) && last; };
 const serviceForeground = () => /isForeground=true/.test(callService());
+// The service's foreground types: phoneCall is 0x4, microphone 0x80.
+const serviceTypes = () => Number(/isForeground=true\b[^\n]*?\btypes=(0x[0-9a-f]+)/i.exec(callService())?.[1] ?? 0);
+const fullScreenIntents = allowed => shell('appops', 'set', PACKAGE, 'USE_FULL_SCREEN_INTENT', allowed ? 'allow' : 'deny');
 const callScreen = () => shell('dumpsys', 'activity', 'activities').split('\n').some(line => /Hist.*CallActivity/.test(line));
 const shownCallNotification = () => shell('dumpsys', 'notification', '--noredact').split(/\n\s*NotificationRecord\(/).some(r => r.includes(`pkg=${PACKAGE}`) && /category=call/.test(r));
 const topIsCall = () => shell('dumpsys', 'activity', 'activities').split('\n').some(line => /topResumedActivity.*CallActivity/.test(line));
@@ -104,7 +116,7 @@ async function startCall(name) {
   const call = crypto.randomUUID();
   const desk = await browser.newPage();
   await desk.goto(`${stub.origin}/desk?id=${call}`);
-  await until(() => stub.events(call, 'desk').length || stub.stats(call, 'desk').length || true, 'the desk', 5000);
+  await until(() => stub.stats(call, 'desk').length, 'the desk\'s call', 15_000);
   const rang = Date.now();
   stub.ring(call, name);
   await until(() => ourCall(), 'Telecom holding the ringing call', 60_000, 250);
@@ -129,6 +141,36 @@ async function tapCallPage(call, name) {
   return Date.now();
 }
 
+/**
+ * Rings, lets `ready` check the screen, sends a headset's hook key and waits for Telecom's answer;
+ * `then` may bring the sound in; then a minute of sound is measured and the desk hangs up.
+ */
+async function headsetAnswer(name, ready, then) {
+  const ring = await startCall(name);
+  const result = await ready(ring.call);
+  adb('logcat', '-c');
+  const hooked = Date.now();
+  adb('shell', 'input', 'keyevent', 'KEYCODE_HEADSETHOOK');
+  try {
+    await until(() => ourCall('ACTIVE'), 'Telecom making the call active', 30_000, 250);
+    result.secondsToActive = (Date.now() - hooked) / 1000;
+    Object.assign(result, await then(ring.call));
+    result.secondsFromHookToSound = await soundFlows(ring.call, hooked);
+    await sleep(60_000);
+    const app = window(ring.call, 'app', 60), desk = window(ring.call, 'desk', 60);
+    Object.assign(result, { appReceived60s: app.received, appEnergy60s: +app.energy.toFixed(3), deskReceived60s: desk.received,
+      microphone: microphone(), serviceTypes: `0x${serviceTypes().toString(16)}`, keyguard: /isKeyguardShowing=true/.test(adb('shell', 'dumpsys', 'window')) });
+  } finally {
+    result.telecom = liveCalls().split('\n').filter(line => /Call id=/.test(line)).map(line => line.trim().slice(0, 140));
+    result.events = stub.events(ring.call, 'app').map(e => `${e.event} ${e.detail}`.trim().slice(0, 80)).slice(-8);
+    console.log(`${name}: ${JSON.stringify(result)}`);
+  }
+  const hung = Date.now();
+  await ring.desk.evaluate(() => window.hangUp());
+  result.hangUpSeconds = await ended(ring.call, hung);
+  return result;
+}
+
 async function ended(call, since) {
   await until(() => !ourCall() && !callServiceRunning() && !callScreen(), 'the call, its service and its screen ending', 30_000, 250);
   return (Date.now() - since) / 1000;
@@ -150,6 +192,7 @@ after(async () => {
   console.log(`call proof: ${JSON.stringify(results)}`);
   shell('dumpsys', 'deviceidle', 'unforce');
   shell('dumpsys', 'battery', 'reset');
+  fullScreenIntents(true);
   try { await unlockKeyguard(); } catch { /* not locked */ }
   clearDevicePin();
   shell('svc', 'power', 'stayon', 'true');
@@ -191,7 +234,8 @@ test('a WebView call rings through Telecom on a locked phone and holds with the 
   const toSound = await soundFlows(first.call, answered);
   await until(() => serviceForeground(), 'the call service in the foreground', 10_000);
   results.point2 = { lockedSecondsFromAnswerToSound: toSound, app: latest(first.call, 'app'), desk: latest(first.call, 'desk'),
-    service: /types=0x\w+|foregroundServiceType=0x\w+/.exec(callService())?.[0] };
+    serviceTypes: `0x${serviceTypes().toString(16)}` };
+  assert.equal(serviceTypes() & 0x84, 0x84, `phoneCall and microphone: ${callService().split('\n').filter(line => /isForeground|types=/.test(line)).join('\n')}`);
 
   console.log('step 2 done');
   // 4. Speaker through Telecom; the WebView keeps it while the sound goes on.
@@ -200,7 +244,8 @@ test('a WebView call rings through Telecom on a locked phone and holds with the 
   await sleep(3000);
   const speaker = routes();
   await sleep(20_000);
-  results.point4 = { offered: offeredRoutes(), before: before4, speaker, after20s: { ...routes(), flowing: window(first.call, 'app', 10).received > 0 } };
+  results.point4 = { offered: offeredRoutes(), before: before4, speaker, after20s: { ...routes(), flowing: window(first.call, 'app', 10).received > 0 },
+    requested: /Route 4: (.*)/.exec(adb('logcat', '-d', '-s', 'UniHubCalls:I'))?.[1] };
 
   console.log('step 4 done');
   // 3. Screen off, Doze forced, for `minutes`.
@@ -224,7 +269,7 @@ test('a WebView call rings through Telecom on a locked phone and holds with the 
   // 5a. The desk hangs up.
   const hung = Date.now();
   await first.desk.evaluate(() => window.hangUp());
-  results.point5desk = { seconds: await ended(first.call, hung) };
+  results.point5desk = { seconds: await ended(first.call, hung), microphone: await until(released, 'the microphone released', 15_000) };
 
   console.log('step 5a done');
   // 5b. Another call on the unlocked phone, answered with the call notification's Answer; the app hangs up on its call screen.
@@ -233,20 +278,82 @@ test('a WebView call rings through Telecom on a locked phone and holds with the 
   await until(() => shownCallNotification(), 'the call notification', 30_000);
   shell('cmd', 'statusbar', 'expand-notifications');
   await sleep(1500);
+  // Where the shade shows the call's name: uiautomator cannot read the shade once a call's timer runs in it (6b).
+  shadeTitle = screenNodes().find(n => n.text === 'Blair Example');
   await tapNative(/^Answer$/i, { timeoutMs: 30_000 });
   const tapped = Date.now();
   const secondSound = await soundFlows(second.call, tapped);
   await until(() => topIsCall(), 'the call screen', 30_000);
   const appHung = await tapCallPage(second.call, 'Hang up');
   results.point2.unlockedSecondsFromNotificationAnswerToSound = secondSound;
-  results.point5app = { seconds: await ended(second.call, appHung) };
+  results.point5app = { seconds: await ended(second.call, appHung), microphone: await until(released, 'the microphone released', 15_000) };
   await until(() => stub.events(second.call, 'desk').some(e => e.event === 'ended'), 'the desk hearing the hang-up', 30_000);
+
+  console.log('step 5b done');
+  // 6a. A headset answers on the locked, dark phone: the ring put the call screen over the lock screen by itself.
+  shell('input', 'keyevent', 'KEYCODE_HOME');
+  await sleepScreen();
+  results.point6 = { sent: 'adb shell input keyevent KEYCODE_HEADSETHOOK' };
+  results.point6.lockScreen = await headsetAnswer('Casey Example', async call => {
+    await until(() => topIsCall(), 'the call screen on top', 30_000, 250);
+    return { callScreenBeforeHook: true };
+  }, async () => ({}));
+  console.log('step 6a done');
+
+  // 6b. Full-screen call screens off, so nothing of the app is on screen when the headset answers. Android then
+  // refuses the call screen and the microphone; the person gets them by unlocking (or from the call notification).
+  fullScreenIntents(false);
+  await sleepScreen();
+  // Past the seconds in which Android still lets an app that was just on screen open one.
+  await sleep(15_000);
+  results.point6.nothingOnScreen = await headsetAnswer('Drew Example', async () => {
+    await until(() => shownCallNotification(), 'the call notification', 30_000);
+    await sleep(2000);
+    return { callScreenBeforeHook: callScreen() };
+  }, async call => {
+    await sleep(5000);
+    const answered = { callScreen: callScreen(), serviceTypes: `0x${serviceTypes().toString(16)}`,
+      log: adb('logcat', '-d', '-s', 'ActivityTaskManager:E', 'ActivityManager:W', 'UniHubCalls:W').split('\n')
+        .filter(line => /unihub/i.test(line)).map(line => line.replace(/^.*?: /, '').slice(0, 220)) };
+    await unlockKeyguard();
+    const unlocked = Date.now();
+    const screenAfterUnlock = await until(() => topIsCall(), 'the call screen after unlocking', 10_000).catch(() => false);
+    if (!screenAfterUnlock) {
+      shell('cmd', 'statusbar', 'expand-notifications');
+      await sleep(1500);
+      assert.ok(shadeTitle, 'the call notification\'s place in the shade');
+      shell('input', 'tap', `${shadeTitle.x}`, `${shadeTitle.y}`);
+      await until(() => topIsCall(), 'the call screen', 30_000);
+    }
+    const secondsFromUnlockToSound = await soundFlows(call, unlocked);
+    await until(() => (serviceTypes() & 0x84) === 0x84, 'the microphone type once the call screen is up', 15_000);
+    await sleepScreen();
+    return { answered, callScreenAfterUnlock: screenAfterUnlock, secondsFromUnlockToSound, serviceTypesWithScreen: `0x${serviceTypes().toString(16)}` };
+  });
+  fullScreenIntents(true);
+
+  // An `end` right behind its `ring`, before Telecom has the call: nothing keeps ringing.
+  const brief = crypto.randomUUID();
+  stub.ring(brief, 'Eli Example');
+  stub.stopRing(brief);
+  await sleep(10_000);
+  results.endRightAfterRing = { telecom: ourCall(), notification: shownCallNotification() };
+  assert.deepEqual(results.endRightAfterRing, { telecom: false, notification: false });
 
   // The checks of 3 and 4, after the numbers are kept.
   assert.ok(last.appReceived30s > 500 && last.deskReceived30s > 500, `packets at ${minutes} minutes: ${JSON.stringify(last)}`);
   assert.ok(last.appEnergy30s > 0, `the tone's energy at ${minutes} minutes: ${JSON.stringify(last)}`);
   assert.equal(dozed, 'IDLE');
+  assert.deepEqual(samples.map(s => s.doze), samples.map(() => 'IDLE'), JSON.stringify(samples));
+  for (const [name, six] of Object.entries(results.point6).filter(([, v]) => typeof v === 'object')) {
+    assert.ok(six.appReceived60s > 1000 && six.deskReceived60s > 1000 && six.appEnergy60s > 0, `${name}: ${JSON.stringify(six)}`);
+    assert.match(six.microphone, /not silenced$/, name);
+    assert.equal(Number(six.serviceTypes) & 0x84, 0x84, name);
+  }
+  assert.equal(results.point6.lockScreen.callScreenBeforeHook, true);
+  assert.equal(results.point6.nothingOnScreen.callScreenBeforeHook, false, 'nothing of the app on screen before the headset answers');
   assert.match(results.point3.microphone, /not silenced$/);
+  assert.equal(results.point4.requested, 'CallControlResult(Success)', JSON.stringify(results.point4));
   for (const state of [results.point4.speaker, results.point4.after20s]) {
     assert.equal(state.telecom, 'TYPE_SPEAKER', JSON.stringify(results.point4));
     assert.equal(state.device, 'speaker', JSON.stringify(results.point4));
