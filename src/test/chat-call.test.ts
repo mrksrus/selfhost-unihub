@@ -567,6 +567,15 @@ describe('a call through the server', () => {
     expect(connections()).toEqual([]);
   });
 
+  it('does not blame the reverse proxy for a later failure once its socket opened', async () => {
+    const { alex } = await dialled();
+    await until(() => expect(of(ALEX)?.started).toBeTruthy());
+    alex.as(() => of(ALEX)!.started!.events.refused('CHAT_CALL_MEDIA_UPGRADE', 'Upgrade required'));
+    alex.as(() => of(ALEX)!.started!.events.opened());
+    await settle(31_000);
+    expect(alex.view()).toMatchObject({ state: 'ended', ended: 'failed', reason: null });
+  });
+
   it('never starts where the other browser cannot carry it, and says which browser cannot', async () => {
     media.state.unable.add(BLAIR);
     const { alex, blair } = await dialled();

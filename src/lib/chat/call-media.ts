@@ -34,6 +34,8 @@ export async function callMediaKeys(callId: string, own: CryptoKeyPair, callerKe
 export interface CallMediaEvents {
   /** Frames of the other end arrive. */
   heard(): void;
+  /** The socket opened: an earlier refusal no longer says why the path is down. */
+  opened(): void;
   /** The socket did not open: the server's code and words (a plain GET of it answered them). */
   refused(code: string | null, error: string | null): void;
   /** The other end's sound is ready to play. */
@@ -80,7 +82,7 @@ export class CallMedia {
     const capture = new MessageChannel(), play = new MessageChannel();
     this.capture.port.postMessage(capture.port1, [capture.port1]);
     this.playback.port.postMessage(play.port1, [play.port1]);
-    worker.onmessage = ({ data }: MessageEvent<CallMediaEvent>) => { if (data.t === 'heard') events.heard(); else events.refused(data.code, data.error); };
+    worker.onmessage = ({ data }: MessageEvent<CallMediaEvent>) => { if (data.t === 'heard') events.heard(); else if (data.t === 'open') events.opened(); else events.refused(data.code, data.error); };
     worker.postMessage({ t: 'start', url, rate: this.contexts[0].sampleRate, keys, capture: capture.port2, play: play.port2 } satisfies CallMediaCommand, [capture.port2, play.port2]);
 
     // The sound plays from a connection of the page to itself: browsers take such sound out of the
