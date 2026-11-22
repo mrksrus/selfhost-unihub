@@ -15,7 +15,7 @@ const ALIVE_MS = 30_000;
 /** A connection not up this long after it was first tried or broke ends the call as failed. */
 const RECONNECT_MS = 30_000;
 const BATCH_MS = 250;
-/** The server's ring time and a margin for its sweep: a call still ringing then stops here without waiting for a hint. */
+/** The server's ring time and a margin for its sweep, from when this page first saw the call (the device's clock may be off): a call still ringing then stops here without waiting for a hint. */
 const RING_MS = 45_000 + 5_000;
 const LOCK = 'unihub-call:';
 
@@ -60,6 +60,8 @@ export interface CallView {
   here: boolean;
   /** The sound the screens play now. */
   sound: 'ring' | 'ringback' | null;
+  /** The browser refused to play the other person's sound until a tap: the screens offer one that calls `play()`. */
+  silenced: boolean;
 }
 
 export interface ChatCalls {
@@ -75,6 +77,8 @@ export interface ChatCalls {
   decline(): Promise<void>;
   hangUp(): Promise<void>;
   mute(muted: boolean): void;
+  /** Plays the other person's sound after the browser refused it (`silenced`); call it from a tap. */
+  play(): void;
   dismiss(): void;
 }
 
@@ -104,6 +108,8 @@ class Calls implements ChatCalls {
   private syncing: Promise<void> | null = null;
   private syncAgain = false;
   private closed = false;
+  /** Raised by every end: an action that waited compares the number it began with to know the call is still its own. */
+  private attempt = 0;
 
   constructor(private readonly me: string) {}
 
@@ -163,9 +169,13 @@ class Calls implements ChatCalls {
     return !!this.view?.here && this.view.state !== 'ended';
   }
 
+  private stale(attempt: number) {
+    return attempt !== this.attempt;
+  }
+
   private viewOf(call: ChatCall, here: boolean): CallView {
     const incoming = call.callee_user_id === this.me;
-    return { id: call.id, conversation_id: call.conversation_id, incoming, ended: null, reason: null, answered_at: call.answered_at, muted: false, here, sound: null,
+    return { id: call.id, conversation_id: call.conversation_id, incoming, ended: null, reason: null, answered_at: call.answered_at, muted: false, here, sound: null, silenced: false,
       peer: incoming ? { user_id: call.caller_user_id, name: call.caller_name } : { user_id: call.callee_user_id, name: call.callee_name },
       state: call.state === 'ringing' ? (incoming ? 'ringing' : 'calling') : 'connecting' };
   }
@@ -191,7 +201,9 @@ class Calls implements ChatCalls {
       // A start on its way names no call yet.
       if (!view?.id) return;
       // Gone from the current call: its sign of life answers how it ended.
-      await this.follow(call?.id === view.id ? call : await chatApi.callAlive(view.id));
+      const attempt = this.attempt;
+      const now = call?.id === view.id ? call : await chatApi.callAlive(view.id);
+      if (!this.stale(attempt)) await this.follow(now);
     } catch (error) {
       // Offline, signed out, or a device that has not joined Chat: no call to show.
       if (!(error instanceof ApiError)) throw error;
@@ -216,7 +228,10 @@ class Calls implements ChatCalls {
     if (view?.state === 'ended' && (call ? call.id === view.id : view.here)) return;
     if (!call || this.dismissed.has(call.id) || (call.caller_user_id === this.me && !call.this_device)) return this.set(null);
     // This device's call (all tabs of a browser are one device), and this tab does not hold it.
-    if (call.this_device) return this.set({ ...this.viewOf(call, false), state: 'ended', ended: 'other-tab' });
+    if (call.this_device) {
+      this.set({ ...this.viewOf(call, false), state: 'ended', ended: 'other-tab' });
+      return this.endUnheld(call);
+    }
     if (call.state === 'ringing') {
       this.ringUntil(call);
       return this.set(this.viewOf(call, false));
@@ -224,35 +239,50 @@ class Calls implements ChatCalls {
     this.set(view?.id === call.id ? { ...view, state: 'ended', ended: 'answered-elsewhere' } : null);
   }
 
+  /** A call of this device that no tab holds (the answer to its start or answer was lost): it ends as failed. */
+  private endUnheld(call: ChatCall) {
+    // A tab holds the lock from before it starts or answers until its call ends here.
+    void navigator.locks?.request(`${LOCK}${this.me}`, { ifAvailable: true }, async lock => {
+      if (!lock) return;
+      if (this.view?.id === call.id) this.set({ ...this.view, state: 'ended', ended: 'failed', here: true });
+      await chatApi.endCall(call.id, true).catch(() => undefined);
+    }).catch(() => undefined);
+  }
+
   // --- Actions -----------------------------------------------------------------------------
 
   async start(target: ChatCallStartRequest, name: string) {
     if (this.view && this.view.state !== 'ended') throw new Error('You are on a call.');
+    const attempt = this.attempt;
     this.set({ id: null, conversation_id: 'conversation_id' in target ? target.conversation_id : null, peer: { user_id: 'user_id' in target ? target.user_id : null, name },
-      incoming: false, state: 'calling', ended: null, reason: null, answered_at: null, muted: false, here: true, sound: null });
-    if (!await this.take()) return;
+      incoming: false, state: 'calling', ended: null, reason: null, answered_at: null, muted: false, here: true, sound: null, silenced: false });
+    if (!await this.take(attempt)) return;
     let answer: ChatCallStartResponse;
     try {
       answer = await chatApi.startCall(target);
     } catch (error) {
-      return this.finish(hasCode(error, 'CHAT_CALL_BUSY') ? 'busy' : unreachable(error) ? 'failed' : 'refused', said(error));
+      // Only the answer may have been lost: while this tab holds the lock, a call of this device is the one it made.
+      const made = unreachable(error) && !this.stale(attempt) ? await chatApi.currentCall().catch(() => null) : null;
+      if (made?.this_device) void chatApi.endCall(made.id, true).catch(() => undefined);
+      if (!this.stale(attempt)) this.finish(hasCode(error, 'CHAT_CALL_BUSY') ? 'busy' : unreachable(error) ? 'failed' : 'refused', said(error));
+      return;
     }
     // Hung up before the server answered: the call it made ends too.
-    if (!this.holds()) { void chatApi.endCall(answer.call.id).catch(() => undefined); return; }
+    if (this.stale(attempt)) { void chatApi.endCall(answer.call.id).catch(() => undefined); return; }
     // Both called at once: the other person's call is the one, and this answers it.
     if (!answer.started) {
       this.set({ ...this.viewOf(answer.call, true), state: 'connecting' });
-      return this.accept(answer.call.id);
+      return this.accept(answer.call.id, attempt);
     }
     this.set(this.viewOf(answer.call, true));
     this.ringUntil(answer.call);
-    await this.connect(answer.call.id, answer.ice_servers, true);
+    await this.connect(answer.call.id, answer.ice_servers, true, attempt);
   }
 
   private ringUntil(call: ChatCall) {
     if (this.ring?.id === call.id) return;
     if (this.ring) clearTimeout(this.ring.timer);
-    this.ring = { id: call.id, timer: setTimeout(() => void this.ringOver(call.id), Date.parse(call.created_at) + RING_MS - Date.now()) };
+    this.ring = { id: call.id, timer: setTimeout(() => void this.ringOver(call.id), RING_MS) };
   }
 
   /** The ring time is over and no end arrived: ask once more, then stop ringing here (the caller's side ends the call). */
@@ -274,21 +304,26 @@ class Calls implements ChatCalls {
     if (id && this.view?.id !== id) await this.sync();
     const view = this.view;
     if (view?.state !== 'ringing' || !view.id || (id && view.id !== id)) return;
+    const attempt = this.attempt;
     this.set({ ...view, state: 'connecting', here: true });
-    if (await this.take()) await this.accept(view.id);
+    if (await this.take(attempt)) await this.accept(view.id, attempt);
   }
 
-  private async accept(id: string) {
+  private async accept(id: string, attempt: number) {
     let answer: ChatCallAnswerResponse;
     try {
       answer = await chatApi.answerCall(id);
     } catch (error) {
-      if (this.holds()) this.finish(hasCode(error, 'CHAT_CALL_ANSWERED') ? 'answered-elsewhere' : hasCode(error, 'CHAT_CALL_ENDED') ? 'cancelled' : 'failed', hasCode(error, 'CHAT_CALL_ENDED') ? null : said(error));
+      if (this.stale(attempt)) return;
+      this.finish(hasCode(error, 'CHAT_CALL_ANSWERED') ? 'answered-elsewhere' : hasCode(error, 'CHAT_CALL_ENDED') ? 'cancelled' : 'failed', hasCode(error, 'CHAT_CALL_ENDED') ? null : said(error));
+      // The server may have taken the answer: no call stays with nobody behind it.
+      if (unreachable(error)) void chatApi.endCall(id, true).catch(() => undefined);
       return;
     }
-    if (!this.holds()) return;
+    // Hung up while the server answered: the call it took ends too.
+    if (this.stale(attempt)) { void chatApi.endCall(id).catch(() => undefined); return; }
     this.update({ answered_at: answer.call.answered_at });
-    await this.connect(id, answer.ice_servers, false);
+    await this.connect(id, answer.ice_servers, false, attempt);
     // The offer waits among the signals.
     await this.sync();
   }
@@ -318,6 +353,12 @@ class Calls implements ChatCalls {
     this.update({ muted });
   }
 
+  play() {
+    const audio = this.audio;
+    const silenced = (silenced: boolean) => { if (audio === this.audio) this.update({ silenced }); };
+    void audio?.play().then(() => silenced(false), () => silenced(true));
+  }
+
   dismiss() {
     if (this.view?.state !== 'ended') return;
     if (this.view.id) this.dismissed.add(this.view.id);
@@ -327,8 +368,10 @@ class Calls implements ChatCalls {
   // --- The tab, the microphone and the connection ------------------------------------------
 
   /** This tab's hold on calls and the microphone; false, with the call ended here, when either is refused. */
-  private async take() {
-    if (!await this.lock()) {
+  private async take(attempt: number) {
+    const locked = await this.lock(attempt);
+    if (this.stale(attempt)) return false;
+    if (!locked) {
       this.update({ here: false });
       this.finish('other-tab');
       return false;
@@ -337,46 +380,46 @@ class Calls implements ChatCalls {
     try {
       stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     } catch (error) {
-      this.finish('microphone', error instanceof Error && error.name === 'NotFoundError' ? 'This device has no microphone.' : 'Allow the microphone for UniHub to make and take calls.');
+      if (!this.stale(attempt)) this.finish('microphone', error instanceof Error && error.name === 'NotFoundError' ? 'This device has no microphone.' : 'Allow the microphone for UniHub to make and take calls.');
       return false;
     }
     // Hung up while the browser asked.
-    if (!this.holds()) {
+    if (this.stale(attempt)) {
       stream.getTracks().forEach(track => track.stop());
-      this.unlock?.();
-      this.unlock = null;
       return false;
     }
     this.stream = stream;
     return true;
   }
 
-  private lock() {
+  private lock(attempt: number) {
     if (!navigator.locks) return Promise.resolve(true);
     return new Promise<boolean>(resolve => {
       void navigator.locks.request(`${LOCK}${this.me}`, { ifAvailable: true }, lock => {
         resolve(!!lock);
-        return lock ? new Promise<void>(release => { this.unlock = release; }) : undefined;
+        // Hung up before the lock came: it goes at once.
+        return lock && !this.stale(attempt) ? new Promise<void>(release => { this.unlock = release; }) : undefined;
       }).catch(() => resolve(false));
     });
   }
 
-  private async connect(id: string, iceServers: ChatIceServer[], caller: boolean) {
+  private async connect(id: string, iceServers: ChatIceServer[], caller: boolean, attempt: number) {
     try {
       await this.connectNow(id, iceServers, caller);
     } catch {
-      await this.fail();
+      // A connection closed by a hang-up rejects what it was doing.
+      if (!this.stale(attempt)) await this.fail();
     }
   }
 
   private async connectNow(id: string, iceServers: ChatIceServer[], caller: boolean) {
     const pc = this.pc = new RTCPeerConnection({ iceServers });
     for (const track of this.stream!.getTracks()) pc.addTrack(track, this.stream!);
-    pc.ontrack = ({ streams: [remote] }) => {
-      if (!remote || typeof Audio === 'undefined') return;
+    pc.ontrack = ({ track, streams: [remote] }) => {
+      if (track.kind !== 'audio' || !remote || typeof Audio === 'undefined') return;
       this.audio ??= new Audio();
       this.audio.srcObject = remote;
-      void this.audio.play().catch(() => undefined);
+      this.play();
     };
     pc.onicecandidate = ({ candidate }) => { if (candidate) this.queue(candidate.toJSON()); };
     pc.onconnectionstatechange = () => this.connection(pc);
@@ -462,7 +505,7 @@ class Calls implements ChatCalls {
         await pc.setRemoteDescription({ type: 'offer', sdp: signal.sdp });
         await this.addCandidates(pc, this.incoming.splice(0));
         await pc.setLocalDescription(await pc.createAnswer());
-        await this.signal({ t: 'answer', sdp: pc.localDescription!.sdp });
+        if (pc === this.pc) await this.signal({ t: 'answer', sdp: pc.localDescription!.sdp });
       } else if (signal.t === 'answer' && !this.view!.incoming && typeof signal.sdp === 'string' && pc.signalingState === 'have-local-offer') {
         await pc.setRemoteDescription({ type: 'answer', sdp: signal.sdp });
         await this.addCandidates(pc, this.incoming.splice(0));
@@ -490,6 +533,7 @@ class Calls implements ChatCalls {
 
   /** Ends the call here; nothing of it is left: microphone, connection, timers, the tab's lock. */
   private finish(ending: CallEnding, reason: string | null = null) {
+    this.attempt++;
     clearTimeout(this.batch);
     clearInterval(this.alive);
     clearTimeout(this.deadline);
@@ -507,7 +551,7 @@ class Calls implements ChatCalls {
     this.after = 0;
     this.outgoing = [];
     this.incoming = [];
-    if (this.view) this.set({ ...this.view, state: 'ended', ended: ending, reason });
+    if (this.view) this.set({ ...this.view, state: 'ended', ended: ending, reason, silenced: false });
   }
 }
 

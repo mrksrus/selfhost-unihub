@@ -16,7 +16,10 @@ chatDeliveryHooks();
 
 const CASEY = 'casey';
 const network = { up: true };
-const mic = { allow: true, asked: 0, tracks: [] as { enabled: boolean; stopped: boolean }[] };
+const mic = { allow: true, asked: 0, tracks: [] as { enabled: boolean; stopped: boolean }[], holding: false, held: [] as (() => void)[] };
+/** The browser plays the other person's sound only after a tap when `allow` is false. */
+const speaker = { allow: true, played: [] as unknown[] };
+const VIDEO = { video: true };
 
 class FakeConnection {
   static all: FakeConnection[] = [];
@@ -26,7 +29,7 @@ class FakeConnection {
   remoteDescription: RTCSessionDescriptionInit | null = null;
   onicecandidate: ((event: { candidate: unknown }) => void) | null = null;
   onconnectionstatechange: (() => void) | null = null;
-  ontrack: unknown = null;
+  ontrack: ((event: { track: { kind: string }; streams: unknown[] }) => void) | null = null;
   restarts = 0;
   private heard = 0;
   constructor(public config: RTCConfiguration) { FakeConnection.all.push(this); }
@@ -48,6 +51,8 @@ class FakeConnection {
   async setRemoteDescription(description: RTCSessionDescriptionInit) {
     this.remoteDescription = description;
     this.heard = 0;
+    this.ontrack?.({ track: { kind: 'video' }, streams: [VIDEO] });
+    this.ontrack?.({ track: { kind: 'audio' }, streams: [{ audio: true }] });
     this.signalingState = description.type === 'answer' ? 'stable' : 'have-remote-offer';
   }
   async addIceCandidate() {
@@ -62,8 +67,17 @@ class FakeConnection {
   close() { this.connectionState = 'closed'; }
 }
 vi.stubGlobal('RTCPeerConnection', FakeConnection);
+vi.stubGlobal('Audio', class {
+  srcObject: unknown = null;
+  async play() {
+    if (!speaker.allow) throw new DOMException('no tap yet', 'NotAllowedError');
+    speaker.played.push(this.srcObject);
+  }
+});
 Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: { getUserMedia: async () => {
   mic.asked++;
+  // The browser asks the person; the prompt stays open while `holding`.
+  if (mic.holding) await new Promise<void>(resolve => mic.held.push(resolve));
   if (!mic.allow) throw new DOMException('denied', 'NotAllowedError');
   const track = { enabled: true, stopped: false, stop() { this.stopped = true; } };
   mic.tracks.push(track);
@@ -86,6 +100,26 @@ function phone(on: Browser | [string, string]): Phone {
 }
 
 const settle = (ms = 1000) => vi.advanceTimersByTimeAsync(ms);
+const live = () => mic.tracks.filter(track => !track.stopped).length;
+
+/** The next `method url` request goes through `wrap`, which sends it to the server with `send`. */
+function once(method: string, url: string, wrap: (send: () => Promise<unknown>) => Promise<unknown>) {
+  const real = server.handle;
+  server.handle = (m, u, body) => {
+    if (m !== method || u !== url) return real(m, u, body);
+    server.handle = real;
+    return wrap(() => real(m, u, body)) as ReturnType<typeof real>;
+  };
+}
+/** A slow network: the request reaches the server only when the returned function is called. */
+function hold(method: string, url: string) {
+  let open!: () => void;
+  const gate = new Promise<void>(resolve => { open = resolve; });
+  once(method, url, async send => { await gate; return send(); });
+  return open;
+}
+/** The server does the request, and its answer is lost on the way back. */
+const lose = (method: string, url: string) => once(method, url, async send => { await send(); return { error: 'Failed to fetch' }; });
 const call = () => [...server.calls.values()].at(-1)!;
 const connections = () => FakeConnection.all.filter(pc => pc.connectionState !== 'closed');
 
@@ -114,7 +148,8 @@ describe('a call', () => {
     server.names.set(CASEY, 'Casey Example');
     server.state.hint = users => phones.filter(item => users.includes(item.browser.userId)).forEach(item => item.as(calls => void calls.sync()));
     Object.assign(network, { up: true });
-    Object.assign(mic, { allow: true, asked: 0, tracks: [] });
+    Object.assign(mic, { allow: true, asked: 0, tracks: [], holding: false, held: [] });
+    Object.assign(speaker, { allow: true, played: [] });
     FakeConnection.all = [];
   });
   afterEach(() => {
@@ -133,9 +168,18 @@ describe('a call', () => {
     // Ringing asks for no microphone and makes no connection.
     expect(mic.asked).toBe(1);
 
+    // The browser refused to play Alex's sound without a tap.
+    speaker.allow = false;
     await blair.as(calls => calls.answer());
     await settle();
-    expect(alex.view()).toMatchObject({ state: 'active', sound: null });
+    expect(alex.view()).toMatchObject({ state: 'active', sound: null, silenced: true });
+    speaker.allow = true;
+    alex.as(calls => calls.play());
+    await settle();
+    expect(alex.view()?.silenced).toBe(false);
+    // Only the other person's sound plays.
+    expect(speaker.played.length).toBeGreaterThan(0);
+    expect(speaker.played).not.toContain(VIDEO);
     expect(blair.view()).toMatchObject({ state: 'active', here: true });
     expect(alex.view()!.answered_at).not.toBeNull();
     expect(blair2.view()).toMatchObject({ state: 'ended', ended: 'answered-elsewhere', here: false });
@@ -180,7 +224,7 @@ describe('a call', () => {
     await blair.as(calls => calls.answer());
     await settle();
     await alex.as(calls => calls.start({ user_id: BLAIR }, 'Blair Example'));
-    expect(alex.view()).toMatchObject({ state: 'ended', ended: 'busy', reason: 'CHAT_CALL_BUSY' });
+    expect(alex.view()).toMatchObject({ state: 'ended', ended: 'busy', reason: 'Blair Example is on another call.' });
     expect(server.messages.at(-1)?.call?.outcome).toBe('busy');
     expect(connections()).toHaveLength(2);
     await casey.as(calls => calls.hangUp());
@@ -200,8 +244,12 @@ describe('a call', () => {
     await alex.as(calls => calls.start({ user_id: BLAIR }, 'Blair Example'));
     await settle();
     server.state.hint = () => {};
+    // A device whose clock runs ahead of the server's still rings for the whole ring time.
+    call().created_at = new Date(Date.now() - 600_000).toISOString();
+    const late = phone(blair.browser);
     await settle(44_000);
     expect(blair.view()?.state).toBe('ringing');
+    expect(late.view()?.state).toBe('ringing');
     await settle(10_000);
     expect(blair.view()).toBeNull();
     expect(alex.view()).toMatchObject({ state: 'ended', ended: 'no-answer' });
@@ -254,6 +302,111 @@ describe('a call', () => {
     expect(call().outcome).toBe('failed');
     expect(mic.tracks.every(track => track.stopped)).toBe(true);
     expect(connections()).toEqual([]);
+  });
+
+  it('a hang-up while the microphone or the server is still answering leaves no microphone on and no call that cannot be stopped', async () => {
+    const alex = phone([ALEX, 'a1']);
+    const blair = phone([BLAIR, 'b1']);
+    const start = () => alex.as(calls => calls.start({ user_id: BLAIR }, 'Blair Example'));
+    const ends = async (on: Phone) => {
+      await on.as(calls => calls.hangUp());
+      await settle();
+      expect(call().state).toBe('ended');
+      expect(live()).toBe(0);
+      alex.as(calls => calls.dismiss());
+      blair.as(calls => calls.dismiss());
+    };
+
+    // Call, hang up while the browser asks for the microphone, call again, then Allow both.
+    mic.holding = true;
+    const first = start();
+    await settle();
+    await alex.as(calls => calls.hangUp());
+    await settle();
+    const second = start();
+    await settle();
+    mic.holding = false;
+    mic.held.splice(0).forEach(allow => allow());
+    await Promise.all([first, second]);
+    await settle();
+    expect(server.calls.size).toBe(1);
+    expect(alex.view()).toMatchObject({ state: 'calling', id: call().id });
+    expect(blair.view()).toMatchObject({ state: 'ringing', id: call().id });
+    expect(live()).toBe(1);
+    await ends(alex);
+
+    // The same with the start on a slow network.
+    const open = hold('POST', '/chat/calls');
+    const slow = start();
+    await settle();
+    await alex.as(calls => calls.hangUp());
+    await settle();
+    await start();
+    await settle();
+    open();
+    await slow;
+    await settle();
+    expect(server.calls.size).toBe(2);
+    expect(alex.view()).toMatchObject({ state: 'calling', id: call().id });
+    expect(live()).toBe(1);
+    await ends(alex);
+
+    // Blair answers, hangs up while the browser asks, answers Alex's next call, then Allows both.
+    await start();
+    await settle();
+    mic.holding = true;
+    const answer = blair.as(calls => calls.answer());
+    await settle();
+    mic.holding = false;
+    await blair.as(calls => calls.hangUp());
+    await settle();
+    expect(call().outcome).toBe('declined');
+    alex.as(calls => calls.dismiss());
+    blair.as(calls => calls.dismiss());
+    await start();
+    await settle();
+    mic.holding = true;
+    const again = blair.as(calls => calls.answer());
+    await settle();
+    mic.holding = false;
+    mic.held.splice(0).forEach(allow => allow());
+    await Promise.all([answer, again]);
+    await settle();
+    expect([alex.view()?.state, blair.view()?.state]).toEqual(['active', 'active']);
+    expect(blair.view()?.id).toBe(call().id);
+    expect(live()).toBe(2);
+    await ends(blair);
+  });
+
+  it('a call of this device that no tab holds, its answer lost, ends as failed', async () => {
+    const alex = phone([ALEX, 'a1']);
+    const blair = phone([BLAIR, 'b1']);
+    lose('POST', '/chat/calls');
+    await alex.as(calls => calls.start({ user_id: BLAIR }, 'Blair Example'));
+    await settle();
+    expect(call()).toMatchObject({ state: 'ended', outcome: 'failed' });
+    expect(alex.view()).toMatchObject({ state: 'ended', ended: 'failed' });
+    expect(blair.view()).toBeNull();
+    alex.as(calls => calls.dismiss());
+
+    await alex.as(calls => calls.start({ user_id: BLAIR }, 'Blair Example'));
+    await settle();
+    lose('POST', `/chat/calls/${call().id}/answer`);
+    await blair.as(calls => calls.answer());
+    await settle();
+    expect(call()).toMatchObject({ state: 'ended', outcome: 'failed' });
+    expect(blair.view()).toMatchObject({ state: 'ended', ended: 'failed' });
+    expect(alex.view()).toMatchObject({ state: 'ended', ended: 'failed' });
+    expect(live()).toBe(0);
+    alex.as(calls => calls.dismiss());
+
+    // Found by a later sync (the network was down until then): no tab of the device holds it.
+    const left = { ...call(), id: crypto.randomUUID(), state: 'ringing' as const, outcome: null, answered: null, answered_at: null, signals: [] };
+    server.calls.set(left.id, left);
+    await alex.as(calls => calls.sync());
+    await settle();
+    expect(call()).toMatchObject({ id: left.id, state: 'ended', outcome: 'failed' });
+    expect(alex.view()).toMatchObject({ id: left.id, state: 'ended', ended: 'failed' });
   });
 
   it('a refused microphone neither starts nor answers a call', async () => {
@@ -325,6 +478,10 @@ describe('a call entry in the chat', { timeout: 60_000 }, () => {
     // Only the callee's missed call is unread; no entry shows as a message.
     expect(blair.engine.snapshot().conversations[0]).toMatchObject({ unread: 1, last_message: null });
     expect(alex.engine.snapshot().conversations[0].unread).toBe(0);
+    // A call entry is neither edited nor deleted.
+    const entry = server.messages.find(item => item.kind === 'call')!.id;
+    expect(() => alex.engine.edit(entry, 'changed')).toThrow();
+    await expect(alex.as(engine => engine.delete(entry))).rejects.toThrow();
 
     // Each archived them like a message it read.
     const entries = server.messages.filter(item => item.kind === 'call').map(item => item.id);

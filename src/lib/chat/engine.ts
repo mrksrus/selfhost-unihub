@@ -680,7 +680,7 @@ class Engine implements ChatEngine {
 
   edit(messageId: string, text: string) {
     const original = this.messages.get(messageId);
-    if (!original || original.sender_user_id !== this.me.id || original.deleted) throw new Error('Only your own messages can be edited.');
+    if (!original || original.kind === 'call' || original.sender_user_id !== this.me.id || original.deleted) throw new Error('Only your own messages can be edited.');
     void this.enqueue({ id: crypto.randomUUID(), conversation_id: original.conversation_id, text: this.checked(text), reply_to: null, replaces: messageId })
       .catch(error => this.fail(error));
   }
@@ -951,6 +951,7 @@ class Engine implements ChatEngine {
   }
 
   async delete(messageId: string) {
+    if (this.messages.get(messageId)?.kind === 'call') throw new Error('A call entry cannot be deleted.');
     if (this.outbox.some(item => item.id === messageId)) {
       this.uploads.get(messageId)?.abort();
       return this.dropOutgoing(item => item.id === messageId || item.replaces === messageId);

@@ -260,11 +260,11 @@ function deliveryService() {
         const live = [...calls.values()].filter(item => item.state !== 'ended');
         const incoming = live.find(item => item.caller === peer && item.callee === me && item.state === 'ringing');
         if (incoming) return ok({ call: callView(incoming, mine), started: false, ice_servers: [] });
-        if (live.some(item => item.caller === me || item.callee === me)) return refuse(409, 'CHAT_CALL_IN_PROGRESS');
+        if (live.some(item => item.caller === me || item.callee === me)) return { ...refuse(409, 'CHAT_CALL_IN_PROGRESS'), error: 'You are on a call.' };
         const made: Call = { id: crypto.randomUUID(), conversation: direct([me, peer].sort()).id, caller: me, callee: peer, callerDevice: mine!.id, answered: null,
           state: 'ringing', outcome: null, created_at: new Date().toISOString(), answered_at: null, signals: [] };
         calls.set(made.id, made);
-        if (live.some(item => item.caller === peer || item.callee === peer)) { finish(made, 'busy'); return refuse(409, 'CHAT_CALL_BUSY'); }
+        if (live.some(item => item.caller === peer || item.callee === peer)) { finish(made, 'busy'); return { ...refuse(409, 'CHAT_CALL_BUSY'), error: `${names.get(peer)} is on another call.` }; }
         hint(made);
         return ok({ call: callView(made, mine), started: true, ice_servers: [] });
       }
