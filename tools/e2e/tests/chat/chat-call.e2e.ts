@@ -2,7 +2,7 @@ import { test } from '@e2e-dev/web';
 import { expect } from 'e2e';
 import { stack } from '../support/env.ts';
 import { onlyOn } from '../support/ui.ts';
-import { callScreen, chatBrowser, chatRow, FAKE_MICROPHONE, gone, heard, keepConnections, leave, messagesOf, ringing, shows, startChat, twoPeople } from './chat-helpers.ts';
+import { callScreen, chatBrowser, chatRow, FAKE_MICROPHONE, gone, heard, keepConnections, leave, messagesOf, ringing, shows, startChat, twoPeople, type Kept } from './chat-helpers.ts';
 
 // A voice call end to end: two people in two browsers, the real screens, the
 // server's ring and signals, and a real connection between the two Chromiums.
@@ -40,6 +40,7 @@ test('a call between two browsers carries sound both ways, muting stops it one w
       expect(sound.packets, `${who} receives sound packets`).toBeGreaterThan(50);
       expect(sound.energy, `${who} receives sound, not silence`).toBeGreaterThan(0);
     }
+    for (const page of [a, b]) await expect.poll(() => page.evaluate(() => (window as Kept).directConnected ?? false), { message: 'the direct connection carries the call', timeout: 30_000 }).toBe(true);
 
     // Alex mutes: Blair receives silence, Alex still hears Blair.
     await callScreen(a, blair.name).getByRole('button', { name: 'Mute', exact: true }).click();

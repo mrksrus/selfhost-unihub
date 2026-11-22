@@ -256,6 +256,7 @@ test('a browser calls the locked phone: it rings, is answered on the call screen
   const toPhone = await flows(page, 'the phone');
   const toDesk = await flows(desk, 'the desk');
   results.locked = { appClosed, ringSeconds: ring, secondsFromAnswerToSound: seconds(answered), phoneHeard3s: toPhone, deskHeard3s: toDesk };
+  await until(() => desk.evaluate(() => window.directConnected), 'the direct connection carrying the call', 30_000);
   assert.ok(ourCall('ACTIVE'), 'Telecom has the call active');
 
   // The routes come from Telecom; each choice goes to Telecom, which takes it. The emulator has the speaker only,
@@ -346,6 +347,8 @@ test('the phone calls the browser from the app\'s "Call"; the browser answers; t
   await until(() => ourCall('ACTIVE'), 'Telecom making the call active', 30_000);
   const page = await callPage();
   results.outgoing = { ringSeconds: ring, secondsFromAnswerToSound: seconds(answered), deskHeard3s: toDesk };
+  // The call through UniHub before this one left it false.
+  await until(() => desk.evaluate(() => window.directConnected), 'the direct connection carrying the call', 30_000);
   const hung = Date.now();
   await page.getByRole('button', { name: 'Hang up', exact: true }).click();
   await callOver();
