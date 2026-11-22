@@ -25,7 +25,7 @@ const forbidden = new Map<string, string>();
  * placed (the button stays, greyed, and says it). Null where no call is
  * offered: nobody to call, oneself, or Chat is off.
  */
-export function useCallTo(person: CallPerson | undefined, conversationId?: string): { reason: string | undefined; start: () => void } | null {
+export function useCallTo(person: CallPerson | undefined): { reason: string | undefined; start: () => void } | null {
   const ownId = useContext(AuthContext)?.user?.id;
   const engine = useChatEngine();
   const held = useChatCalls();
@@ -41,7 +41,8 @@ export function useCallTo(person: CallPerson | undefined, conversationId?: strin
       : callSupport() !== 'page' ? 'This browser cannot make calls.'
       : call?.ended === 'other-tab' ? 'You are on a call in another tab.'
       : call && call.state !== 'ended' ? 'You are on a call.' : undefined);
-  return { reason, start: () => { void held?.calls.start(conversationId ? { conversation_id: conversationId } : { user_id: userId }, person.name).catch(() => undefined); } };
+  // By the person, also from their chat: a refusal is then known to be about them.
+  return { reason, start: () => { void held?.calls.start({ user_id: userId }, person.name).catch(() => undefined); } };
 }
 
 const CLOSES_AFTER_MS = 3000;

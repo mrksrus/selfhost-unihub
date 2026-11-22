@@ -167,7 +167,7 @@ export function ChatThread({ engine, conversation, draft, onDraft }: Props) {
         </div>
         <div className="flex shrink-0 items-center touch:gap-1">
           {group ? <Button variant="ghost" size="icon" aria-label="People in this chat" onClick={() => setPeople(true)}><Users aria-hidden="true" /></Button>
-            : <CallButton icon person={peer} conversationId={conversation.id} />}
+            : <CallButton icon person={peer} />}
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button variant="ghost" size="icon" aria-label={`Notifications: ${NOTIFY[conversation.notify].label}`}><NotifyIcon aria-hidden="true" /></Button>
@@ -204,7 +204,7 @@ export function ChatThread({ engine, conversation, draft, onDraft }: Props) {
                         <li className="py-3 text-center text-xs text-muted-foreground">{dayLabel(item.created_at)}</li>
                       )}
                       {item.kind === 'call' ? (
-                        <ChatCallEntry item={item} peer={peer} conversationId={conversation.id} />
+                        <ChatCallEntry item={item} peer={peer} />
                       ) : item.kind !== 'message' ? (
                         <li className="flex items-center justify-center gap-1.5 py-2 text-center text-xs text-muted-foreground">
                           {item.kind === 'device-added' && <MonitorSmartphone aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />}

@@ -9,7 +9,7 @@ import { callEntryLine, messageTime } from '@/components/chat/chat-state';
  * ended, who called and when, and "Call back". The server wrote it; nobody
  * edits or deletes it, and it has no delivery state.
  */
-export function ChatCallEntry({ item, peer, conversationId }: { item: ChatThreadCall; peer: ChatPeer; conversationId: string }) {
+export function ChatCallEntry({ item, peer }: { item: ChatThreadCall; peer: ChatPeer }) {
   const { call, from_me: mine } = item;
   const missed = !mine && (call.outcome === 'missed' || call.outcome === 'cancelled' || call.outcome === 'busy');
   const Icon = missed ? PhoneMissed : mine ? PhoneOutgoing : PhoneIncoming;
@@ -21,7 +21,7 @@ export function ChatCallEntry({ item, peer, conversationId }: { item: ChatThread
           <p className="font-medium">{callEntryLine(call, mine)}</p>
           <p className="truncate text-xs text-muted-foreground">{mine ? 'You called' : `${peer.name} called`}, <time dateTime={call.started_at} className="tabular-nums">{messageTime(call.started_at)}</time></p>
         </div>
-        <CallButton quiet person={peer} conversationId={conversationId} label="Call back" className="shrink-0 text-accent" />
+        <CallButton quiet person={peer} label="Call back" className="shrink-0 text-accent" />
       </div>
     </li>
   );

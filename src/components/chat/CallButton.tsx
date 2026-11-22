@@ -6,8 +6,6 @@ import { useCallTo, type CallPerson } from '@/components/chat/call-state';
 
 interface Props {
   person: CallPerson | undefined;
-  /** The direct chat with the person, where the button stands in one. */
-  conversationId?: string;
   /** "Call back" under a call's entry; the default is "Call". */
   label?: string;
   /** In a chat's header: the handset alone. */
@@ -18,8 +16,8 @@ interface Props {
 }
 
 /** "Call": starts a voice call with the person. Greyed, it opens its reason when pressed. */
-export function CallButton({ person, conversationId, label = 'Call', icon = false, quiet = false, className }: Props) {
-  const call = useCallTo(person, conversationId);
+export function CallButton({ person, label = 'Call', icon = false, quiet = false, className }: Props) {
+  const call = useCallTo(person);
   if (!call || !person) return null;
   const { reason } = call;
   const button = (
