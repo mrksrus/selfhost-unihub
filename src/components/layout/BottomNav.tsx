@@ -4,7 +4,7 @@ import { cn } from '@/lib/utils';
 import { MoreHorizontal } from 'lucide-react';
 import { BOTTOM_NAV_PAGES, navigationPages, pageLink } from '@/lib/navigation';
 import { useVisibleAttention } from '@/components/layout/visible-attention';
-import { useNavigationCounts } from '@/hooks/use-navigation-counts';
+import { useChatWaiting, useNavigationCounts } from '@/hooks/use-navigation-counts';
 import { useAppLock } from '@/hooks/use-app-lock';
 
 const MORE_PATHS = ['/more', '/settings', '/admin'];
@@ -15,6 +15,7 @@ const BottomNav = () => {
   const location = useLocation();
   const attention = useVisibleAttention();
   const counts = useNavigationCounts();
+  const chatWaiting = useChatWaiting();
   const lock = useAppLock();
   // A locked module gives nothing away, not even a count.
   const countOf = (pageId: string) => { const module = pages.find(page => page.id === pageId)?.module; return module && lock.locked(module) ? 0 : counts[pageId as keyof typeof counts] ?? 0; };
@@ -42,11 +43,12 @@ const BottomNav = () => {
         // The count takes the dot's place while there is one; the label says both.
         const needs = item.id === 'more' && attention.length > 0 ? `${attention.length} ${attention.length === 1 ? 'item needs' : 'items need'} attention` : '';
         const dot = !!needs && !count;
+        const waiting = item.id === 'chat' && chatWaiting;
         return (
           <NavLink
             key={item.id}
             to={item.href}
-            aria-label={count || needs ? [item.name, count ? `${count} unread` : '', needs].filter(Boolean).join(', ') : undefined}
+            aria-label={count || needs || waiting ? [item.name, count ? `${count} unread` : '', needs, waiting ? 'not on this device yet' : ''].filter(Boolean).join(', ') : undefined}
             className={cn(
               'relative flex min-w-0 flex-col items-center justify-center gap-1 px-1 pb-2 pt-2.5 text-[11px] font-medium touch:gap-0.5 transition-colors',
               'text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
@@ -56,7 +58,7 @@ const BottomNav = () => {
             <item.icon aria-hidden="true" className="h-6 w-6 shrink-0 touch:h-7 touch:w-7" />
             <span className="max-w-full truncate">{item.name}</span>
             {count > 0 && <span aria-hidden="true" className="absolute left-1/2 top-1 ml-1.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-accent px-1 text-[10px] font-semibold tabular-nums text-accent-foreground">{count > 99 ? '99+' : count}</span>}
-            {dot && <span aria-hidden="true" className="absolute left-1/2 top-2 ml-2 h-2 w-2 rounded-full bg-warning ring-2 ring-card" />}
+            {(dot || waiting) && <span aria-hidden="true" className={cn('absolute left-1/2 top-2 ml-2 h-2 w-2 rounded-full ring-2 ring-card', waiting ? 'bg-muted-foreground' : 'bg-warning')} />}
           </NavLink>
         );
       })}

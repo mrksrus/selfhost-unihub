@@ -3,6 +3,7 @@ import { MemoryRouter, useLocation } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 import { SessionQueryProvider } from '@/components/SessionQueryProvider';
 import { Toaster } from '@/components/ui/toaster';
+import { ChatApprovalDialog } from '@/components/chat/ChatApprovalDialog';
 import { passphraseStrength, textParts } from '@/components/chat/chat-state';
 import { WrongPassphraseError } from '@/lib/chat/key-backup';
 import { useStartChat } from '@/components/chat/use-start-chat';
@@ -193,6 +194,26 @@ describe('Chat small print of a message', () => {
     render(<App user="A" at="/chat?c=chat-katherine" />);
     expect(screen.getByText(/year-end close/, { selector: 'li p' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /^Actions for/ })).not.toBeInTheDocument();
+  });
+});
+
+describe('a device asks to join the chats', () => {
+  it('approves the request with the code the person read, and says so when that request has ended', async () => {
+    const engine = createMockChatEngine({ approveRefusal: 'That request has ended. Ask again on the other device.',
+      approvals: [{ chat_device_id: 'chat-dev-new', device: { id: 'dev-new', kind: 'web', app_version: null, user_agent: null }, requested_at: new Date().toISOString(), code: '481516', signed_in_at: null }] });
+    state.engine = engine;
+    render(<App user="A" at="/mail"><ChatApprovalDialog /></App>);
+    const dialog = await screen.findByRole('dialog', { name: 'A device asks to join your chats' });
+    // The focus is on the dialog, not on a button: Enter approves nothing.
+    expect(dialog).toHaveFocus();
+    expect(within(dialog).getByText('Code: 4 8 1 5 1 6')).toBeInTheDocument();
+    expect(within(dialog).getByText(/When it signed in is not known\./)).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Approve' }));
+    expect(await within(dialog).findByText('That request has ended. Ask again on the other device.')).toHaveAttribute('role', 'alert');
+    expect(engine.calls).toEqual([['approve', 'chat-dev-new', '481516']]);
+    expect(within(dialog).queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'OK' }));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   });
 });
 

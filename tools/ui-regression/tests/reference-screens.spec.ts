@@ -23,10 +23,13 @@
 // (Wide and Phone), and a group chat and its people, files in a chat, the
 // voice recorder and chat search (Wide and Phone), and the save dialog of a
 // shorter chat retention and a retention that waits on Server -> Policies
-// (Wide and Phone), each in Dark Default and Light Default.
-// One hundred and forty-two pictures; see docs/UI_BASELINES.md.
+// (Wide and Phone), and Chat on a device that is not in it yet (as it
+// opens, with the code of a request, and with no other device in Chat) and
+// the dialog that approves such a device (Wide and Phone), each in Dark
+// Default and Light Default.
+// One hundred and fifty-eight pictures; see docs/UI_BASELINES.md.
 import { chatPicturesDrawn, customRepeat, expect, expectBaseline, sharedCalendars, silentMicrophone, test, THEMES, VIEWPORTS, withChat, type Page } from '../support/test.ts';
-import { CURRENT_DEVICE_LOCKED, POLICIES_ADMIN_APP_LOCK, POLICIES_ADMIN_RETENTION, POLICIES_EFFECTIVE_APP_LOCK, POLICIES_EFFECTIVE_TWO_FACTOR, RETENTION_WAITING, USER } from '../support/fixtures.ts';
+import { CHAT_APPROVAL, CHAT_DEVICES_IN_CHAT, CURRENT_DEVICE_LOCKED, POLICIES_ADMIN_APP_LOCK, POLICIES_ADMIN_RETENTION, POLICIES_EFFECTIVE_APP_LOCK, POLICIES_EFFECTIVE_TWO_FACTOR, RETENTION_WAITING, USER } from '../support/fixtures.ts';
 
 // The app lock's state is this browser's (a PIN record in IndexedDB
 // `unihub-lock-v1`, as src/lib/app-lock/pin.ts keeps it) plus the server's
@@ -103,6 +106,29 @@ function chatPassphraseAndSettings(viewport: 'wide' | 'phone', theme: string) {
       await expect(page.getByRole('button', { name: 'Start a new key…' })).toBeVisible();
       await settle();
       await expectBaseline(page, `chat-passphrase-enter-${viewport}-${theme}.png`);
+    });
+
+    // A device that is not in Chat yet: the two ways in and why a new key cannot be started; the code of a request; no other device in Chat.
+    for (const [name, waiting, shows] of [
+      ['chat-waiting', { approvers: CHAT_DEVICES_IN_CHAT, code: null, code_expires_at: null }, 'Ask for approval'],
+      ['chat-waiting-code', { approvers: CHAT_DEVICES_IN_CHAT, code: '481516', code_expires_at: '2026-06-15T09:38:20.000Z' }, 'Ask again'],
+      ['chat-waiting-alone', { approvers: [], code: null, code_expires_at: null }, 'Start a new key…'],
+    ] as const) {
+      test(`${name} (${viewport}, ${theme})`, async ({ page, open, settle }) => {
+        await withChat(page, { readiness: { state: 'waiting', ...waiting } });
+        await open('/chat');
+        await expect(page.getByRole('button', { name: shows })).toBeVisible();
+        await settle();
+        await expectBaseline(page, `${name}-${viewport}-${theme}.png`);
+      });
+    }
+
+    test(`a device asks to join the chats (${viewport}, ${theme})`, async ({ page, open, settle }) => {
+      await withChat(page, { approvals: [CHAT_APPROVAL] });
+      await open('/chat');
+      await expect(page.getByRole('dialog', { name: 'A device asks to join your chats' }).getByRole('button', { name: 'Approve' })).toBeVisible();
+      await settle();
+      await expectBaseline(page, `chat-approval-${viewport}-${theme}.png`);
     });
 
     test(`settings chat (${viewport}, ${theme})`, async ({ page, open, settle }) => {

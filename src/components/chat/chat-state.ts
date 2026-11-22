@@ -1,7 +1,8 @@
 // How the Chat screens read the engine, and the words they share.
 import { useCallback, useSyncExternalStore } from 'react';
 import { format, isThisYear, isToday, isYesterday } from 'date-fns';
-import type { ChatConversationSummary, ChatEngine, ChatEngineSnapshot, ChatMember, ChatThreadItem, ChatThreadMessage } from '@/lib/chat/types';
+import type { ChatConversationSummary, ChatDeviceName, ChatEngine, ChatEngineSnapshot, ChatMember, ChatThreadItem, ChatThreadMessage } from '@/lib/chat/types';
+import { deviceLabel } from '@/lib/devices-api';
 import { MIN_PASSPHRASE_LENGTH } from '@/lib/chat/key-backup';
 
 const never = () => () => {};
@@ -25,6 +26,9 @@ export function useChatThread(engine: ChatEngine, conversationId: string): ChatT
 export function useChatMembers(engine: ChatEngine, conversationId: string): ChatMember[] | null {
   return useEngineStore(engine, () => engine.members(conversationId));
 }
+
+/** The person's devices by name, as Settings › Security › Devices lists them. */
+export const deviceNames = (devices: ChatDeviceName[]) => devices.map(deviceLabel).join(', ');
 
 /** The longest message the server takes. */
 export const MAX_MESSAGE_LENGTH = 8000;

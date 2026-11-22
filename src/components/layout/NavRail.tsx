@@ -3,7 +3,7 @@ import { NavLink, useLocation } from 'react-router-dom';
 import { Bell, LogOut, Search, Settings } from 'lucide-react';
 import { useAuth } from '@/contexts/useAuth';
 import { useModules } from '@/hooks/use-modules';
-import { useNavigationCounts } from '@/hooks/use-navigation-counts';
+import { useChatWaiting, useNavigationCounts } from '@/hooks/use-navigation-counts';
 import { useAppLock } from '@/hooks/use-app-lock';
 import { navigationPages } from '@/lib/navigation';
 import { emitAppEvent } from '@/lib/app-events';
@@ -21,21 +21,21 @@ const itemClass = (active: boolean) => cn(
   active ? 'text-foreground' : 'text-muted-foreground hover:bg-muted/60 hover:text-foreground',
 );
 
-function RailContent({ icon: Icon, label, active, count, dot }: { icon: IconType; label: string; active: boolean; count?: number; dot?: boolean }) {
+function RailContent({ icon: Icon, label, active, count, dot, quiet }: { icon: IconType; label: string; active: boolean; count?: number; dot?: boolean; quiet?: boolean }) {
   return <>
     {active && <span aria-hidden="true" className="absolute -left-[3px] bottom-2.5 top-2.5 w-[3px] rounded-full bg-accent" />}
 
     <Icon aria-hidden="true" className={cn('h-5 w-5', active && 'text-accent')} />
     <span className="max-w-full truncate">{label}</span>
     {!!count && <span aria-hidden="true" className="absolute right-2 top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-accent px-1 text-[10px] font-semibold tabular-nums text-accent-foreground">{count > 99 ? '99+' : count}</span>}
-    {dot && <span aria-hidden="true" className="absolute right-4 top-2 h-2 w-2 rounded-full bg-warning ring-2 ring-card" />}
+    {(dot || quiet) && <span aria-hidden="true" className={cn('absolute right-4 top-2 h-2 w-2 rounded-full ring-2 ring-card', quiet ? 'bg-muted-foreground' : 'bg-warning')} />}
   </>;
 }
 
-function RailLink({ to, icon, label, active, count }: { to: string; icon: IconType; label: string; active: boolean; count?: number }) {
+function RailLink({ to, icon, label, active, count, waiting }: { to: string; icon: IconType; label: string; active: boolean; count?: number; waiting?: boolean }) {
   return (
-    <NavLink to={to} aria-label={count ? `${label}, ${count} unread` : label} aria-current={active ? 'page' : undefined} className={itemClass(active)}>
-      <RailContent icon={icon} label={label} active={active} count={count} />
+    <NavLink to={to} aria-label={waiting ? `${label}, not on this device yet` : count ? `${label}, ${count} unread` : label} aria-current={active ? 'page' : undefined} className={itemClass(active)}>
+      <RailContent icon={icon} label={label} active={active} count={count} quiet={waiting} />
     </NavLink>
   );
 }
@@ -56,6 +56,7 @@ export default function NavRail() {
   const location = useLocation();
   const attention = useVisibleAttention();
   const counts = useNavigationCounts();
+  const chatWaiting = useChatWaiting();
   const lock = useAppLock();
   // A locked module gives nothing away, not even a count.
   const countOf = (pageId: string) => { const module = pages.find(page => page.id === pageId)?.module; return module && lock.locked(module) ? undefined : counts[pageId as keyof typeof counts]; };
@@ -68,7 +69,7 @@ export default function NavRail() {
       <div className="flex min-h-0 flex-1 flex-col items-center gap-0.5 overflow-y-auto">
         {navigationPages(pages, canNavigate).map(page => (
           <RailLink key={page.id} to={page.href} icon={page.icon} label={page.name}
-            active={location.pathname.startsWith(page.href)} count={countOf(page.id)} />
+            active={location.pathname.startsWith(page.href)} count={countOf(page.id)} waiting={page.id === 'chat' && chatWaiting} />
         ))}
       </div>
       <div className="flex flex-col items-center gap-0.5 pt-2">

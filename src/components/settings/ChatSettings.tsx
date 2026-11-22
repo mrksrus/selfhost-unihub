@@ -76,12 +76,16 @@ export default function ChatSettings() {
         <SettingsRow label={`Files up to ${policies['chat.attachment_max_mb'].value} MB`} description="The largest file or voice message you can send in a chat." />
       </SettingsSection>
 
-      <SettingsSection title="Chat passphrase" description="It brings your earlier messages to a new phone or browser. Without it and without another signed-in device, a lost device means lost history: nobody else can restore it.">
+      <SettingsSection title="Chat passphrase" description="Without it and without another signed-in device, a lost device means lost history: nobody else can restore it.">
         {snapshot?.holds_history_key ? (
           <SettingsRow label="This device has your chat history" description="A new passphrase needs your account password, not the old passphrase.">
             <Button variant="outline" onClick={() => setDialog('change')}>Set a new passphrase…</Button>
           </SettingsRow>
-        ) : state === 'enter-passphrase' || state === 'waiting' ? (
+        ) : state === 'waiting' ? (
+          <SettingsRow label="This device is not in Chat yet" description="Let it in with your chat passphrase, or approve it on another of your devices.">
+            <Button asChild variant="outline"><Link to="/chat">Open Chat</Link></Button>
+          </SettingsRow>
+        ) : state === 'enter-passphrase' ? (
           <>
             <SettingsRow label="This device does not have your earlier messages" description="Enter the passphrase you chose on another device.">
               <Button asChild variant="outline"><Link to="/chat">Enter passphrase</Link></Button>
@@ -99,6 +103,9 @@ export default function ChatSettings() {
             <p className="text-sm text-muted-foreground">{snapshot && 'reason' in snapshot.readiness ? snapshot.readiness.reason : 'Chat is starting on this device…'}</p>
           </SettingsBlock>
         )}
+        <SettingsBlock>
+          <p className="max-w-prose text-sm text-muted-foreground">A new phone or browser gets nothing of Chat until you let it in. There are two ways: enter your chat passphrase on it, or approve it on a device that shows your chats, after checking that both show the same code. Either way your earlier messages come along.</p>
+        </SettingsBlock>
       </SettingsSection>
 
       <SettingsSection title="What the encryption protects">

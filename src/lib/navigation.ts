@@ -26,3 +26,6 @@ export function navigationPages(pages: PagePreference[], canNavigate: (href: str
     .map(page => ({ id: page.id, name: page.label, ...PAGE_LINKS[page.id] }))
     .filter(page => canNavigate(page.href));
 }
+
+/** Where the person last was outside Chat, for leaving a Chat that stays closed on this device. */
+export const beforeChat: { path: string | null } = { path: null };

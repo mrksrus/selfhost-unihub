@@ -2,7 +2,7 @@ import { Link } from 'react-router-dom';
 import { ChevronRight, LogOut, Settings } from 'lucide-react';
 import { useModules } from '@/hooks/use-modules';
 import { useAppLock } from '@/hooks/use-app-lock';
-import { useNavigationCounts } from '@/hooks/use-navigation-counts';
+import { useChatWaiting, useNavigationCounts } from '@/hooks/use-navigation-counts';
 import { useAuth } from '@/contexts/useAuth';
 import { BOTTOM_NAV_PAGES, navigationPages } from '@/lib/navigation';
 import { can, managesGroups } from '@/lib/permissions';
@@ -19,12 +19,14 @@ const More = () => {
   const { user, signOut } = useAuth();
   const attention = useVisibleAttention();
   const counts = useNavigationCounts();
+  const chatWaiting = useChatWaiting();
   const lock = useAppLock();
-  const links: { title: string; href: string; icon: typeof Settings; count?: number }[] = [
+  const links: { title: string; href: string; icon: typeof Settings; count?: number; note?: string }[] = [
     // Pages that do not fit in the mobile bar, in the user's order, with the count the bar would show (none for a locked module).
     ...navigationPages(pages, canNavigate).slice(BOTTOM_NAV_PAGES).map(page => {
       const module = pages.find(entry => entry.id === page.id)?.module;
-      return { title: page.name, href: page.href, icon: page.icon, count: module && lock.locked(module) ? 0 : counts[page.id as keyof typeof counts] ?? 0 };
+      return { title: page.name, href: page.href, icon: page.icon, count: module && lock.locked(module) ? 0 : counts[page.id as keyof typeof counts] ?? 0,
+        note: page.id === 'chat' && chatWaiting ? 'Not on this device yet' : undefined };
     }),
     { title: 'Settings', href: '/settings', icon: Settings },
     ...(managesGroups(user) ? [{ title: MY_GROUPS_PAGE.label, href: MY_GROUPS_PAGE.href, icon: MY_GROUPS_PAGE.icon }] : []),
@@ -47,6 +49,7 @@ const More = () => {
             <Link key={item.href} to={item.href} className={rowClass}>
               <item.icon aria-hidden="true" className="h-5 w-5 text-muted-foreground" />
               <span className="flex-1">{item.title}</span>
+              {item.note && <span className="text-xs text-muted-foreground">{item.note}</span>}
               {!!item.count && <>
                 <span aria-hidden="true" className="flex h-5 min-w-5 items-center justify-center rounded-full bg-accent px-1.5 text-[11px] font-semibold tabular-nums text-accent-foreground">{item.count > 99 ? '99+' : item.count}</span>
                 <span className="sr-only">, {item.count} unread</span>

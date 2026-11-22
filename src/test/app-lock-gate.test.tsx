@@ -27,7 +27,7 @@ vi.mock('@/hooks/use-modules', async () => {
   const { moduleForPath } = await vi.importActual<typeof import('@/lib/modules')>('@/lib/modules');
   return { moduleForPath, useModules: () => ({ isPending: false, error: null, isEnabled: () => true, canAccess: () => true, canNavigate: () => true, pages: PAGES, modules: MODULES }) };
 });
-vi.mock('@/hooks/use-navigation-counts', () => ({ useNavigationCounts: () => ({ mail: 3 }) }));
+vi.mock('@/hooks/use-navigation-counts', () => ({ useNavigationCounts: () => ({ mail: 3 }), useChatWaiting: () => false }));
 vi.mock('@/hooks/use-attention', () => ({ useAttentionItems: () => state.attention }));
 vi.mock('@/hooks/use-background-notification-checks', () => ({ useBackgroundNotificationChecks: vi.fn() }));
 vi.mock('@/hooks/use-calendar-notifications', () => ({ useCalendarNotifications: vi.fn() }));

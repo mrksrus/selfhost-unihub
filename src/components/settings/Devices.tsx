@@ -46,7 +46,7 @@ export function Devices() {
   });
 
   return (
-    <SettingsSection title="Devices" description="Where this account is signed in. Sign out a device you do not recognise, then change your password. A device marked Chat holds your chat keys and receives your messages.">
+    <SettingsSection title="Devices" description="Where this account is signed in. Sign out a device you do not recognise, then change your password. A device marked Chat holds your chat keys and receives your messages; one marked Waiting for Chat gets nothing of Chat until you let it in.">
       {query.isLoading && <SettingsBlock><p className="text-sm text-muted-foreground">Loading devices…</p></SettingsBlock>}
       {query.error && (
         <SettingsBlock>
@@ -58,7 +58,7 @@ export function Devices() {
         const label = deviceLabel(device);
         return (
           <SettingsRow key={device.id}
-            label={<span className="flex min-w-0 items-center gap-2"><Icon aria-hidden="true" className="h-4 w-4 shrink-0 text-muted-foreground" /><span className="truncate">{label}</span>{device.current && <Badge variant="secondary">This device</Badge>}{device.chat && <Badge variant="outline">Chat</Badge>}</span>}
+            label={<span className="flex min-w-0 items-center gap-2"><Icon aria-hidden="true" className="h-4 w-4 shrink-0 text-muted-foreground" /><span className="truncate">{label}</span>{device.current && <Badge variant="secondary">This device</Badge>}{device.chat && <Badge variant="outline">{device.chat_waiting ? 'Waiting for Chat' : 'Chat'}</Badge>}</span>}
             description={<>
               <span className="block">{device.current ? 'In use now' : `Last used ${lastActiveLabel(device.last_seen_at)}`} · signed in since {format(new Date(device.created_at), 'd MMM yyyy')}</span>
               <span className="block">{describeDeviceLock(device.lock, modules)} · Notifications {device.notifications ? 'on' : 'off'}</span>
@@ -76,7 +76,7 @@ export function Devices() {
             <AlertDialogTitle>Sign out {leaving ? deviceLabel(leaving) : 'this device'}?</AlertDialogTitle>
             <AlertDialogDescription>
               It is signed out at once and stops receiving notifications. Its offline copy and app lock are removed the next time it opens UniHub. Nothing on the server changes.
-              {leaving?.chat && ' It also leaves your chats: the next message goes to your other devices only.'}
+              {leaving?.chat && !leaving.chat_waiting && ' It also leaves your chats: the next message goes to your other devices only.'}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

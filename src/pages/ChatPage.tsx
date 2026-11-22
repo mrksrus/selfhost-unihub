@@ -4,6 +4,7 @@ import { MessageCircle, MessageCircleOff, Plus, Users } from 'lucide-react';
 import { useChatEngine } from '@/hooks/use-chat-engine';
 import { useAppLock } from '@/hooks/use-app-lock';
 import { useModules } from '@/hooks/use-modules';
+import { beforeChat, navigationPages } from '@/lib/navigation';
 import { cn } from '@/lib/utils';
 import { PageBody, PageHeader, PageShell } from '@/components/layout/PageShell';
 import { Button } from '@/components/ui/button';
@@ -25,7 +26,7 @@ import type { ChatEngine } from '@/lib/chat/types';
 export default function ChatPage() {
   const engine = useChatEngine();
   const snapshot = useChatSnapshot(engine);
-  const { canAccess } = useModules();
+  const { canAccess, pages, canNavigate } = useModules();
   const [params] = useSearchParams();
   const activeId = params.get('c');
   // Unsent text per conversation, for as long as the page stays open.
@@ -36,7 +37,7 @@ export default function ChatPage() {
   const [later, setLater] = useState<ChatEngine | null>(null);
 
   const readiness = snapshot?.readiness ?? { state: 'starting' as const };
-  const waiting = readiness.state === 'enter-passphrase' && later === engine;
+  const deferred = readiness.state === 'enter-passphrase' && later === engine;
   // The server refuses Chat until a required app lock is set up; once it is, starting is tried again.
   const lockMet = lock.status !== 'setup' && lock.requirement?.meets !== false;
   useEffect(() => { if (lockMet && engine?.snapshot().readiness.state === 'failed') engine.restart(); }, [engine, lockMet]);
@@ -50,6 +51,8 @@ export default function ChatPage() {
   const navigate = useNavigate();
   const opened = useRef<string | null>(null);
   const ready = readiness.state === 'ready';
+  // "Not now" on a device that is not in Chat leaves Chat closed: back to where the person was, or to their first other page.
+  const leave = () => navigate(beforeChat.path ?? navigationPages(pages, canNavigate).find(page => page.id !== 'chat')?.href ?? '/settings');
   useEffect(() => {
     if (active) opened.current = active.id;
     else if (ready && activeId && opened.current === activeId) navigate('/chat', { replace: true });
@@ -57,13 +60,14 @@ export default function ChatPage() {
 
   return (
     <PageShell>
-      <PageHeader title="Chat" className={activeId ? 'hidden lg:block' : undefined} actions={(readiness.state === 'ready' || waiting) && <><Button variant="outline" size="sm" onClick={() => setNewGroup(true)}><Users aria-hidden="true" />New group</Button>{newChat}</>} />
+      <PageHeader title="Chat" className={activeId && readiness.state !== 'waiting' ? 'hidden lg:block' : undefined} actions={readiness.state === 'ready' || deferred ? <><Button variant="outline" size="sm" onClick={() => setNewGroup(true)}><Users aria-hidden="true" />New group</Button>{newChat}</>
+        : readiness.state === 'waiting' && <Button variant="outline" size="sm" onClick={leave}>Not now</Button>} />
       {newGroup && engine && <NewGroupDialog engine={engine} onClose={() => setNewGroup(false)} />}
       {!engine || !snapshot || readiness.state === 'starting' ? <PageBody width="reading"><LoadingState label="Opening Chat…" /></PageBody>
         : readiness.state === 'unsupported' ? <PageBody width="reading"><EmptyState icon={MessageCircleOff} title="Chat cannot run in this browser" description={readiness.reason} /></PageBody>
         : readiness.state === 'failed' ? <PageBody width="reading"><ErrorState title="Chat could not start" error={lock.method.appUpdateForChat ? `${readiness.reason} ${UPDATE_APP_TO_LOCK_CHAT}` : readiness.reason} onRetry={() => engine.restart()} /></PageBody>
-        : readiness.state !== 'ready' && !waiting ? <PageBody width="reading"><ChatPassphraseGate engine={engine} state={readiness.state === 'waiting' ? 'enter-passphrase' : readiness.state} onLater={readiness.state === 'waiting' ? undefined : () => setLater(engine)} /></PageBody>
-        : conversations.length === 0 && !activeId && !waiting ? (
+        : readiness.state !== 'ready' && !deferred ? <PageBody width="reading"><ChatPassphraseGate engine={engine} readiness={readiness} newKeyRefused={snapshot.new_key_refused} onLater={readiness.state === 'waiting' ? undefined : () => setLater(engine)} /></PageBody>
+        : conversations.length === 0 && !activeId && !deferred ? (
           <PageBody width="reading">
             <EmptyState icon={MessageCircle} title="No chats yet" action={newChat || undefined}
               description={`${directory ? 'Open a colleague in the company directory and choose Message.' : 'A chat starts when a colleague writes to you.'} Only the two of you can read what you write.`} />
@@ -71,7 +75,7 @@ export default function ChatPage() {
         ) : (
           <div className="flex min-h-0 flex-1">
             <div className={cn('min-h-0 min-w-0 flex-col lg:flex lg:w-80 lg:shrink-0 lg:border-r lg:border-border', activeId ? 'hidden' : 'flex flex-1')}>
-              {waiting && (
+              {deferred && (
                 <div className="flex shrink-0 items-center justify-between gap-3 border-b border-border px-4 py-2 text-xs text-muted-foreground">
                   <p>Your earlier messages are not on this device yet.</p>
                   <Button variant="outline" size="sm" className="shrink-0" onClick={() => setLater(null)}>Enter passphrase</Button>

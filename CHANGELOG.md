@@ -16,6 +16,29 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
   starts when `TURN_SECRET` is set; publish its ports with it
   ([Calls and the relay](docs/INSTALLATION.md#calls-and-the-relay)).
 
+### Changed
+
+- **A new phone or browser is let into Chat by you.** After signing in, a
+  device gets nothing of Chat: no chats, no unread count, no notifications.
+  Chat says so and offers two ways: enter your chat passphrase there, or
+  "Ask for approval" and approve it on a device that shows your chats,
+  after checking that both show the same six-digit code. Either way your
+  earlier messages come along. "Not now" leaves Chat closed on that device;
+  the rest of UniHub works. Devices signed in before the update stay in
+  their chats.
+- **"A device asks to join your chats"** opens on your devices that show
+  your chats, on whichever page is open: the asking device's name, when it
+  signed in and the code. "This was not me" removes the request and offers
+  to sign that device out.
+- **"Start a new key" waits for your other devices.** While another device
+  of yours is in Chat, the screen names it instead of starting a new key:
+  set a new passphrase there, or sign a lost device out first under
+  Settings › Security › Devices, which marks a device that is not in Chat
+  yet "Waiting for Chat".
+- A chat with someone who cannot be written to says why in the new words:
+  "<name> has not set up Chat yet." or "<name> is not signed in to Chat on
+  any device."
+
 ## 0.34.0
 
 Group chats, files and voice messages in Chat, all end-to-end encrypted,

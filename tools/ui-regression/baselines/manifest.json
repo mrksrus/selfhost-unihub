@@ -110,6 +110,22 @@
       "sha256": "5887397363dd63835e27bca6971b0eebe249704fa30166e16fc0f2e0ce5426d3",
       "bytes": 105512
     },
+    "chat-approval-phone-dark.png": {
+      "sha256": "75ea3de2b6929b70ccf7e5f59465c6fc0b2706f6d38bf788e2567aa62e8b7062",
+      "bytes": 56138
+    },
+    "chat-approval-phone-light.png": {
+      "sha256": "3e3f82f4114747d3888269954afbe73d12197f4c9590cfcc4f59950492d619c1",
+      "bytes": 59763
+    },
+    "chat-approval-wide-dark.png": {
+      "sha256": "8ff95b85ec854444a73a42ab78176c89fa92dc3d01565253a849a9f2150bc01c",
+      "bytes": 110086
+    },
+    "chat-approval-wide-light.png": {
+      "sha256": "31dbd955bd67e82995af37ddcfbd72dff60e0b80649dcd7f34f29668af49dfc6",
+      "bytes": 114896
+    },
     "chat-earlier-wide-dark.png": {
       "sha256": "9c8b810f86a2959795691885a33318ef56f53298321b0afbb5a86bce33e18d36",
       "bytes": 144865
@@ -159,52 +175,52 @@
       "bytes": 68742
     },
     "chat-passphrase-choose-phone-dark.png": {
-      "sha256": "e8cd3faa3ce6f1abff589fd081f0e68c009b5f091d5642905a5d5f253940739b",
-      "bytes": 52514
+      "sha256": "725a4c86970d057a390e698114aa477b50efbd3da1a5f9cd66ade56b03730a1c",
+      "bytes": 58378
     },
     "chat-passphrase-choose-phone-light.png": {
-      "sha256": "bc405e3f4e50e25597dd78ac80f52317c89248cfe513af901796485f1e31b98a",
-      "bytes": 55732
+      "sha256": "bbad4d97f425c3e33c31dafe1ccc259e804618242748b40c4325083d65d69e5c",
+      "bytes": 61538
     },
     "chat-passphrase-choose-wide-dark.png": {
-      "sha256": "383611b9d1ea29b27141151f886fb7c7747eb4e5073d5d7baae8a4f8cd3d1fdd",
-      "bytes": 76026
+      "sha256": "396bdb9aef350d84858faba20654f58fb9acffcb194ced543a5cac6d37a4a17f",
+      "bytes": 85334
     },
     "chat-passphrase-choose-wide-light.png": {
-      "sha256": "9adeec1a2ca881c3f37a7a9283efd340aae4c803a26b3822e4b2e147d20757cd",
-      "bytes": 78130
+      "sha256": "e9224aeacdbad3b05a36a8b985c189edc6594645448cda547491d00c0b5f6126",
+      "bytes": 87527
     },
     "chat-passphrase-enter-phone-dark.png": {
-      "sha256": "ba10caae74fa7c9eb9791d8088d71d76a3aa448bea63405c2604a53651f28380",
-      "bytes": 48907
+      "sha256": "a6ab6408b4c68d010813a58888ae41194407fab5879993849b62e68271cb8d97",
+      "bytes": 47624
     },
     "chat-passphrase-enter-phone-light.png": {
-      "sha256": "55c3842bd774d82161aa315df89a4829603a957ffac4785a370cd5165336e683",
-      "bytes": 50805
+      "sha256": "d20601c73d37ce230e57f14d1639cc1846b733c76d9d923a2fae2dbe9e7e599f",
+      "bytes": 49525
     },
     "chat-passphrase-enter-wide-dark.png": {
-      "sha256": "e5d53f12bb73a1eb396edb2927fa00813e494d5491669d0ba01adc56c6868d4c",
-      "bytes": 70454
+      "sha256": "9c11cdad25359668c0803436c040e4d57967a9f6bc7c52ae0f386bb8e1284b1d",
+      "bytes": 69949
     },
     "chat-passphrase-enter-wide-light.png": {
-      "sha256": "78a9f32d198962ad631ea5b5ff9dfb7700cce03f0c424b07ed552b142c8bb861",
-      "bytes": 71391
+      "sha256": "35b5011a775f4e626a71eeee819c76556dca6d74fed0df6045c1efb10745df32",
+      "bytes": 70984
     },
     "chat-people-phone-dark.png": {
-      "sha256": "e622a6c05ecd96d44a9b3bf2393ef33eb724cc6109c0cd8d2c8b83b4704d0ef3",
-      "bytes": 47341
+      "sha256": "14d0d63d97c6722fdbf9cda33c7e23fafe8ebf3ab8f890925da5e3251691253e",
+      "bytes": 49920
     },
     "chat-people-phone-light.png": {
-      "sha256": "f73253ce4e5c6f54a2b232b2ef22abe4ec70ce79d2213986f7af3529de7f739a",
-      "bytes": 50958
+      "sha256": "4bc6f8e17efa4d2c0af83fc1304816f5571f336ba41b846826ed50ffc28fdaa4",
+      "bytes": 53667
     },
     "chat-people-wide-dark.png": {
-      "sha256": "c51a54263e85b46d78f0c2021a5e512793677a05e567747bfb12e351c90dddb1",
-      "bytes": 152744
+      "sha256": "09d17d9b4c02f26c949f31df442b9601758926fc366f629d5b5e03eceeb4b526",
+      "bytes": 156492
     },
     "chat-people-wide-light.png": {
-      "sha256": "2d7034859887c12e40855a1eab6e71a8c0145605bc92395d00d06fea28d61186",
-      "bytes": 156723
+      "sha256": "3ae7f77be17964457985f440f3ccc2c578f8fb1468438823f4ac4686bc86d8fd",
+      "bytes": 160574
     },
     "chat-recorder-phone-dark.png": {
       "sha256": "00710d1c3399fecfbb20f8b1ca2b50ad85e3252e13b4c8af1fdd2a37b7831a1e",
@@ -278,6 +294,54 @@
       "sha256": "491282797e136eb80799b158718b6296c4eadcc37ae7099ca141e380ad18e33e",
       "bytes": 63170
     },
+    "chat-waiting-alone-phone-dark.png": {
+      "sha256": "0ff5228d137c392ae2998307ba294b8700104edc99ced4443edd6b90a0ace1ab",
+      "bytes": 51376
+    },
+    "chat-waiting-alone-phone-light.png": {
+      "sha256": "1694f24ccb9bf154e4b405dfa31443b9741dc8ea951f40e4ab913c8705bf3045",
+      "bytes": 54012
+    },
+    "chat-waiting-alone-wide-dark.png": {
+      "sha256": "f575594fe22f69998eb261a9507d1c2eb9b609ce725428af27613400e58a86a4",
+      "bytes": 72856
+    },
+    "chat-waiting-alone-wide-light.png": {
+      "sha256": "d0418244a23c08a214269b37f332869445b85f628e6648658aaf5ef004ba8ffb",
+      "bytes": 74003
+    },
+    "chat-waiting-code-phone-dark.png": {
+      "sha256": "03bffbe09b95472deaa2195b4a397b130c28141599d246e2b04c7c83bb4cd0ca",
+      "bytes": 68567
+    },
+    "chat-waiting-code-phone-light.png": {
+      "sha256": "228a6190ad4206a7cf3dc1bdc56259278f602fe0900a39aea8eec1293f28b557",
+      "bytes": 73190
+    },
+    "chat-waiting-code-wide-dark.png": {
+      "sha256": "1537dda5d6e50349bd842ccffe06aa6be1c7b6e854946e7c415b1fe3981823c4",
+      "bytes": 96174
+    },
+    "chat-waiting-code-wide-light.png": {
+      "sha256": "312d68cd56cf503cba49f41f00e11f3beb5db2ec095b62ab40f3f24516168874",
+      "bytes": 98674
+    },
+    "chat-waiting-phone-dark.png": {
+      "sha256": "02043c047ddf46b3f998ecd26c500595feeab933860b46df50df3744c766711c",
+      "bytes": 68083
+    },
+    "chat-waiting-phone-light.png": {
+      "sha256": "bd6d3348aa388fc5527372824ba7e7226634c4913219783d0f6fb34ef83ad978",
+      "bytes": 73149
+    },
+    "chat-waiting-wide-dark.png": {
+      "sha256": "483799c870c081464a791058a9153d1a7ee96e6f3804cadbf51a69209ddb8174",
+      "bytes": 96281
+    },
+    "chat-waiting-wide-light.png": {
+      "sha256": "4eff5500b8c1265c8f62e1806619dc5783d5a7dd92f4a057096d2ef8c8df3dd5",
+      "bytes": 99430
+    },
     "chat-wide-dark.png": {
       "sha256": "56f68f319d29a4751caea21ab523068f4163c54e2c8986d2f0e1d1dc9abb0d4c",
       "bytes": 138371
@@ -335,12 +399,12 @@
       "bytes": 128601
     },
     "devices-wide-dark.png": {
-      "sha256": "855f899ba34012bbebfd6eeb2c008083546f7e55a4cb3098c56c7c6c75bcc06b",
-      "bytes": 121195
+      "sha256": "b91deed175f039c4f28579bfea70dc406649fff7058efe69b0ff4a7caa2b40e6",
+      "bytes": 128247
     },
     "devices-wide-light.png": {
-      "sha256": "e2af58fe51b1992db0ae49f152000bf2d74e110e60c10923521dd631011eb531",
-      "bytes": 122886
+      "sha256": "06c05658bf6ca643ef9ffafa28a7560fca34000af9cec54dd536fcf8cd56555d",
+      "bytes": 130245
     },
     "event-contribute-phone-dark.png": {
       "sha256": "de92abf0283cf1813cbbf40e274f5d95753f1f171589258fd6afdf9848dcd1b0",
@@ -527,12 +591,12 @@
       "bytes": 70627
     },
     "settings-chat-wide-dark.png": {
-      "sha256": "7d47fefa979ffaffe0b8d89064158d0e46a6a19b7487c6e227b96d4a709aad33",
-      "bytes": 136680
+      "sha256": "552bdc639432c6f3196f09eda5bdde4b9c458841ac04e475ff97801481cc735c",
+      "bytes": 133032
     },
     "settings-chat-wide-light.png": {
-      "sha256": "ae391d268725a9bf4970f95a2bb2a3cf2b26665b3a10ebc946296ed9ad90ceb6",
-      "bytes": 140424
+      "sha256": "52fa77c854e1ba1238906c0425856c7266d979509ab39211a4b26cca11f2adab",
+      "bytes": 136642
     },
     "settings-pages-wide-dark.png": {
       "sha256": "037a9e0fa8fc03f7875540db3e7cda27f2ce7f7108c9412e6024219096acdbac",
@@ -1812,6 +1876,77 @@
         "chat-thread-phone-light.png",
         "chat-wide-dark.png",
         "chat-wide-light.png"
+      ],
+      "removed": []
+    },
+    {
+      "date": "2026-11-22T00:06:41.253Z",
+      "reason": "Device screens: a device that is not in Chat yet (as it opens, with a code, with no other device in Chat) and the dialog that approves one; Waiting for Chat in the devices list; the new reasons in a chat's people; the wording of the passphrase screens and of Settings › Chat",
+      "source": {
+        "commit": "c554a7a14aebd0008f1137afffcc1d00bc607903",
+        "branch": "feat/0.35.0-p3-device-screens",
+        "dirty": true,
+        "digest": "0d0b26402ebe30c228184a6f1c2741e47646d764ba7d2c48a575ed104b54fbb7"
+      },
+      "render": {
+        "playwright": "1.64.0",
+        "browser": "chromium-headless-shell 156.0.8078.4",
+        "browserArgs": [
+          "--font-render-hinting=none",
+          "--disable-lcd-text",
+          "--force-color-profile=srgb",
+          "--disable-gpu",
+          "--disable-skia-runtime-opts",
+          "--num-raster-threads=1",
+          "--disable-partial-raster"
+        ],
+        "platform": "linux-x64",
+        "fonts": {
+          "@fontsource/inter": "5.3.0",
+          "@fontsource/jetbrains-mono": "5.3.0"
+        },
+        "fontconfig": "isolated",
+        "deviceScaleFactor": 1
+      },
+      "host": {
+        "node": "v26.12.1",
+        "ci": false
+      },
+      "added": [
+        "chat-approval-phone-dark.png",
+        "chat-approval-phone-light.png",
+        "chat-approval-wide-dark.png",
+        "chat-approval-wide-light.png",
+        "chat-waiting-alone-phone-dark.png",
+        "chat-waiting-alone-phone-light.png",
+        "chat-waiting-alone-wide-dark.png",
+        "chat-waiting-alone-wide-light.png",
+        "chat-waiting-code-phone-dark.png",
+        "chat-waiting-code-phone-light.png",
+        "chat-waiting-code-wide-dark.png",
+        "chat-waiting-code-wide-light.png",
+        "chat-waiting-phone-dark.png",
+        "chat-waiting-phone-light.png",
+        "chat-waiting-wide-dark.png",
+        "chat-waiting-wide-light.png"
+      ],
+      "changed": [
+        "chat-passphrase-choose-phone-dark.png",
+        "chat-passphrase-choose-phone-light.png",
+        "chat-passphrase-choose-wide-dark.png",
+        "chat-passphrase-choose-wide-light.png",
+        "chat-passphrase-enter-phone-dark.png",
+        "chat-passphrase-enter-phone-light.png",
+        "chat-passphrase-enter-wide-dark.png",
+        "chat-passphrase-enter-wide-light.png",
+        "chat-people-phone-dark.png",
+        "chat-people-phone-light.png",
+        "chat-people-wide-dark.png",
+        "chat-people-wide-light.png",
+        "devices-wide-dark.png",
+        "devices-wide-light.png",
+        "settings-chat-wide-dark.png",
+        "settings-chat-wide-light.png"
       ],
       "removed": []
     }

@@ -4,7 +4,7 @@
 // show them at once (a sent message is "sending", an edit is pending).
 import { searchChats } from '@/lib/chat/search';
 import type {
-  ChatCandidatesResponse, ChatConversationSummary, ChatEngine, ChatEngineSnapshot, ChatFileToSend, ChatGroupSummary, ChatMember, ChatNotify, ChatPeer, ChatReadiness, ChatRestoreProgress,
+  ChatApprovalRequest, ChatCandidatesResponse, ChatConversationSummary, ChatDeviceName, ChatEngine, ChatEngineSnapshot, ChatFileToSend, ChatGroupSummary, ChatMember, ChatNotify, ChatPeer, ChatReadiness, ChatRestoreProgress,
   ChatThreadFile, ChatThreadItem, ChatThreadMessage,
 } from '@/lib/chat/types';
 
@@ -22,6 +22,12 @@ export interface MockChatOptions {
   deleteRefusal?: string;
   /** What openFile() answers per file id: the Blob, or a call that answers later or refuses. Any other file is an empty Blob. */
   files?: Record<string, Blob | (() => Promise<Blob>)>;
+  /** Devices of the person that ask this one to let them into Chat. */
+  approvals?: ChatApprovalRequest[];
+  /** approve() is refused with this sentence, as for a request that ended. */
+  approveRefusal?: string;
+  /** The devices a new key was refused for. */
+  newKeyRefused?: ChatDeviceName[];
 }
 
 export interface MockChatEngine extends ChatEngine {
@@ -75,8 +81,9 @@ export function createMockChatEngine(options: MockChatOptions = {}): MockChatEng
   let snapshot: ChatEngineSnapshot;
   let sent = 0;
   let readiness = options.readiness ?? { state: 'ready' as const };
+  let approvals = options.approvals ?? [];
   const publish = () => {
-    snapshot = { readiness, conversations, holds_history_key: readiness.state === 'ready', restore: options.restore ?? null, approvals: [], new_key_refused: null };
+    snapshot = { readiness, conversations, holds_history_key: readiness.state === 'ready', restore: options.restore ?? null, approvals, new_key_refused: options.newKeyRefused ?? null };
     for (const subscriber of [...subscribers]) subscriber();
   };
   publish();
@@ -164,8 +171,12 @@ export function createMockChatEngine(options: MockChatOptions = {}): MockChatEng
     changePassphrase: record('changePassphrase', async (_password: string, _passphrase: string) => {}),
     startNewKey: record('startNewKey', async (_password: string, _passphrase: string) => { readiness = { state: 'ready' }; publish(); }),
     askApproval: record('askApproval', async () => {}),
-    approve: record('approve', async (_chatDeviceId: string) => {}),
-    dropApproval: record('dropApproval', async (_chatDeviceId: string) => {}),
+    approve: record('approve', async (chatDeviceId: string, _code: string) => {
+      approvals = approvals.filter(item => item.chat_device_id !== chatDeviceId);
+      publish();
+      if (options.approveRefusal) throw new Error(options.approveRefusal);
+    }),
+    dropApproval: record('dropApproval', async (chatDeviceId: string) => { approvals = approvals.filter(item => item.chat_device_id !== chatDeviceId); publish(); }),
   };
 }
 
@@ -190,7 +201,7 @@ export const CHAT_CONVERSATIONS: ChatConversationSummary[] = [
   direct({ id: 'chat-finley', peer: peer('user-finley', FINLEY), unread: 0, last_activity_at: day('13', '10:24'), last_message: { text: '', from_me: false, deleted: false } }),
   group({ id: 'chat-support', name: 'Support', unread: 0, notify: 'mentions', last_activity_at: day('12', '10:15'), last_message: { text: 'The new rota is in the calendar.', from_me: false, deleted: false } },
     { follows: { kind: 'group', id: 'grp-support', name: 'Support' }, member_count: 4 }),
-  direct({ id: 'chat-katherine', peer: peer('user-katherine', KATHERINE, { can_write: false, reason: `${KATHERINE} has not opened UniHub since the update.` }),
+  direct({ id: 'chat-katherine', peer: peer('user-katherine', KATHERINE, { can_write: false, reason: `${KATHERINE} has not set up Chat yet.` }),
     unread: 0, last_activity_at: day('02', '11:40'), last_message: { text: 'The year-end close is on the shared drive, under Finance, in the folder for this year.', from_me: false, deleted: false } }),
   direct({ id: 'chat-grace', peer: peer('user-grace', 'Grace Hopper', { can_write: false, reason: 'Chat is off for Grace Hopper.' }), unread: 0, last_activity_at: '2026-05-28T08:05:00.000Z', last_message: { text: null, from_me: true, deleted: true } }),
   direct({ id: 'chat-deleted', peer: peer(null, 'Deleted person', { can_write: false, reason: 'This person was deleted.' }), unread: 0, last_activity_at: '2025-11-03T13:30:00.000Z', last_message: { text: 'Thanks, that worked.', from_me: false, deleted: false } }),
@@ -260,9 +271,9 @@ export const CHAT_MEMBERS: Record<string, ChatMember[]> = {
     member('user-ada', 'Ada Example', { role: 'manager' }),
     member('user-alex', ALEX),
     member('user-blair', BLAIR.name, { online: true }),
-    member('user-casey', 'Casey Example', { online: false }),
+    member('user-casey', 'Casey Example', { online: false, reason: 'Casey Example is not signed in to Chat on any device.' }),
     member('user-drew', 'Drew Example', { active: false, reason: 'Drew Example is deactivated.' }),
-    member('user-katherine', KATHERINE, { reason: `${KATHERINE} has not opened UniHub since the update.` }),
+    member('user-katherine', KATHERINE, { reason: `${KATHERINE} has not set up Chat yet.` }),
   ],
   'chat-support': [member('user-blair', BLAIR.name, { role: 'manager', online: true }), member('user-ada', 'Ada Example'), member('user-alex', ALEX), member('user-grace', 'Grace Hopper', { reason: 'Chat is off for Grace Hopper.' })],
 };

@@ -4,7 +4,7 @@
 // (P-12), the theme is painted before the app runs and follows the choice
 // (P-02), and touch targets are big enough and never overlap (P-11).
 import type { Page } from '@playwright/test';
-import { POLICIES_EFFECTIVE_TWO_FACTOR, RETENTION_WAITING, RICH_TASK, TASKS } from '../support/fixtures.ts';
+import { CHAT_APPROVAL, CHAT_DEVICES_IN_CHAT, POLICIES_EFFECTIVE_TWO_FACTOR, RETENTION_WAITING, RICH_TASK, TASKS } from '../support/fixtures.ts';
 import { touchViolations } from '../support/geometry.ts';
 import { expectOnlyKnown, KNOWN_DEFECTS } from '../support/known-defects.ts';
 import { attachChatFiles, customRepeat, expect, pointerIsCoarse, sharedCalendars, silentMicrophone, test, THEMES, VIEWPORTS, withChat } from '../support/test.ts';
@@ -362,6 +362,23 @@ test.describe('P-11 touch targets are big enough and never overlap', () => {
     expectOnlyKnown(await touchViolations(page, '[role="dialog"]'), []);
     await open('/settings?section=chat');
     await expect(page.getByRole('switch', { name: 'Read receipts' })).toBeVisible();
+    expectOnlyKnown(await touchViolations(page), []);
+  });
+
+  test('Chat: a device that is not in Chat yet, with a code, and the dialog that approves one', async ({ page, open, settle }) => {
+    await withChat(page, { readiness: { state: 'waiting', approvers: CHAT_DEVICES_IN_CHAT, code: '481516', code_expires_at: '2026-06-15T09:38:20.000Z' }, approvals: [CHAT_APPROVAL] });
+    await open('/chat');
+    // The fixed engine hands out both at once: the dialog is measured first, then the screen under it.
+    const dialog = page.getByRole('dialog', { name: 'A device asks to join your chats' });
+    await expect(dialog.getByRole('button', { name: 'Approve' })).toBeVisible();
+    await expect(dialog).toBeFocused();
+    await settle();
+    expectOnlyKnown(await touchViolations(page, '[role="dialog"]'), []);
+    await dialog.getByRole('button', { name: 'This was not me' }).click();
+    await expect(page.getByRole('dialog', { name: 'The request was removed' }).getByRole('button', { name: 'Sign that device out' })).toBeVisible();
+    expectOnlyKnown(await touchViolations(page, '[role="dialog"]'), []);
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('button', { name: 'Ask again' })).toBeVisible();
     expectOnlyKnown(await touchViolations(page), []);
   });
 

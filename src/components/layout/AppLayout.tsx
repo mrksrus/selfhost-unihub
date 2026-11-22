@@ -1,7 +1,7 @@
 import { useEffect, type ReactNode } from 'react';
 import { ServerOff } from 'lucide-react';
 import OfflineBanner from '@/components/offline/OfflineBanner';
-import { Outlet, Navigate } from 'react-router-dom';
+import { Outlet, Navigate, useLocation } from 'react-router-dom';
 import { useAuth } from '@/contexts/useAuth';
 import { useAppLock } from '@/hooks/use-app-lock';
 import { LockScreen } from '@/components/app-lock/LockScreen';
@@ -16,6 +16,8 @@ import GlobalCommandPalette from '@/components/GlobalCommandPalette';
 import { MailPeek } from '@/components/mail/MailPeek';
 import { PreferenceAccent } from '@/components/theme/PreferenceAccent';
 import { PolicyNoticeDialog } from '@/components/policies/PolicyNoticeDialog';
+import { ChatApprovalDialog } from '@/components/chat/ChatApprovalDialog';
+import { beforeChat } from '@/lib/navigation';
 import { TwoFactorReminder, useTwoFactorPrompt } from '@/components/organisation/TwoFactorRequired';
 import { Button } from '@/components/ui/button';
 import { EmptyState, StartingScreen } from '@/components/ui/page-states';
@@ -68,6 +70,8 @@ const AppLayout = () => {
   useCalendarNotifications();
   useMailNotifications();
   useRecordingUploadRunner();
+  const { pathname, search } = useLocation();
+  useEffect(() => { if (!pathname.startsWith('/chat')) beforeChat.path = pathname + search; }, [pathname, search]);
 
   if (!user && serverUnavailable) {
     return <ServerUnavailable onRetry={retrySession} retrying={loading} />;
@@ -112,6 +116,8 @@ const AppLayout = () => {
       <MailPeek />
       {/* The data rules' notice opens over whichever page the app starts on. */}
       <PolicyNoticeDialog />
+      {/* Another device of the person asks to join their chats, whichever page is open. */}
+      <ChatApprovalDialog />
       <BottomNav />
     </div>
     </TwoFactorGate>

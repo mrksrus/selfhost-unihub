@@ -362,8 +362,13 @@ export const DEVICES = [
   { id: 'dev-phone', current: false, kind: 'android', app_version: '0.29.0', user_agent: 'Mozilla/5.0 (Linux; Android 16; Pixel 8a; wv) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Mobile Safari/537.36 UniHubAndroid/0.29.0 (29000)',
     created_at: at('05-20T18:00:00.000Z'), last_seen_at: at('06-15T07:10:00.000Z'), lock: { scope: ['app'], method: 'biometric' }, notifications: true, chat: true },
   { id: 'dev-tablet', current: false, kind: 'pwa', app_version: null, user_agent: 'Mozilla/5.0 (Linux; Android 15; Pixel Tablet) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36',
-    created_at: at('06-01T12:00:00.000Z'), last_seen_at: at('06-12T20:40:00.000Z'), lock: null, notifications: false, chat: false },
+    created_at: at('06-01T12:00:00.000Z'), last_seen_at: at('06-12T20:40:00.000Z'), lock: null, notifications: false, chat: true, chat_waiting: true },
 ];
+// The person's devices that are in Chat, as a waiting device lists them, and a request of a waiting one as the approving device shows it.
+export const CHAT_DEVICES_IN_CHAT = DEVICES.slice(0, 2).map(({ id, kind, app_version, user_agent }) => ({ id, kind, app_version, user_agent }));
+export const CHAT_APPROVAL = { chat_device_id: 'chat-dev-new', device: { id: 'dev-new', kind: 'web', app_version: null, user_agent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36' },
+  requested_at: at('06-15T09:29:40.000Z'), code: '481516', signed_in_at: at('06-15T09:27:00.000Z') };
+
 const DEVICE_SETTINGS_OFF = {
   app_lock_scope: { value: [], source: 'default', locked: false },
   app_lock_relock_after: { value: '60', source: 'default', locked: false },
