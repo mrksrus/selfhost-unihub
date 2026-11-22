@@ -11,7 +11,9 @@
 // A browser calls the locked phone (answered on the call screen, sound both
 // ways, a speaker route through Telecom, the call notification after a
 // minute, the browser hangs up, both chats show the entry); the phone calls
-// the browser from the app's "Call"; both call at once; Decline on the notification; a call
+// the browser from the app's "Call"; the same locked phone called by a browser that cannot
+// connect directly, so the sound goes through UniHub (five minutes with the screen off); both
+// call at once; Decline on the notification; a call
 // cancelled while it rings; UniHub's app lock on; the app's notifications off
 // with the app open; a headset's answer with nothing of the app on screen; an
 // answer without the microphone permission.
@@ -33,6 +35,7 @@ const sdk = Number(adb('shell', 'getprop', 'ro.build.version.sdk').trim());
 const FAKE_MICROPHONE = ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream'];
 // Received sound energy in three seconds: a sent tone gives about 0.3 to 0.9, silence or a cancelled echo near 0.
 const SOUND = 0.05;
+const minutes = Number(process.env.UNIHUB_E2E_CALL_MINUTES ?? 5);
 const WEBVIEW_FLAGS = '/data/local/tmp/webview-command-line';
 const shell = (...args) => adb('shell', ...args);
 const results = {};
@@ -110,23 +113,36 @@ async function joinChat(page) {
   assert.equal(proof.status, 200, JSON.stringify(proof));
 }
 
-/** Keeps every connection a page makes where its statistics can be read (`window.callConnections`). */
+/**
+ * Keeps every connection a page makes where its statistics can be read (`window.callConnections`).
+ * The call's own is made with servers (the sound through UniHub plays through a pair made without):
+ * while `window.noDirect` is set it gets none and may use only the relay, so it has no candidates;
+ * `window.directConnected` tells whether one connected.
+ */
 const KEEP_CONNECTIONS = () => {
   if (window.callConnections) return;
   const Real = window.RTCPeerConnection;
+  const call = configuration => configuration?.iceServers && window.noDirect ? { ...configuration, iceServers: [], iceTransportPolicy: 'relay' } : configuration;
   window.callConnections = [];
   window.RTCPeerConnection = class extends Real {
-    constructor(configuration) { super(configuration); window.callConnections.push(this); }
+    constructor(configuration) {
+      super(call(configuration));
+      window.callConnections.push(this);
+      if (configuration?.iceServers) this.addEventListener('connectionstatechange', () => { if (this.connectionState === 'connected') window.directConnected = true; });
+    }
+    setConfiguration(configuration) { super.setConfiguration(call(configuration)); }
   };
 };
 
-/** Sound packets and their energy received in three seconds on the page's latest connection. */
+/** Sound packets and their energy received in three seconds on all of the page's connections. */
 async function heard(page) {
   const read = () => page.evaluate(async () => {
     let packets = 0, energy = 0;
-    (await window.callConnections?.at(-1)?.getStats())?.forEach(report => {
-      if (report.type === 'inbound-rtp' && report.kind === 'audio') { packets = report.packetsReceived ?? 0; energy = report.totalAudioEnergy ?? 0; }
-    });
+    for (const connection of window.callConnections ?? []) {
+      (await connection.getStats()).forEach(report => {
+        if (report.type === 'inbound-rtp' && report.kind === 'audio') { packets += report.packetsReceived ?? 0; energy += report.totalAudioEnergy ?? 0; }
+      });
+    }
     return { packets, energy };
   });
   const before = await read();
@@ -274,6 +290,43 @@ test('a browser calls the locked phone: it rings, is answered on the call screen
   await navigate(app.page, '/chat');
   await app.page.getByRole('list', { name: 'Chats' }).getByRole('link', { name: new RegExp(`^${deskName}`) }).click({ timeout: 120_000 });
   await app.page.getByRole('list', { name: `Messages with ${deskName}` }).getByText(/^Voice call, \d+ min$/).first().waitFor({ timeout: 60_000 });
+});
+
+test('through UniHub: a browser that cannot connect directly calls the locked phone; sound flows both ways, the speaker is Telecom\'s, and it holds with the screen off', { timeout: (minutes + 10) * 60_000 }, async () => {
+  await desk.evaluate(() => { window.noDirect = true; window.directConnected = false; });
+  try {
+    shell('input', 'keyevent', 'KEYCODE_HOME');
+    setDevicePin();
+    await sleepScreen();
+    await deskCalls();
+    await until(() => ourCall('RINGING'), 'Telecom ringing', 60_000, 250);
+    await until(() => topActivity() === 'CallActivity', 'the call screen over the lock screen', 30_000, 250);
+    const page = await callPage();
+    await answerSlowDialogs();
+    await page.getByRole('button', { name: 'Answer', exact: true }).click();
+    const answered = Date.now();
+    const toPhone = await flows(page, 'the phone');
+    const toDesk = await flows(desk, 'the desk');
+    results.throughUniHub = { secondsFromAnswerToSound: seconds(answered), phoneHeard3s: toPhone, deskHeard3s: toDesk };
+
+    adb('logcat', '-c');
+    await page.getByRole('button', { name: /^Sound: / }).click();
+    await page.getByRole('menuitemradio', { name: 'Speaker' }).click();
+    await until(() => /Route 4: CallControlResult\(Success\)/.test(adb('logcat', '-d', '-s', 'UniHubCalls:I')) && telecomRoute() === 'TYPE_SPEAKER', 'Telecom taking the speaker', 15_000);
+
+    await sleepScreen();
+    await sleep(minutes * 60_000);
+    Object.assign(results.throughUniHub, { minutes, phoneHeardAfter: await flows(page, 'the phone with the screen off'), deskHeardAfter: await flows(desk, 'the desk') });
+    assert.equal(await desk.evaluate(() => window.directConnected), false, 'the direct connection never came');
+    assert.ok(ourCall('ACTIVE'), 'Telecom has the call active');
+
+    await desk.getByRole('button', { name: 'Hang up', exact: true }).click();
+    await callOver();
+  } finally {
+    await desk.evaluate(() => { window.noDirect = false; });
+    await unlockKeyguard().catch(() => {});
+    clearDevicePin();
+  }
 });
 
 test('the phone calls the browser from the app\'s "Call"; the browser answers; the phone hangs up', { timeout: 300_000 }, async () => {

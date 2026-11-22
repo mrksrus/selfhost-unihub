@@ -1,22 +1,13 @@
 import { test } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import type { Page } from 'playwright-core';
 import { stack } from '../support/env.ts';
 import { onlyOn } from '../support/ui.ts';
-import { callScreen, chatBrowser, chatRow, FAKE_MICROPHONE, gone, heard, leave, messagesOf, ringing, shows, startChat, twoPeople } from './chat-helpers.ts';
+import { callScreen, chatBrowser, chatRow, FAKE_MICROPHONE, gone, heard, keepConnections, leave, messagesOf, ringing, shows, startChat, twoPeople } from './chat-helpers.ts';
 
 // A voice call end to end: two people in two browsers, the real screens, the
 // server's ring and signals, and a real connection between the two Chromiums.
 // Each microphone is Chromium's generated tone, so received sound can be
 // counted in the connection's own statistics.
-
-/** Keeps the page's connection where the test can read its statistics. */
-const keepConnection = (page: Page) => page.context().addInitScript(() => {
-  const Real = window.RTCPeerConnection;
-  window.RTCPeerConnection = class extends Real {
-    constructor(configuration?: RTCConfiguration) { super(configuration); (window as unknown as { callConnection: RTCPeerConnection }).callConnection = this; }
-  };
-});
 
 test('a call between two browsers carries sound both ways, muting stops it one way, and every call leaves its entry in both chats', { timeout: 900_000 }, async ({ browser }) => {
   await onlyOn(browser, 'desktop');
@@ -27,7 +18,7 @@ test('a call between two browsers carries sound both ways, muting stops it one w
   try {
     opened.push(await chatBrowser(alex, FAKE_MICROPHONE), await chatBrowser(blair, FAKE_MICROPHONE));
     const [a, b] = opened.map((entry) => entry.page);
-    for (const page of [a, b]) await keepConnection(page);
+    for (const page of [a, b]) await keepConnections(page);
     await startChat(a, blair);
     const [alexSees, blairSees] = [messagesOf(a, blair.name), messagesOf(b, alex.name)];
 
