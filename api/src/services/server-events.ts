@@ -29,6 +29,8 @@ interface EventStream {
   res: ServerResponse;
   closed: boolean;
   revalidating: boolean;
+  /** Asked again while a check ran: that check may have read the state from before the change. */
+  recheck: boolean;
   onClose: (() => void) | null;
 }
 interface AttachOptions {
@@ -151,7 +153,8 @@ function createServerEvents(options: BusOptions = {}) {
     }
   }
   async function revalidate(stream: EventStream) {
-    if (typeof stream.revalidate !== 'function' || stream.revalidating) return;
+    if (typeof stream.revalidate !== 'function') return;
+    if (stream.revalidating) { stream.recheck = true; return; }
     stream.revalidating = true;
     const before = takesChat(stream.userId);
     try {
@@ -161,6 +164,10 @@ function createServerEvents(options: BusOptions = {}) {
       // A transient database error keeps the stream; the next tick retries.
     } finally {
       stream.revalidating = false;
+    }
+    if (stream.recheck && !stream.closed) {
+      stream.recheck = false;
+      await revalidate(stream);
     }
   }
 
@@ -182,6 +189,7 @@ function createServerEvents(options: BusOptions = {}) {
       res,
       closed: false,
       revalidating: false,
+      recheck: false,
       onClose: null,
     };
     // Listen on the response: a request emits 'close' as soon as its (empty)
