@@ -630,8 +630,10 @@ export interface ChatArchiveResponse { copies: ChatArchiveEntry[]; cursor: strin
 
 /*
  * Voice calls between the two people of a direct chat. Media is peer to
- * peer (WebRTC, DTLS-SRTP); the server carries the ring, the signals (offer,
- * answer, candidates as opaque text) and the call's record, never the sound.
+ * peer (WebRTC, DTLS-SRTP) where the devices connect directly; the server
+ * carries the ring, the signals (offer, answer, candidates as opaque text)
+ * and the call's record, and passes on the encrypted sound when they cannot
+ * (GET /api/chat/calls/:id/media).
  * Every call route names the call by id and the call names its
  * conversation. One call per person at a time.
  *
@@ -788,6 +790,60 @@ export interface ChatIceServersResponse { ice_servers: ChatIceServer[] }
 
 /** The live hint chat.call. */
 export interface ChatCallHint { call_id: string }
+
+/*
+ * GET /api/chat/calls/:id/media: the call's sound through UniHub, a
+ * WebSocket (RFC 6455) of an end of an active call, for while its devices
+ * cannot connect directly. The server passes every binary message from one
+ * end to the other end's socket unchanged and reads, stores and logs none of
+ * it; the devices encrypt it with a key the server cannot compute. Each end
+ * opens its own socket; a second socket of the same device replaces the first
+ * (close 4000), as after a reconnect.
+ *
+ * Refused before the handshake, as an ordinary JSON answer: the chat routes'
+ * refusals and the call routes' shared ones; 409 CHAT_CALL_ENDED; 409
+ * CHAT_CALL_NOT_ACTIVE while it rings; 503 CHAT_CALL_MEDIA_BUSY when UniHub
+ * carries 200 sockets already; 400 CHAT_CALL_MEDIA_INVALID for a malformed
+ * handshake; 426 CHAT_CALL_MEDIA_UPGRADE for a request that passed every
+ * check but arrived without its Upgrade: a reverse proxy that does not pass
+ * WebSockets (a page tells that from a failed socket with a plain GET).
+ *
+ * Messages: binary only, at most 1,024 bytes each, unfragmented, no
+ * extensions or subprotocols. At most 60 a second from an end, in bursts of
+ * 120; more are dropped. While an end's socket has more than 8 KiB unsent,
+ * messages to it are dropped. The server pings every 25 seconds; browsers
+ * answer on their own.
+ *
+ * The devices' frame (ChatCallMediaFrame) names its sender and key so that
+ * group calls can forward one end's frames to every other end.
+ *
+ * GET /api/chat/calls/check: the same handshake, accepted and closed with
+ * 1000 at once; for the Server page to tell whether WebSockets reach
+ * UniHub. Open to a device that has not joined Chat; a plain GET answers 426
+ * CHAT_CALL_MEDIA_UPGRADE.
+ */
+
+/**
+ * Why the server closed a media socket:
+ * 1000 the call ended (or the check is done); 1001 the server is stopping;
+ * 1002 a protocol error (an unmasked frame, reserved bits, an unknown opcode,
+ * a bad control frame); 1003 a text or fragmented message; 1008 the session
+ * ended or this device is no longer an end of the call (sign-out, a revoked
+ * session, a deactivated person, checked at once on sign-out and every 25
+ * seconds); 1009 a message over 1,024 bytes; 4000 replaced by a newer
+ * socket of the same device; 4001 the end sent nothing for 60 seconds or did
+ * not read for 15 seconds.
+ */
+export type ChatCallMediaClose = 1000 | 1001 | 1002 | 1003 | 1008 | 1009 | 4000 | 4001;
+
+/**
+ * A media message as the devices write it (the server never reads it): a
+ * 7-byte header in clear, [version 1][sender 1][key 1][sequence 4,
+ * big-endian], then the AES-GCM ciphertext of [kind 1][Opus packet] with its
+ * 16-byte tag, the header as additional data. version 1; sender and key 0 in
+ * a call between two people.
+ */
+export interface ChatCallMediaFrame { version: 1; sender: number; key: number; sequence: number }
 
 /*
  * Notifications (services/notifications.ts), to joined chat devices only:
