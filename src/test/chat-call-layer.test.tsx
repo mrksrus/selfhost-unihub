@@ -50,6 +50,14 @@ describe('a call over the page', () => {
     expect(calls.hangUp).toHaveBeenCalledTimes(1);
   });
 
+  it('a call that failed before it was answered names the other person, not the relay', () => {
+    show(view({ state: 'ended', ended: 'failed', answered_at: null }));
+    expect(screen.getByRole('dialog')).toHaveTextContent('Blair Example could not take the call.');
+    cleanup();
+    show(view({ state: 'ended', ended: 'failed' }));
+    expect(screen.getByRole('dialog')).toHaveTextContent('Your administrator may need to set up the relay for calls.');
+  });
+
   it('another tab\'s call is a line without controls', () => {
     show(view({ state: 'ended', ended: 'other-tab', here: false }));
     expect(screen.getByRole('status')).toHaveTextContent('On a call in another tab');

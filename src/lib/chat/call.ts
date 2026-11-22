@@ -214,7 +214,8 @@ class Calls implements ChatCalls {
 
   /** The call this tab holds, as the server has it now. */
   private async follow(call: ChatCall) {
-    if (call.state === 'ended') return this.finish(ENDINGS[call.outcome ?? 'failed']);
+    // Whether it was answered tells a failure of the other side from one of the connection.
+    if (call.state === 'ended') { this.update({ answered_at: call.answered_at }); return this.finish(ENDINGS[call.outcome ?? 'failed']); }
     if (call.state !== 'active') return;
     if (this.view!.state === 'calling') {
       this.update({ state: 'connecting', answered_at: call.answered_at });

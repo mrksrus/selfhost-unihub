@@ -151,7 +151,7 @@ function calls(viewport: 'wide' | 'phone', theme: string) {
       ['call-calling', { state: 'calling' }, 'Hang up'],
       ['call-active', { state: 'active', answered_at: CALL_ANSWERED_AT }, 'Hang up'],
       ['call-reconnecting', { state: 'reconnecting', answered_at: CALL_ANSWERED_AT, muted: true }, 'Hang up'],
-      ['call-ended', { state: 'ended', ended: 'failed' }, 'Close'],
+      ['call-ended', { state: 'ended', ended: 'failed', answered_at: CALL_ANSWERED_AT }, 'Close'],
     ] as const) {
       test(`${name} (${viewport}, ${theme})`, async ({ page, open, settle }) => {
         await withChat(page);
