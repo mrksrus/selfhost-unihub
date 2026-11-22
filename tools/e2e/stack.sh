@@ -228,10 +228,23 @@ image_database() {
 # stack's keys, providers and test CA, and the relay for calls.
 image_app() {
   app_env
-  # A fresh relay secret per start, shared by the API and the relay, never printed.
-  TURN_SECRET=$(openssl rand -base64 48 | tr -d '\n') RELAY_GATEWAY=$(docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}')
-  export TURN_SECRET TURN_URLS=turn:$RELAY_GATEWAY:3479
   docker rm -f "$APP_CONTAINER" "$RELAY_CONTAINER" >/dev/null 2>&1 || true
+  # A fresh relay secret per start, shared by the API and the relay, never printed.
+  TURN_SECRET=$(openssl rand -base64 48 | tr -d '\n')
+  export TURN_SECRET
+  # On the host's network every address is the relay's own, which it always
+  # refuses as a peer, so the relay that carries calls runs on Docker's bridge,
+  # where the browsers reach it at its own address and it sends to theirs, the
+  # host's, which only TURN_ALLOW_PRIVATE_PEERS allows. Only the relay part
+  # of the image's start.sh runs there, without the API.
+  docker run -d --name "$RELAY_CONTAINER" --init --cap-drop ALL --security-opt no-new-privileges \
+    --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add SETGID --cap-add SETUID \
+    -e TURN_SECRET -e TURN_ALLOW_PRIVATE_PEERS=true -e MYSQL_STARTUP_MAX_WAIT_SECONDS=0 \
+    --entrypoint sh "$IMAGE" -c 'sed "s|^exec node /app/api/src/service-supervisor.js\$|wait|" /app/start.sh > /tmp/relay.sh && grep -qx wait /tmp/relay.sh && exec sh /tmp/relay.sh' >/dev/null
+  local started=0
+  for _ in $(seq 1 30); do [[ "$(docker logs "$RELAY_CONTAINER" 2>&1)" == *'Starting the relay for calls'* ]] && { started=1; break; }; sleep 1; done
+  [ "$started" = 1 ] || { docker logs --tail 40 "$RELAY_CONTAINER" >&2 || true; die "the relay for calls did not start"; }
+  export TURN_URLS=turn:$(docker inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$RELAY_CONTAINER"):3478
   docker run -d --name "$APP_CONTAINER" --network host --init --stop-timeout 15 \
     --cap-drop ALL --security-opt no-new-privileges --cap-add CHOWN --cap-add DAC_OVERRIDE \
     --cap-add NET_BIND_SERVICE --cap-add SETGID --cap-add SETUID \
@@ -243,20 +256,6 @@ image_app() {
     -e TURN_SECRET -e TURN_URLS \
     -e MYSQL_STARTUP_MAX_WAIT_SECONDS=60 -e MYSQL_STARTUP_CHECK_INTERVAL_SECONDS=2 "$IMAGE" >/dev/null
   wait_healthy
-  # On the host's network every address is the relay's own, which it always
-  # refuses as a peer, so the relay that carries calls runs as docker-compose.yml
-  # runs it: on Docker's bridge, its ports published, telling devices the
-  # gateway's address, which only TURN_ALLOW_PRIVATE_PEERS lets it send to.
-  # Port 3479 because the app container's own relay holds 3478; only the
-  # relay part of the image's start.sh runs, without the API.
-  docker run -d --name "$RELAY_CONTAINER" --init --cap-drop ALL --security-opt no-new-privileges \
-    --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add SETGID --cap-add SETUID \
-    -p "$RELAY_GATEWAY:3479:3478/udp" -p "$RELAY_GATEWAY:49160-49200:49160-49200/udp" \
-    -e TURN_SECRET -e TURN_URLS -e "TURN_EXTERNAL_IP=$RELAY_GATEWAY" -e TURN_ALLOW_PRIVATE_PEERS=true -e MYSQL_STARTUP_MAX_WAIT_SECONDS=0 \
-    --entrypoint sh "$IMAGE" -c 'sed "s|^exec node /app/api/src/service-supervisor.js\$|wait|" /app/start.sh > /tmp/relay.sh && grep -qx wait /tmp/relay.sh && exec sh /tmp/relay.sh' >/dev/null
-  for _ in $(seq 1 30); do [[ "$(docker logs "$RELAY_CONTAINER" 2>&1)" == *'Starting the relay for calls'* ]] && return 0; sleep 1; done
-  docker logs --tail 40 "$RELAY_CONTAINER" >&2 || true
-  die "the relay for calls did not start"
 }
 wait_healthy() {
   for _ in $(seq 1 120); do
