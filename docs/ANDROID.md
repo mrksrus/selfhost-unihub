@@ -437,6 +437,87 @@ page until it has shown its lock screen, and asks the phone.
 - **Apps before 0.29** have no native lock: the page offers them the UniHub PIN
   and says that an update unlocks with the fingerprint.
 
+## Calls
+
+From bridge level 5 the app takes voice calls ([Chat](CHAT.md#calls) has the
+server's side) through Android's own call handling, with Jetpack's
+Core-Telecom library: Android counts a UniHub call like a phone call (one at a
+time with the mobile network, headsets, cars and watches). The sound and its
+connection are the page's own WebRTC code, in a WebView that belongs to the
+call.
+
+**What is native.** `Calls.kt` and `CallService.kt` hold the call in Telecom,
+post the ring (a call-style notification, full screen over the lock screen,
+with the phone's ringtone), run the answered or placed call in a foreground
+service of the types `phoneCall` and `microphone`, and take the audio routes
+and the mute of a car or headset from Telecom. `CallActivity.kt` is the call
+screen: the server's `/call` page in its own WebView (its user agent says
+`UniHubCallScreen`), shown over the lock screen for as long as the call lasts.
+The proximity sensor turns the screen off at the ear while the earpiece
+carries the call.
+
+**One path for every call.** The main page of an app that takes calls (its
+user agent says `UniHubCalls`) runs no call of its own: a call it hears of
+first (the hint `chat.call`; the only ring while the app's notifications are
+off) is handed to the app, which ignores a call it already knows; "Call" asks
+the app to place one. No address places or answers a call: `/call?id=…` shows
+a call, and what the person did natively (Answer on the notification, the lock
+screen or a headset; a call placed with "Call") reaches the call page as a
+message over its bridge. The page reports the call's state back; the app
+makes the call active, ends it when the page does and words its notification
+from it. Whatever the app ends by itself (Decline, Hang up on the
+notification, Back, Telecom, a call that never connects) it also tells the
+server with the app's session (`POST /api/chat/calls/:id/end`), so a page
+that died leaves nobody ringing; offline, the server's own time limits end
+the call.
+
+**Rules.** The ring stops by itself 45 seconds after it began, at the
+server's `end`, or when the open page sees the call stop ringing. A second
+ring while a call rings or runs, a call Telecom refuses (a mobile call, the
+person switched UniHub's calls off in Android's settings) or one Telecom does
+not take within 10 seconds ends at the server as failed. A call answered here
+that has not connected within 30 seconds ends as failed. When Telecom asks to
+hold the call (a mobile call answered), the UniHub call ends: there is no
+hold. "Open chat" and "Open UniHub" on the call screen ask Android to unlock,
+then open the app there, which locks as always; the call screen and its call
+stay behind it, and the call's notification brings them back. While UniHub
+is locked, answering shows only the call, with the name hidden.
+
+**Permissions.** `MANAGE_OWN_CALLS` (the app's own calls in Telecom),
+`USE_FULL_SCREEN_INTENT` (the ring over the lock screen; without it Android
+shows a banner), `FOREGROUND_SERVICE_PHONE_CALL` and
+`FOREGROUND_SERVICE_MICROPHONE` (the call keeps running with the screen
+off), all granted at install. The microphone (`RECORD_AUDIO`) is asked
+before the first call, at "Call" or from Settings › Chat › "Calls on this
+phone", because Android cannot ask over the lock screen. The library's
+`BLUETOOTH_CONNECT` and its mute receiver are removed from the manifest:
+Android 14 and later name Bluetooth routes themselves, and the library reads
+names only after checking the permission.
+
+**Set-up.** Settings › Chat › "Calls on this phone" shows the microphone,
+full-screen call screens, notifications (calls ring while the app is closed
+only while UniHub's notifications are on here) and "Allow in background"
+(reliable rings while the phone sleeps), each with "Allow…" opening Android's
+question or setting.
+
+**Capability.** The app reports `calls: true` in its lock report only where
+it can take a call: Android 11 or later, a WebView with the web-message
+feature, and Android's call handling on the phone. Only then does the server
+ring it by its notification connection.
+
+**What does not work.**
+
+- **A headset or car answering with nothing of the app on screen** (full-screen
+  call screens off, or another app in front): Android gives the app neither
+  its call screen nor the microphone then. The call is not answered at the
+  server yet; the notification says "Not connected yet" with "Open UniHub to
+  talk", which opens the call screen, answers and brings the sound. If the
+  caller gives up first, it ends here and is a missed call.
+- **No hold**, transfer or adding a person; nothing in the phone's own call
+  list (the history is in the chat).
+- **Android 10** has no calls in the app: the app rings like a browser while it
+  is open.
+
 ## Home-screen widgets
 
 From 0.32.0 the app has two widgets: **Calendar** (the next 14 days) and

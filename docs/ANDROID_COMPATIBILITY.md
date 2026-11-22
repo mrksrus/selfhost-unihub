@@ -165,6 +165,23 @@ is kept. Releases before 0.21.0 have no app.
    `handshake.shellReads` and extend the check before raising `protocol` or
    `minApp`.
 
+## Calls by Android version
+
+From bridge level 5 the app takes calls through Android's call handling
+([Android](ANDROID.md#calls)); what it can do depends on the phone:
+
+| Android | Calls in the app |
+| --- | --- |
+| 10 | None: no capability is reported, so no server rings the closed app; the open app rings and holds a call in its page, as a browser does. |
+| 11 to 13 | Through Core-Telecom's own call service; the ring is an ordinary high-priority notification with Answer and Decline on 11, a call-style one from 12. |
+| 14 and later | Through Telecom's call API, which names the audio routes (Bluetooth included) itself. |
+
+Apps below level 5 (0.32.0 to 0.34.0) get no `call` message from any server:
+they ring in the page while the app is open, hold the call there, get the
+missed-call notification, and Settings › Chat says "Update the UniHub app to
+get calls while it is closed." The level-5 app against a server before 0.35.0
+sees no call routes and rings for nothing.
+
 ## Not covered
 
 - Real server flows on Android 10 and 17 (see above), and deep links into

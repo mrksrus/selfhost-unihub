@@ -697,7 +697,8 @@ whose device reported the capability `calls: true` in its lock report
 When the call stops ringing, the phones that rang get a second `call`
 message (`event: 'end'`) with a dedupe key of its own; the phone that
 answered gets none. Browsers and older apps ring only in an open page and
-get the missed-call notification.
+get the missed-call notification. The app's side is in
+[Android](ANDROID.md#calls).
 
 **The relay.** `TURN_URLS` (comma separated, the addresses devices are told)
 with `TURN_SECRET` or `TURN_SECRET_FILE`: each start, answer and
