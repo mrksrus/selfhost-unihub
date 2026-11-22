@@ -10,11 +10,13 @@ import { chatBrowser, chatRow, confirmRules, FAKE_MICROPHONE, leave, messagesOf,
 // Calls forbidden for a group: its member cannot call, and nobody can call the
 // member. The button stays where it is, greyed, with the reason.
 
-/** The greyed button says why when pressed, and starts nothing. */
+/** The greyed button says why when pressed, and starts nothing. Pressed with the keyboard: a pointer click on a control marked as disabled is refused by the test's browser driver. */
 async function greyed(page: Page, name: string, reason: string) {
   const button = page.getByRole('button', { name, exact: true });
   await expect.poll(() => button.getAttribute('aria-disabled'), { timeout: 60_000 }).toBe('true');
-  await button.click();
+  expect(await button.getAttribute('title'), 'the reason is on the button too').toBe(reason);
+  await button.focus();
+  await page.keyboard.press('Enter');
   await shows(page.getByText(reason, { exact: true }));
   expect(await page.getByRole('dialog').filter({ hasText: 'Calling…' }).count(), 'no call started').toBe(0);
   await page.keyboard.press('Escape');
