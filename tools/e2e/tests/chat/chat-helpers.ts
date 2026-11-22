@@ -165,14 +165,44 @@ export async function keepScreen(page: Page, name: string) {
 
 export const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-/** What the page's `callConnection` received so far: sound packets, and the energy of the sound in them (silence adds none). */
+export type Kept = Window & { callConnections?: RTCPeerConnection[]; callConnection?: RTCPeerConnection; directConnected?: boolean; wrongRelayPassword?: true };
+
+/**
+ * Keeps every connection the page makes (`callConnections`) for its statistics. The call's own is
+ * the one made with servers (`callConnection`; `directConnected` once it connected); the sound
+ * through UniHub plays through a pair made without. `relay`: the call's may use only the relay,
+ * whose password `wrongRelayPassword` spoils; `none`: it gets no servers and may use only the
+ * relay, so it has no candidates and never connects.
+ */
+export const keepConnections = (page: Page, only: 'any' | 'relay' | 'none' = 'any') => page.context().addInitScript(only => {
+  const kept = window as Kept;
+  const Real = window.RTCPeerConnection;
+  const call = (configuration?: RTCConfiguration) => !configuration?.iceServers || only === 'any' ? configuration : {
+    ...configuration, iceTransportPolicy: 'relay' as const,
+    iceServers: only === 'none' ? [] : configuration.iceServers.map(server => kept.wrongRelayPassword ? { ...server, credential: 'wrong' } : server),
+  };
+  kept.callConnections = [];
+  window.RTCPeerConnection = class extends Real {
+    constructor(configuration?: RTCConfiguration) {
+      super(call(configuration));
+      kept.callConnections!.push(this);
+      if (!configuration?.iceServers) return;
+      kept.callConnection = this;
+      this.addEventListener('connectionstatechange', () => { if (this.connectionState === 'connected') kept.directConnected = true; });
+    }
+    setConfiguration(configuration?: RTCConfiguration) { super.setConfiguration(call(configuration)); }
+  };
+}, only);
+
+/** What the page's connections received so far: sound packets, and the energy of the sound in them (silence adds none). */
 export const received = (page: Page) => page.evaluate(async () => {
-  const connection = (window as unknown as { callConnection?: RTCPeerConnection }).callConnection;
   let packets = 0;
   let energy = 0;
-  (await connection?.getStats())?.forEach((report: { type: string; kind?: string; packetsReceived?: number; totalAudioEnergy?: number }) => {
-    if (report.type === 'inbound-rtp' && report.kind === 'audio') { packets = report.packetsReceived ?? 0; energy = report.totalAudioEnergy ?? 0; }
-  });
+  for (const connection of (window as Kept).callConnections ?? []) {
+    (await connection.getStats()).forEach((report: { type: string; kind?: string; packetsReceived?: number; totalAudioEnergy?: number }) => {
+      if (report.type === 'inbound-rtp' && report.kind === 'audio') { packets += report.packetsReceived ?? 0; energy += report.totalAudioEnergy ?? 0; }
+    });
+  }
   return { packets, energy };
 });
 

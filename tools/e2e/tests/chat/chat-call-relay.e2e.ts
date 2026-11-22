@@ -3,39 +3,23 @@ import { expect } from 'e2e';
 import type { Page } from 'playwright-core';
 import { stack } from '../support/env.ts';
 import { onlyOn } from '../support/ui.ts';
-import { callScreen, chatBrowser, FAKE_MICROPHONE, gone, heard, leave, ringing, shows, startChat, twoPeople } from './chat-helpers.ts';
+import { callScreen, chatBrowser, FAKE_MICROPHONE, gone, heard, keepConnections, leave, ringing, shows, startChat, twoPeople, type Kept } from './chat-helpers.ts';
 
 // A call between two networks that let nothing through but the relay: both
 // pages may use only the relay's candidates, so the sound goes from one
 // allocation of the relay in the image (stack.sh) to another, with the
 // credentials the server handed out for the call.
 
-type Relayed = Window & { callConnection?: RTCPeerConnection; wrongRelayPassword?: true };
-
-/** Keeps the page's connection for its statistics; every connection may use only the relay, whose password `wrongRelayPassword` spoils. */
-const connections = (page: Page) => page.context().addInitScript(() => {
-  const Real = window.RTCPeerConnection;
-  const relayed = (configuration: RTCConfiguration = {}): RTCConfiguration => ({
-    ...configuration,
-    iceTransportPolicy: 'relay',
-    iceServers: (configuration.iceServers ?? []).map(server => (window as Relayed).wrongRelayPassword ? { ...server, credential: 'wrong' } : server),
-  });
-  window.RTCPeerConnection = class extends Real {
-    constructor(configuration?: RTCConfiguration) { super(relayed(configuration)); (window as Relayed).callConnection = this; }
-    setConfiguration(configuration?: RTCConfiguration) { super.setConfiguration(relayed(configuration)); }
-  };
-});
-
 /** The candidate types of the connection's selected pair (the transport's selectedCandidatePairId). */
 const selectedPair = (page: Page) => page.evaluate(async () => {
   const reports = new Map<string, Record<string, unknown>>();
-  (await (window as Relayed).callConnection!.getStats()).forEach((report: Record<string, unknown>) => reports.set(report.id as string, report));
+  (await (window as Kept).callConnection!.getStats()).forEach((report: Record<string, unknown>) => reports.set(report.id as string, report));
   const transport = [...reports.values()].find(report => report.type === 'transport' && report.selectedCandidatePairId);
   const pair = reports.get(transport?.selectedCandidatePairId as string);
   return { local: reports.get(pair?.localCandidateId as string)?.candidateType, remote: reports.get(pair?.remoteCandidateId as string)?.candidateType };
 });
 
-test('a call between two pages that may only use the relay carries sound both ways through it, and with a wrong relay password it does not connect', { timeout: 600_000 }, async ({ browser }) => {
+test('a call between two pages that may only use the relay carries sound both ways through it; with a wrong relay password it goes through UniHub instead', { timeout: 600_000 }, async ({ browser }) => {
   await onlyOn(browser, 'desktop');
   test.skip(!process.env.UNIHUB_E2E_IMAGE, 'the relay runs in the image only (stack.sh with UNIHUB_E2E_IMAGE)');
   const people = await twoPeople();
@@ -45,7 +29,7 @@ test('a call between two pages that may only use the relay carries sound both wa
   try {
     opened.push(await chatBrowser(alex, FAKE_MICROPHONE), await chatBrowser(blair, FAKE_MICROPHONE));
     const [a, b] = opened.map((entry) => entry.page);
-    for (const page of [a, b]) await connections(page);
+    for (const page of [a, b]) await keepConnections(page, 'relay');
     await startChat(a, blair);
     // Blair takes the call on another page of UniHub, loaded with the kept connection.
     await b.goto(`${stack.url}/settings`);
@@ -72,13 +56,13 @@ test('a call between two pages that may only use the relay carries sound both wa
     await callScreen(a, blair.name).getByRole('button', { name: 'Hang up', exact: true }).click();
     for (const page of [a, b]) await gone(page);
 
-    // The same call with a wrong relay password for Alex gets no relay and no connection.
-    await a.evaluate(() => { (window as Relayed).wrongRelayPassword = true; });
+    // The same call with a wrong relay password for Alex gets no relay: its direct connection never comes, and the call goes through UniHub.
+    await a.evaluate(() => { const kept = window as Kept; kept.wrongRelayPassword = true; kept.directConnected = false; });
     await call();
-    for (const [page, other] of [[a, blair], [b, alex]] as const) {
-      await shows(callScreen(page, other.name).getByText('Could not connect. Your administrator may need to set up the relay for calls.', { exact: true }), 120_000);
-      await callScreen(page, other.name).getByRole('button', { name: 'Close', exact: true }).click();
-    }
+    for (const [page, other] of [[a, blair], [b, alex]] as const) await shows(callScreen(page, other.name).getByRole('timer', { name: 'Call time' }), 60_000);
+    expect(await a.evaluate(() => (window as Kept).directConnected), 'the direct connection never came').toBe(false);
+    await callScreen(a, blair.name).getByRole('button', { name: 'Hang up', exact: true }).click();
+    for (const page of [a, b]) await gone(page);
     passed = true;
   } finally {
     await leave(opened, people, passed);
