@@ -79,7 +79,7 @@ turn_secret="${TURN_SECRET:-}"
 if [ -n "${TURN_SECRET_FILE:-}" ]; then
   turn_secret="$(cat -- "$TURN_SECRET_FILE")" || turn_secret=
   [ -n "$turn_secret" ] || echo "WARNING: TURN_SECRET_FILE ($TURN_SECRET_FILE) could not be read or is empty; the relay for calls is off." >&2
-  [ -z "${TURN_SECRET:-}" ] || [ "$TURN_SECRET" = "$turn_secret" ] || { echo "WARNING: TURN_SECRET and TURN_SECRET_FILE are both set, with different values; the relay for calls is off." >&2; turn_secret=; }
+  [ -z "$turn_secret" ] || [ -z "${TURN_SECRET:-}" ] || [ "$TURN_SECRET" = "$turn_secret" ] || { echo "WARNING: TURN_SECRET and TURN_SECRET_FILE are both set, with different values; the relay for calls is off." >&2; turn_secret=; }
 fi
 if [ -z "$turn_secret" ]; then
   [ -z "${TURN_URLS:-}" ] || [ -n "${TURN_SECRET:-}${TURN_SECRET_FILE:-}" ] || echo "WARNING: TURN_URLS is set without TURN_SECRET or TURN_SECRET_FILE; the relay for calls is off and calls between different networks fail." >&2
@@ -113,8 +113,7 @@ if [ -n "$turn_secret" ]; then
   # Peers the relay never sends to: this network, loopback, link-local,
   # multicast and reserved, IPv6 forms that carry an IPv4 address (IPv4-compatible,
   # NAT64, 6to4, Teredo), and every address of the container itself.
-  # Ranges stay prefix-aligned, as coturn compares IPv6 ranges byte by byte,
-  # and none starts at ::, which coturn reads as open below (every IPv4 peer).
+  # No range starts at ::, which coturn has read as open below (every IPv4 peer).
   turn_denied="0.0.0.0-0.255.255.255 127.0.0.0-127.255.255.255 169.254.0.0-169.254.255.255 224.0.0.0-255.255.255.255
     ::1-::ffff:ffff 64:ff9b::-64:ff9b::ffff:ffff 64:ff9b:1::-64:ff9b:1:ffff:ffff:ffff:ffff:ffff
     2001::-2001:0:ffff:ffff:ffff:ffff:ffff:ffff 2002::-2002:ffff:ffff:ffff:ffff:ffff:ffff:ffff
@@ -128,7 +127,7 @@ if [ -n "$turn_secret" ]; then
   (
     umask 077 && exec > "$turn_dir/turnserver.conf" || exit 1
     printf '%s\n' listening-port=3478 min-port=49160 max-port=49200 use-auth-secret "static-auth-secret=$turn_secret" \
-      "realm=$turn_realm" fingerprint no-tcp-relay no-tls no-dtls cli=0 no-multicast-peers no-dynamic-ip-list \
+      "realm=$turn_realm" fingerprint no-tcp-relay no-tls cli=0 no-multicast-peers no-dynamic-ip-list \
       no-dynamic-realms user-quota=8 total-quota=40 max-bps=64000 log-file=stdout "pidfile=$turn_dir/turnserver.pid" userdb=:memory:
     [ -z "${TURN_EXTERNAL_IP:-}" ] || echo "external-ip=$TURN_EXTERNAL_IP"
     [ -z "$turn_user" ] || printf '%s\n' "proc-user=$turn_user" "proc-group=$turn_group"

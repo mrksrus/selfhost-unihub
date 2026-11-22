@@ -236,7 +236,7 @@ docker exec -i -u 10001:10001 -e UNIHUB_API_ROOT=/app/api \
 container_log="$(docker logs "$container_name" 2>/dev/null)"
 [[ "$container_log" == *'"GET / HTTP/1.1" 200 '* ]] || { echo 'Nginx access log lines did not reach the container log.' >&2; exit 1; }
 docker exec "$container_name" sh -c '! ls /var/log/nginx/*.log 2>/dev/null' || { echo 'Nginx wrote log files under /var/log/nginx.' >&2; exit 1; }
-[[ "$container_log" == *"Coturn Version Coturn-$relay_version "* ]] && docker exec "$container_name" sh -c '! ls /var/log/turn*.log /var/tmp/turn*.log /tmp/turn*.log 2>/dev/null' \
+[[ "$container_log" == *"Coturn Version Coturn-$relay_version "* ]] && docker exec "$container_name" sh -c '[ -z "$(ls /var/log/turn*.log /var/tmp/turn*.log /tmp/turn*.log 2>/dev/null)" ]' \
   || { echo "The relay for calls must log its version ($relay_version) to the container log, not to files." >&2; exit 1; }
 [[ "$(docker logs "$container_name" 2>&1)" != *"$turn_secret"* ]] || { echo 'The relay secret appeared in the container log.' >&2; exit 1; }
 # Graceful stop: with cap_drop ALL the root supervisor cannot signal the API
