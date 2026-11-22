@@ -82,9 +82,9 @@ UniHub servers, AI features and new Music features.
 | 0.32.0 | Organisation III | Share local calendars and task lists with people or groups (free/busy, read, contribute, edit, manage); group calendars every member adds to, and organisation calendars such as a holiday or support rota; repeating events in UniHub's own calendars; each shared calendar's own bin; a calendar changes its owner at any time (offered and accepted, or handed over by a group manager or an administrator) or is archived, and when someone leaves an administrator decides for each of their shared calendars; Android home-screen widgets for Calendar and ToDo. |
 | 0.33.0 | Messaging I | A Chat module with 1:1 chats on the web, PWA and Android that are always end-to-end encrypted (MLS through OpenMLS in the page); delivery and read state; presence; a passphrase-protected key backup so a new phone or browser gets the history. Nobody but the two people can read a chat: there is no organisation recovery key. Messages travel over ordinary requests with hints on the existing live stream; there is no WebSocket. |
 | 0.34.0 | Messaging II | Group chats of up to 100 people, chosen or following an organisation group; files, pictures and voice messages encrypted on the device; mentions and a notification choice per chat; search through the chats a device holds; an administrator's retention rule that deletes chat messages after 30 to 365 days, starting 24 hours after it gets shorter and with warnings; people who leave keep their name on their messages. The server sees who is in a chat, a group chat's name and who was mentioned, never the content. |
-| 0.35.0 | Calls I | Encrypted 1:1 voice calls between UniHub users that ring like normal phone calls on Android (system call screen, lock screen, headsets), plus calls in the browser; an optional TURN relay. A newly signed-in device joins no chat until the chat passphrase is entered on it or another of the person's devices approves it. |
+| 0.35.0 | Calls I | Encrypted 1:1 voice calls between UniHub users in the browser, the installed web app and the Android app. On Android they ring like phone calls through Android's call handling, with the app's own call screen: with the app closed, over the lock screen, answered from a headset. A call can be answered while UniHub is locked. An optional relay (TURN) built into the image. A newly signed-in device joins no chat until the chat passphrase is entered on it or another of the person's devices approves it. Android Auto later ([parking lot](#parking-lot)). |
 | 0.36.0 | Calls II | Video, screen sharing in the browser, and group calls through an optional self-hosted media server. |
-| 0.37.0 | Reserve | Only for the second half of a theme that grew too big. |
+| 0.37.0 | Reserve | Only for the second half of a theme that grew too big, and the move to TypeScript 7. |
 | 1.0.0-rc.N | Stabilisation | No features. The full release contract on every candidate; a security review; a size test; real phones; a week of real chat and call use; administrator and user guides and the threat model; frozen formats; then 14 days of daily use without a serious bug. |
 | 1.0.0 | Release | Tag, image, Android app, release notes and the upgrade guide. |
 
@@ -145,6 +145,7 @@ These items are not planned. Each one can come after 1.0, or never.
 - A recovery key with which the organisation can read a person's chats
 - Collaborative documents and notes
 - Calls to and from ordinary phone numbers
+- UniHub calls in Android Auto
 - Automated CI tests against self-hosted mail and calendar servers in
   containers
 - An AI assistant

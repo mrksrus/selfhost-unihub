@@ -406,7 +406,8 @@ The writer uses stored ZIP32 entries without compression or ZIP64:
 Export rejects output exceeding import limits. Section backups may fit where a
 full archive does not. Splitting within one section is not implemented.
 
-An account archive does not include other users, authentication sessions, server
+An account archive does not include other users, chats, calls and chat devices
+([Chat](CHAT.md#backups)), authentication sessions, server
 configuration, temporary uploads/jobs, pending notifications or provider deletion
 queues. Completed transcripts are data; pending transcription attempts are not
 restored as work. Credential restoration uses existing encrypted portability

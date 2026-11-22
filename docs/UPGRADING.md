@@ -5,6 +5,59 @@
 For a new installation, use [Installation](INSTALLATION.md). This page includes
 version-specific upgrade guidance. Preserve existing data and keys when upgrading.
 
+## 0.35.0 Calls
+
+**Make a database backup first**, as before every upgrade. Two automatic
+database upgrades run at the first start: **step 33** adds to
+`chat_devices` when each chat device joined Chat and the state of an open
+approval, and marks every existing chat device as joined; **step 34** adds
+the tables `chat_calls` and `chat_call_signals`, empty, and lets a chat
+entry have no group (a call's line in the chat). They take moments, not
+minutes. Going back to 0.34.x means restoring that backup: 0.34.x does not
+know steps 33 and 34 and refuses to start ("Database upgrade history is
+unknown or out of order"). Personal backups stay **data schema 8** and
+still carry no chats; the instance backup carries calls as it carries
+chats ([Data recovery](DATA_RECOVERY.md#backup-versions-and-restore-behavior)).
+
+- **A new device waits for Chat.** Devices that were in Chat before the
+  upgrade stay in their chats. A phone or browser signed in afterwards gets
+  nothing of Chat until its person enters the chat passphrase on it or
+  approves it on another of their devices. Tell people to keep one device
+  in Chat, or the passphrase, before they sign in somewhere new
+  ([Chat](CHAT.md#devices)).
+- **A colleague must set Chat up before they can be written to.** Someone
+  who never opened Chat or never chose a passphrase cannot be written to or
+  called until they have; their chat says "<name> has not set up Chat yet."
+- **The relay for calls is optional.** Without it, calls connect only where
+  the two devices reach each other directly: the same network, an office or
+  a VPN. For calls between different networks, set `TURN_URLS` and
+  `TURN_SECRET` (or `TURN_SECRET_FILE`), and behind NAT `TURN_EXTERNAL_IP`;
+  publish and forward 3478 UDP and TCP and 49160 to 49200 UDP to the
+  server. [Calls and the relay](INSTALLATION.md#calls-and-the-relay) has
+  the steps. Nothing runs and no port opens until the secret is set.
+- **Compose.** The relay's three `ports:` lines in `docker-compose.yml` are
+  commented out; uncomment them when you switch the relay on. Copy the four
+  `UNIHUB_TURN_*` lines from `.env.example` into `.env` to set it.
+- **TrueNAS.** The catalogue app gets the relay's fields and ports in an
+  update after this release. Until then calls there connect only where the
+  devices reach each other directly ([TrueNAS](TRUENAS_INSTALLER.md)).
+- **Reverse proxy.** Nothing new: a call's set-up uses the ordinary API and
+  the live update stream, and its sound does not pass through the proxy.
+  Only if your proxy sets its own `Permissions-Policy` must it allow
+  `autoplay=(self)` and `microphone=(self)`, as UniHub's own header does, or
+  a call cannot ring or be heard.
+- **Android app.** Calls that ring while the app is closed or the phone is
+  locked need the 0.35.0 app (offered under Settings → General → App) on
+  Android 11 or later. Older apps ring only while they are open and say so
+  under Settings › Chat.
+- **Browsers.** A call needs a browser with WebRTC and the microphone,
+  which the browser asks for at the first call.
+- **API clients.** The new routes are under `/api/chat/calls` and
+  `/api/chat/devices/`. A chat route answers `403 CHAT_DEVICE_WAITING` to a
+  device that has not joined Chat; a device in `GET /api/devices` carries
+  `chat_waiting`; the lock report (`PUT /api/devices/current/lock`) can
+  carry `calls: true`.
+
 ## 0.34.0 Group chats
 
 **Make a database backup first**, as before every upgrade. One automatic

@@ -248,7 +248,10 @@ The old installation's sessions and credentials of the moment:
   each browser and app becomes a device of the restored installation.
   Deleting the devices removes every chat device. Each browser and app
   enrols for Chat again at its next sign-in and keeps the messages it holds;
-  the next message of each chat makes a new group. Messages newer than the
+  the next message of each chat makes a new group. It waits for Chat like
+  any new device: one whose store still holds the history key joins by
+  itself, any other with the chat passphrase, and an approval works once
+  one device of the person has joined. Messages newer than the
   backup exist only on the devices that hold them; older ones come back from
   the archive with each person's chat passphrase
   ([Chat](CHAT.md#backups)).
@@ -383,6 +386,16 @@ files after its 24-hour wait even while deleting for good is forbidden;
 instance backups made before still hold them as ciphertext until they are
 removed. The drill also seeds a group chat with a retention and a file, and
 compares the file's bytes.
+
+0.35.0 adds to `chat_devices` when each device joined and its open approval
+(upgrade step 33), and the tables `chat_calls` and `chat_call_signals`
+(step 34); none is in a personal backup. The instance backup carries the
+calls with their outcome and their line in the chat. A call that was
+ringing or going on when the backup was made ends as failed at the
+restored installation's first start. A call's signals are deleted when it
+ends, so an installation at rest has none. The drill compares the calls
+and requires the signals table to be empty on both sides. Open approvals go
+with the devices.
 
 0.28.0 writes data schema 7: a backup holds data by class (local,
 configuration, Download-mode mail by choice or policy), never a provider's

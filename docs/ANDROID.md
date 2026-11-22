@@ -514,7 +514,7 @@ ring it by its notification connection.
   talk", which opens the call screen, answers and brings the sound. If the
   caller gives up first, it ends here and is a missed call.
 - **No hold**, transfer or adding a person; nothing in the phone's own call
-  list (the history is in the chat).
+  list (the history is in the chat); no Android Auto.
 - **Android 10** has no calls in the app: the app rings like a browser while it
   is open.
 

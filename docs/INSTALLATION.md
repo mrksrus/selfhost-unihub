@@ -354,8 +354,8 @@ one exception below), link-local, multicast and reserved addresses, and by defau
 networks and carrier-grade NAT (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16,
 100.64.0.0/10, fc00::/7), which includes the database's network. An
 installation whose people all call from one private network or VPN can set
-`UNIHUB_TURN_ALLOW_PRIVATE_PEERS=true`. That opens the IPv4 ranges only: the
-relay always refuses fc00::/7. Loopback and the container's own addresses
+`UNIHUB_TURN_ALLOW_PRIVATE_PEERS=true`. That opens all of these ranges,
+fc00::/7 included. Loopback and the container's own addresses
 stay refused (but for the exception below), while the UDP services of the
 database's network, of other machines on those networks and of this server itself, through Docker's
 gateway, become reachable through the relay for anyone signed in. The relay
@@ -365,7 +365,14 @@ One own address is open: on Docker's network the container's IPv4 address,
 where nothing but the relay receives UDP, so that two devices that both need
 the relay reach each other through it. With host networking the container's
 addresses are the server's, with the server's own UDP services, and stay
-refused; a call between two such devices does not connect there.
+refused; a call between two such devices does not connect there, nor over
+IPv6 anywhere. Where the relay cannot tell that the container has a network
+of its own (host networking inside an LXC container, a network namespace
+shared with another container; neither is supported), it opens that address
+too, and the UDP services there become reachable through it for anyone
+signed in. On a server with a public address and without
+`TURN_EXTERNAL_IP`, the server's own addresses other than the container's
+are not refused either.
 
 **Check it.** `docker compose logs unihub` shows "Starting the relay for
 calls" and coturn's own lines; a warning names a missing `TURN_URLS` or

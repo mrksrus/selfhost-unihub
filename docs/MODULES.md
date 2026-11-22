@@ -50,7 +50,9 @@ its page, its unread count and Settings › Chat leave their navigation, every
 chat hints and they get no chat notifications. Others cannot write to them
 ("Chat is off for <name>"), but their chats stay readable for the other side.
 Nothing is deleted: the messages on the server and on their devices stay,
-and the chats come back when Chat is on again.
+and the chats come back when Chat is on again. Calls are part of Chat, with
+no module, page or lock area of their own: with Chat off a person neither
+calls nor can be called.
 
 Contacts and recordings have no automatic provider worker to pause.
 Temporary-upload housekeeping continues to remove expired incomplete uploads.
@@ -102,9 +104,10 @@ group, under Server settings → Policies → Modules and pages
 The data stays: a policy never deletes anything, and the module comes back as
 the person had set it when the policy allows it again. Policies resolve per
 person: a group can only make the rule stricter than the one for everyone, and
-for a person in several groups the strictest applies. Contacts on the phone
-and offline copies have policies of their own (`contacts.phone_sync`,
-`offline.copies`), described with the other policies.
+for a person in several groups the strictest applies. Contacts on the phone,
+offline copies and calls have policies of their own (`contacts.phone_sync`,
+`offline.copies`, and `chat.calls` as "Calls" in the Chat group), described
+with the other policies.
 
 ## Implementation contract
 

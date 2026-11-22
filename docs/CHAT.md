@@ -2,11 +2,12 @@
 
 UniHub's Chat module holds chats between the people of one UniHub
 installation, on the web, in the installed web app and in the Android app:
-1:1 chats since 0.33.0, and since 0.34.0 group chats, files, voice messages,
-mentions, search and a retention rule. Every chat is end-to-end encrypted.
+1:1 chats since 0.33.0, since 0.34.0 group chats, files, voice messages,
+mentions, search and a retention rule, and since 0.35.0 voice calls between
+two people. Every chat is end-to-end encrypted.
 This page is the contract: what is encrypted, what it protects and what it
-does not, how devices, groups, files and history work, and the routes and
-tables behind it. The other pages link here.
+does not, how devices, groups, files, history and calls work, and the routes
+and tables behind it. The other pages link here.
 
 ## What the server sees
 
@@ -41,7 +42,9 @@ The server does see, and keeps:
 - **each person's notification choice per chat**, and that a notification
   was sent to a device, and when;
 - each chat's retention time and the moment deleting under it starts, and
-  how many archive copies each person has.
+  how many archive copies each person has;
+- **calls**: who called whom, when, how long and how it ended, and for the
+  seconds of set-up the two devices' network addresses ([Calls](#calls)).
 
 ## What the encryption protects
 
@@ -184,7 +187,8 @@ Security › Devices) that enrolled for Chat.
   device holds the key, or must be signed out first. Otherwise the account
   password alone would join every chat. A new key is written to the
   activity log (`chat.new_key`).
-- **Devices from before 0.35.0** stayed joined when the upgrade ran.
+- **Devices from before 0.35.0** stayed joined when the upgrade ran (step
+  33).
 - **What it does not protect.** A waiting device can fetch the key backup
   (it must, to check the passphrase), so someone with the account password
   can still guess the passphrase offline: this rule is as strong as the
@@ -707,7 +711,26 @@ hours (the user name is the expiry and the call's id, the password the
 base64 HMAC-SHA1 of it under the secret), never stored. Without both, no
 servers are handed out and calls connect only where the two devices reach
 each other directly. `GET /api/admin/settings/signup-mode` answers
-`calls_relay` for the Server page.
+`calls_relay` for the Server page. Running it, its ports and what it
+refuses are in [Calls and the relay](INSTALLATION.md#calls-and-the-relay).
+
+**What calls do not protect.**
+
+- **A script on UniHub's own address.** The Android app takes call
+  messages from any page of the server it is signed in to. A script that
+  runs on that address (a changed server, or another app served there) can
+  make the app ring for up to 45 seconds or place a call, with the person's
+  own session, as it could send a message.
+- **Packets into a relayed call.** When both devices need the relay, each
+  one's peer is an address of the relay itself, and the relay lets data in
+  by address, not by port, as TURN does. Anyone signed in gets relay
+  credentials by placing a call, and could then send packets to the other's
+  relay port. The
+  devices drop them (the sound is encrypted and authenticated), but such
+  packets can use up that call's bandwidth.
+- **The relay's own network.** What the relay refuses, and the deployments
+  where it cannot tell its own addresses, are in
+  [Calls and the relay](INSTALLATION.md#calls-and-the-relay).
 
 ## Limits and known behaviours
 
@@ -715,6 +738,13 @@ each other directly. `GET /api/admin/settings/signup-mode` answers
   forwarding a file to another chat (attach it again), recording video,
   making pictures smaller before sending, and deleting a whole chat for
   everyone.
+- **Calls.** Sound only and between the two people of a direct chat: no
+  video, hold, transfer, adding a person or group calls, and no calls to
+  phone numbers (a contact's number opens the phone's dialler). Nothing is
+  written to the phone's own call list, and there is no Android Auto.
+- **Two devices that both need the relay** reach each other only over IPv4
+  on the container's own network: with host networking, or over IPv6, such
+  a call does not connect.
 - **One large upload holds back later messages.** The outbox sends in order,
   so a message written after a large file waits until that file is through.
 - **Upload progress** shows only in the tab that sends; the device's other
@@ -827,9 +857,11 @@ notification over the app's own connection; the page fetches when opened.
 
 Upgrade step 31 adds nine tables; step 32 adds `chat_attachments`, and to
 `chat_conversations` the name and the retention columns and to
-`chat_members` the notification choice; step 34 adds `chat_calls` and
-`chat_call_signals`, and lets a message have no group (a call's entry). None is in a personal backup; the
-instance backup carries each as stored. The manifest is
+`chat_members` the notification choice; step 33 adds to `chat_devices`
+when each joined and the columns of an open approval, and marks every
+existing chat device joined; step 34 adds `chat_calls` and
+`chat_call_signals`, and lets a message have no group (a call's entry).
+None is in a personal backup; the instance backup carries each as stored. The manifest is
 `api/src/modules/chat.ts`.
 
 | Table | Holds | Owner | Class |

@@ -52,6 +52,12 @@ and the Settings row says so.
   is then secure (FLAG_SECURE), also with the lock off. Whatever the policy,
   the Android app (0.33 or later) keeps its window secure while Chat is open.
   Browsers cannot block screenshots.
+- **A call rings over the lock** and can be answered there. While Chat is
+  locked, the ring and the call's notifications say "Incoming call" and
+  "Missed call" without the caller's name. Answering does not unlock: only
+  the call's screen shows, and "Open chat" asks for the unlock as always.
+  In the Android app the call screen also shows over the phone's lock
+  screen ([Chat](CHAT.md#calls)).
 - **The offline copy is locked too.** Starting UniHub without a connection
   asks for the unlock before any saved view shows; the lock's settings and the
   PIN are kept in this browser, so it works offline.

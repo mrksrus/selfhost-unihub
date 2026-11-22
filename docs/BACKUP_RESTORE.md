@@ -112,6 +112,8 @@ It does not restore:
 - browser theme choices or the device's offline snapshot
 - 2FA secrets or recovery codes
 - mail server-deletion queue rows
+- chats, calls and chat devices, which are in no personal backup
+  ([Chat](CHAT.md#backups))
 - unrelated users
 - infrastructure configuration or Docker volumes
 

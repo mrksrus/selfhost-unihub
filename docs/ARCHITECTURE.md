@@ -7,7 +7,7 @@ The standard deployment uses two Docker containers:
 
 | Container | Role |
 | --- | --- |
-| `unihub` | Nginx static frontend plus Node.js API |
+| `unihub` | Nginx static frontend plus Node.js API, and the relay for calls when configured |
 | `unihub-db` | MariaDB 11.8 LTS database (`mariadb:11.8`) |
 
 Inside the app container:
@@ -20,7 +20,15 @@ Nginx :80
 
 Node.js API
   api/server.ts -> api/src/app.ts -> api/src/request-handler.ts -> api/src/routes/*
+
+coturn (only with TURN_SECRET)
+  :3478 UDP and TCP             <- devices that need the relay for a call
+  :49160-49200 UDP              -> the relayed, encrypted sound of calls
 ```
+
+A call's set-up goes through the API like any request; its sound goes from
+device to device, or through the relay when the two cannot reach each other,
+never through nginx or the API ([Chat](CHAT.md#calls)).
 
 The entrypoint waits up to 300 seconds for an authenticated MariaDB connection,
 continuing immediately when it succeeds. It then starts a small Node.js service
@@ -62,7 +70,9 @@ its `.wasm` files (`src/lib/pdf.ts`), so a PDF opens the same way where
 WebAssembly is switched off, and uses pdf.js's legacy build, which brings
 fallbacks for JavaScript features older Android WebViews lack. `scripts/container-smoke.sh`
 asserts the headers on `/`, `/sw.js`, `/theme-init.js`, an asset, the manifest
-and an icon, and that the page loads no inline script.
+and an icon, and that the page loads no inline script. `Permissions-Policy` allows
+the microphone and, since 0.35.0, `autoplay` for this origin only, so a call
+can ring and be heard.
 
 ## Backend Structure
 
@@ -318,14 +328,16 @@ user and one session.
   removals/merges by the local `prune` job), `operation`, `local`) and `end`
   (`{reason}`: `signed_out`, `session_ended` or `shutdown`). `accountId` may be
   `null` when a change spans accounts. Chat adds `chat.changed`
-  (`{conversation_id}`) and `chat.presence` (`{user_id, online}`)
+  (`{conversation_id}`), `chat.presence` (`{user_id, online}`), `chat.call`
+  (`{call_id}`) and `chat.device` (`{chat_device_id}`)
   ([Chat](CHAT.md#live-hints)).
 - **No WebSocket.** Everything the server pushes is a hint on this stream;
-  everything a client sends, chat messages included, is an ordinary request.
-  Calls take up the question of a socket in their own version. Chat's
-  presence is the browser stream itself: a person is online while a page of
-  theirs holds one (`realtime.isPresent`); the Android app's notification
-  stream does not count.
+  everything a client sends, chat messages and a call's signals included, is
+  an ordinary request: a device posts a signal and the other end fetches it
+  after the hint `chat.call`. Chat's presence is the browser stream itself: a
+  person is online while a page of theirs on a device that joined Chat holds
+  one (`realtime.isPresent`); the Android app's notification stream does not
+  count.
 - **Rate.** Each event type is throttled to one per second per account; the last
   event of a burst is always delivered when the interval ends.
 - **Lifetime.** The stream starts with a `retry:` hint and a `ready` event and
@@ -680,6 +692,13 @@ As built:
   (plain text), who was mentioned in a message (for the notification),
   files' sizes and uploaders, and when; the full list is in
   [Chat](CHAT.md#what-the-server-sees).
+- **Calls** are WebRTC between the two devices, the sound encrypted by
+  DTLS-SRTP. The server stores a call's row and, while it is set up, the
+  signals the two ends exchange, deleted when it ends; the relay (coturn in
+  the same container) carries the encrypted sound when the two devices
+  cannot reach each other. In the Android app the page's WebRTC runs in the
+  WebView, and Android's call handling (Core-Telecom) rings and holds the
+  call ([Android](ANDROID.md#calls)).
 - **What it protects** is the same for every client: the Android app loads
   its page from the server, so it protects as the web does, against a read
   of the database, backups, disks and logs, not against a changed server.

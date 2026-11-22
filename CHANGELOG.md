@@ -8,6 +8,15 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
 ## 0.35.0 (unreleased)
 
+Voice calls between two colleagues, in the browser, the installed web app
+and the Android app, with the sound encrypted between the two devices; and
+a new phone or browser joins Chat only once you let it in. The first start
+after the upgrade runs database upgrades 33 and 34, which take moments.
+Calls between different networks need the relay for calls, which is built
+into the image and stays off until it is configured and its ports are
+forwarded (see [Upgrading](docs/UPGRADING.md#0350-calls)).
+[Chat](docs/CHAT.md#calls) says what the server sees of a call.
+
 ### Added
 
 - **Voice calls between two colleagues.** "Call" is in a chat between two
@@ -17,42 +26,50 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
   quiet ring and, where you allowed notifications and the page is not in
   front, a notification. The call's screen shows the time, "Mute" and "Hang
   up", says "Reconnecting…" when the connection breaks, and can be put aside
-  with "Hide" while the call goes on; a bar at the bottom brings it back. Calls
-  are sound only, between two people, one at a time. A browser asks for the
-  microphone at the first call.
-- **A call can be answered while UniHub is locked.** The dialog then says
+  with "Hide" while the call goes on; a bar at the bottom brings it back.
+  Calls are sound only, between two people, one at a time. The sound goes
+  from device to device, encrypted, and is kept nowhere. A browser asks for
+  the microphone at the first call.
+- **Calls in the Android app ring while it is closed and the phone is
+  locked**, through Android's own call handling: the call screen over the
+  lock screen, the phone's ringtone, Answer and Decline on the notification,
+  and answering from a headset or a car's hands-free. "Call" in the app
+  places the call the same way. The call keeps running with the screen off;
+  the sound button chooses the earpiece, the speaker or a headset, and the
+  screen goes dark at the ear. "Open chat" on the call screen asks for the
+  phone's unlock and the call goes on. Calls ring on a phone while UniHub's
+  notifications are on there, or while the app is open. Android 10, and an
+  app from before this version, ring only while the app is open; Settings ›
+  Chat then says "Update the UniHub app to get calls while it is closed."
+- **Settings › Chat › "Calls on this phone"** in the Android app: the
+  microphone, full-screen call screens, notifications and "Allow in
+  background", each with "Allow…". Missed calls have a notification channel
+  of their own.
+- **A call can be answered while UniHub is locked.** The ring then says
   "Incoming call" without the name, and answering does not unlock UniHub:
   only the call shows.
 - **Calls leave a line in the chat**: "Voice call, 5 min", "Missed call",
   "Call declined", "No answer" or "Call failed", who called and when, and
   "Call back". The chat list shows it as the chat's last line, and a missed
-  call counts as unread.
+  call counts as unread and has its notification ("Missed call from Alex").
 - **A policy for calls.** The administrator policy `chat.calls` allows or
   forbids voice calls, for everyone or for a group: "Calls" in the Chat
   group of Server › Policies. Where a call cannot be placed, "Call" stays
   greyed and says why.
-- The Server page says whether the relay for calls is configured.
-- Settings › Chat has "Calls". An Android app from before calls rings only
-  while it is open and says "Update the UniHub app to get calls while it is
-  closed."
-- The image has a relay for calls between different networks (coturn). It
-  starts when `TURN_SECRET` is set; publish its ports with it
-  ([Calls and the relay](docs/INSTALLATION.md#calls-and-the-relay)).
-- **Calls on the Android app ring while it is closed and the phone is
-  locked**, through Android's own call handling: the call screen over the
-  lock screen, the phone's ringtone, Answer and Decline on the notification,
-  headsets and cars. "Call" in the app places the call the same way. The
-  call keeps running with the screen off; the sound button chooses the
-  earpiece, the speaker or a headset, and the screen goes dark at the ear.
-  "Open chat" on the call screen asks for the phone's unlock and the call
-  goes on. A call answered on a headset while nothing of UniHub is on screen
-  connects only once you open UniHub ("Open UniHub to talk"). Calls ring on a
-  phone while UniHub's notifications are on there, or while the app is open.
-  Android 10 rings only while the app is open.
-- Settings › Chat › "Calls on this phone" in the Android app: the
-  microphone, full-screen call screens, notifications and "Allow in
-  background", each with "Allow…". Missed calls have a notification channel of
-  their own.
+- **The relay for calls** (coturn) is part of the image, for calls between
+  different networks such as a phone on mobile data and a computer at home.
+  It starts when `TURN_SECRET` is set, and its ports must be published and
+  forwarded ([Calls and the relay](docs/INSTALLATION.md#calls-and-the-relay)).
+  The Server page says whether it is configured.
+- **Reference pictures.** Forty-two new pictures with fixed synthetic data,
+  Wide and Phone, dark and light: `chat-waiting-*`, `chat-waiting-code-*`,
+  `chat-waiting-alone-*`, `chat-approval-*`, `call-ringing-*`,
+  `call-calling-*`, `call-active-*`, `call-reconnecting-*`, `call-ended-*`,
+  `call-page-phone-*` and `chat-calls-*`. Changed within the accepted design:
+  the chat pictures gain "Call" in the header, the people of a group chat
+  the new reasons, Settings › Chat the two ways a device is let in and
+  "Calls", the Policies pictures the row "Calls", and the device list
+  "Waiting for Chat".
 
 ### Changed
 
@@ -68,20 +85,33 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
   your chats, on whichever page is open: the asking device's name, when it
   signed in and the code. "This was not me" removes the request and offers
   to sign that device out.
+- **A colleague can be written to once they have set Chat up.** A chat with
+  someone who cannot be written to says why: "<name> has not set up Chat
+  yet." or "<name> is not signed in to Chat on any device."
 - **"Start a new key" waits for your other devices.** While another device
   of yours is in Chat, the screen names it instead of starting a new key:
   set a new passphrase there, or sign a lost device out first under
   Settings › Security › Devices, which marks a device that is not in Chat
-  yet "Waiting for Chat".
+  yet "Waiting for Chat". It still asks for your account password only.
 - The `Permissions-Policy` header allows `autoplay` for UniHub's own pages
   (`autoplay=(self)`), so a call can ring and the other person be heard. A
   reverse proxy that sets this header itself needs the same value.
-- The Android app is built with Core-Telecom 1.1.0 against Android 16 QPR2
-  (compile SDK 36.1; it still targets Android 15) and no longer declares
-  `BLUETOOTH_CONNECT`.
-- A chat with someone who cannot be written to says why in the new words:
-  "<name> has not set up Chat yet." or "<name> is not signed in to Chat on
-  any device."
+- The Android app is built with Google's Core-Telecom 1.1.0 against
+  Android 16 QPR2 (compile SDK 36.1; it still targets Android 15) and no
+  longer declares `BLUETOOTH_CONNECT`.
+
+### Known issues
+
+- **A headset or car answer with nothing of UniHub on screen** (full-screen
+  call screens off, or another app in front) is not answered until UniHub
+  is opened: the notification says "Not connected yet" with "Open UniHub to
+  talk". If the caller gives up first, it is a missed call.
+- **Two devices that both need the relay** connect only over IPv4 and only
+  on Docker's own network: with host networking, or over IPv6, such a call
+  does not connect.
+- **Not yet checked on real phones**: the sound after "Open chat", a call
+  with the screen off, the earpiece, Bluetooth headsets, the proximity
+  sensor, and full-screen call screens on each phone maker's Android.
 
 ## 0.34.0
 

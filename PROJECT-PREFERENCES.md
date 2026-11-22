@@ -884,7 +884,8 @@ create or share wait until the maintainer has seen the whole interface.
 
 #### P-44 Chat is always end-to-end encrypted
 
-Accepted, 2026-11-15 (maintainer, for 0.33.0); changed 2026-11-18. Built in
+Accepted, 2026-11-15 (maintainer, for 0.33.0); changed 2026-11-18 and
+2026-11-21. Built in
 0.33.0 for chats between two people and in 0.34.0 for group chats
 ([Chat](docs/CHAT.md), [P-46](#p-46-group-chats-chat-files-chat-retention-and-people-who-leave)).
 
@@ -892,8 +893,10 @@ There is no server-readable mode. The encryption is MLS through OpenMLS, in
 a small wrapper of UniHub's own built to WebAssembly and run in the page, in
 the Android app too; UniHub writes no cryptographic primitive itself
 (2026-11-18: an audited library, not one without an audit and not one written
-here). A new device reads new messages at once and gets the history through
-a passphrase-protected key backup. **Nobody else can read or restore a chat:
+here). A new device joins Chat by the passphrase or an approval
+([P-47](#p-47-a-new-device-joins-chat-only-by-the-passphrase-or-an-approval)),
+then reads new messages at once and gets the history through a
+passphrase-protected key backup or the approval (2026-11-21). **Nobody else can read or restore a chat:
 there is no organisation recovery key and no administrator path to decrypt**
 (2026-11-18; this reverses the optional recovery key accepted on 2026-11-15,
 which is parked as an idea for later). Chat uses ordinary requests, the
@@ -976,6 +979,71 @@ colleague; a 1:1 chat with them becomes read-only; deleting a person removes
 nothing from other people's chats. The server sees chat names, members,
 times, file sizes and who was mentioned, never the content, and nobody
 outside a chat can read it ([P-44](#p-44-chat-is-always-end-to-end-encrypted)).
+
+#### P-47 A new device joins Chat only by the passphrase or an approval
+
+Accepted, 2026-11-21 (maintainer, for 0.35.0). Built in 0.35.0
+([Chat](docs/CHAT.md#devices)).
+
+A newly signed-in phone or browser joins no chat until its person enters the
+chat passphrase on it or approves it on another of their devices that is in
+Chat, after both show the same six-digit code; the approving device hands
+over the history key. The account password alone opens nothing of Chat.
+Every newly enrolled device waits, also before its person has set Chat up,
+so **a colleague must set Chat up before they can be written to or called**.
+Devices that were in Chat before the rule stay in their chats. "Start a new
+key" is refused while another device of the person is in Chat and signed in;
+it asks for the account password only, never around two-factor sign-in (the
+session needed it), and an administrator can sign a lost device out.
+
+#### P-48 Calls are internal and can be answered while UniHub is locked
+
+Accepted, 2026-11-21 (maintainer, for 0.35.0). Built in 0.35.0 for 1:1 voice
+calls ([Chat](docs/CHAT.md#calls)).
+
+Calls are between UniHub users only, encrypted between the devices; the
+server passes on the set-up, never the sound. On Android they behave like
+phone calls (ringing with the app closed and the phone locked, answered from
+a headset); the app's own call screen is fine in place of the system's.
+Calls to and from phone numbers stay out: a contact's phone number already
+opens the phone's dialler. **A call can be answered while UniHub is locked,
+showing only the call.** Video, screen sharing and group calls follow in
+0.36.0; Android Auto is wanted later and waits in the parking lot.
+
+#### P-49 Everything UniHub needs runs inside its own image
+
+Accepted, 2026-11-21 (maintainer, for 0.35.0). Built in 0.35.0 for the relay
+for calls ([Installation](docs/INSTALLATION.md#calls-and-the-relay)).
+
+A service UniHub needs, such as the relay for calls (coturn), is built into
+UniHub's image and started by it when configured, never run as a separate
+container: an installation is the app container and its database. Every new
+port or variable also reaches Compose and the TrueNAS catalogue app; for the
+relay the catalogue app follows in an update after the release.
+
+#### P-50 The Android app's call sound runs in its WebView
+
+Accepted, 2026-11-21 (maintainer, for 0.35.0). Built in 0.35.0
+([Android](docs/ANDROID.md#calls)).
+
+The sound of a call in the Android app runs in the app's WebView with the
+page's own WebRTC code, not in a native WebRTC library; ringing, the lock
+screen, audio routes and keeping the call alive are native. Should a real
+phone disprove it, the fallback is a native library. The four call
+permissions are granted at install, without a prompt; the microphone is
+asked before the first call. The call handling uses Google's Core-Telecom
+library (chosen 2026-11-22 under the maintainer's rule to move to Google's
+library where Android's plain interface falls short, for headset and car
+answers; not yet confirmed by the maintainer).
+
+#### P-51 The app-lock PIN stays per device
+
+Accepted, 2026-11-21 (maintainer). Built since 0.29.0
+([App lock](docs/APP_LOCK.md)).
+
+The UniHub PIN of the app lock belongs to one browser profile or installed
+web app, as before. There is no PIN for the whole account, because the
+server would have to keep a check of a short PIN.
 
 ## Open decisions and conflicts
 
@@ -1066,6 +1134,13 @@ Open proposals do not override accepted decisions.
 
 When a decision above is replaced, move its old text here with its ID, the
 date it was superseded and a pointer to the replacement.
+
+- **P-44 as accepted 2026-11-18: a new device reads at once.** Superseded
+  2026-11-21 by the maintainer's rule that a new device joins Chat only by
+  the passphrase or an approval
+  ([P-47](#p-47-a-new-device-joins-chat-only-by-the-passphrase-or-an-approval)).
+  The old sentence: "A new device reads new messages at once and gets the
+  history through a passphrase-protected key backup."
 
 - **P-22 as pinned 2026-10-16: a read-only, one-way copy.** Superseded
   2026-10-17 by the maintainer's request that contacts sync both ways (phone

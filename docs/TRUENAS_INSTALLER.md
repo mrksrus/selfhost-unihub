@@ -4,10 +4,10 @@
 
 [Installation guide](INSTALLATION.md) · [Main page](../README.md)
 
-**Status: under review, not in the catalog yet.**
-[TrueNAS Community pull request #5975](https://github.com/truenas/apps/pull/5975)
-adds UniHub to the Community train. Until it is merged, TrueNAS can run UniHub
-as a custom app from the [Compose file](../docker-compose.yml).
+UniHub is in the TrueNAS Community catalog
+([added here](https://github.com/truenas/apps/pull/5975)): install it from
+the Apps page of TrueNAS. TrueNAS can also run UniHub as a custom app from
+the [Compose file](../docker-compose.yml).
 
 The app is the same image as every other installation, with a separate MariaDB
 container: the catalog's MariaDB 13, which UniHub's releases are tested on
@@ -51,6 +51,11 @@ Everything else goes into **Additional Environment Variables**, described in the
   [changing the encryption key](INSTALLATION.md#changing-the-encryption-key).
 - `INSTANCE_BACKUP_DIR` and `INSTANCE_BACKUP_KEY`, with an Additional Storage
   mounted at that folder: the [instance backup](DATA_RECOVERY.md#instance-backup).
+
+The form has no fields or ports for the relay for calls yet; an update of the
+catalog app adds them. Until then calls connect only where the two devices
+reach each other directly
+([Calls and the relay](INSTALLATION.md#calls-and-the-relay)).
 
 ## Keep your data recoverable
 
