@@ -18,6 +18,8 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 - The Android app no longer asks for the microphone when you turn on its
   notifications, which it also did where Chat is off. It asks before the
   first call, at "Call" or from Settings › Chat › "Calls on this phone".
+- When you call someone from the Android app at the moment they call you,
+  the app now answers their call instead of ending it as failed.
 
 ## 0.35.0
 
