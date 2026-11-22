@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Phone } from 'lucide-react';
-import { useChatCalls } from '@/hooks/use-chat-calls';
+import { useChatCalls, useHandCallsToApp } from '@/hooks/use-chat-calls';
 import { AlertDialog, AlertDialogContent } from '@/components/ui/alert-dialog';
 import { Dialog, DialogContent } from '@/components/ui/dialog';
 import { CallBody } from '@/components/chat/CallScreen';
@@ -22,6 +22,7 @@ const focusDialog = (event: Event) => { event.preventDefault(); (event.currentTa
  * controls.
  */
 export function ChatCallLayer() {
+  useHandCallsToApp();
   const held = useChatCalls();
   const { call, name, connected } = useCallScreen(held);
   const navigate = useNavigate();

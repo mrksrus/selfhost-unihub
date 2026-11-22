@@ -1,8 +1,12 @@
-import { useEffect, useState, useSyncExternalStore } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { useAuth } from '@/contexts/useAuth';
+import { useAppLock } from '@/hooks/use-app-lock';
 import { useModules } from '@/hooks/use-modules';
+import { useUserSettings } from '@/hooks/use-settings';
+import { onAppEvent } from '@/lib/app-events';
+import { chatApi } from '@/lib/chat-api';
 import { acquireChatCalls, type CallView, type ChatCalls } from '@/lib/chat/call';
-import { callSupport } from '@/lib/platform';
+import { callSupport, handCallToApp } from '@/lib/platform';
 
 const none = () => () => undefined;
 
@@ -31,4 +35,42 @@ export function useChatCalls(): { calls: ChatCalls; call: CallView | null } | nu
   const calls = held && held.id === id ? held.calls : null;
   const call = useSyncExternalStore(calls?.subscribe ?? none, () => calls?.snapshot() ?? null);
   return calls ? { calls, call } : null;
+}
+
+/**
+ * In an Android app that takes calls the main page runs none (useChatCalls is
+ * null there): a call ringing for the person that this page hears of first
+ * (the hint, or the only way while the app's notifications are off) rings
+ * through the app, and its ring stops once the call stops ringing. Mounted once.
+ */
+export function useHandCallsToApp() {
+  const { user } = useAuth();
+  const { isEnabled } = useModules();
+  const lock = useAppLock();
+  const hidden = useRef(false);
+  hidden.current = useUserSettings().values.chat_notification_detail === 'none' || lock.locked('chat');
+  const id = user && isEnabled('chat') && callSupport() === 'app' ? user.id : null;
+
+  useEffect(() => {
+    if (!id) return;
+    let ringing: string | null = null;
+    let stopped = false;
+    const check = async () => {
+      const call = await chatApi.currentCall().catch(() => undefined);
+      if (stopped || call === undefined) return;
+      if (call?.state === 'ringing' && call.callee_user_id === id) {
+        if (ringing !== call.id) handCallToApp(call.id, 'ring', hidden.current ? 'Incoming call' : call.caller_name);
+        ringing = call.id;
+      } else if (ringing) {
+        handCallToApp(ringing, 'end', '');
+        ringing = null;
+      }
+    };
+    const later = () => void check();
+    const onVisible = () => { if (document.visibilityState === 'visible') later(); };
+    const stops = [onAppEvent('unihub:chat-call', later), onAppEvent('unihub:chat-changed', changed => { if (changed === null) later(); })];
+    document.addEventListener('visibilitychange', onVisible);
+    later();
+    return () => { stopped = true; stops.forEach(stop => stop()); document.removeEventListener('visibilitychange', onVisible); };
+  }, [id]);
 }

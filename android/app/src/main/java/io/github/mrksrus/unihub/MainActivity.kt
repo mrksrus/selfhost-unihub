@@ -8,6 +8,7 @@ import android.annotation.SuppressLint
 import android.app.Activity
 import android.app.AlertDialog
 import android.content.Intent
+import android.app.NotificationManager
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.drawable.ColorDrawable
@@ -59,6 +60,8 @@ class MainActivity : Activity() {
     // The page's file input while Android's picker is open, bound to the session.
     private val filePick = PickedFiles.Pick<Array<Uri>>(FileActions.session)
     private var pendingPermission: PermissionRequest? = null
+    // A call placed before the microphone was allowed: server, person, name.
+    private var pendingCall: Triple<String, String, String>? = null
     // Each connect check and screen change gets a new number; an older check's
     // answer is ignored.
     private var screenGeneration = 0
@@ -302,7 +305,9 @@ class MainActivity : Activity() {
             displayZoomControls = false
             // The page reads this to know it runs in the app, and which messages
             // the bridge (WebBridge) understands (src/lib/platform.ts).
-            userAgentString = "$userAgentString UniHubAndroid/${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE}) UniHubBridge/$BRIDGE_LEVEL"
+            // UniHubCalls: this app takes calls (Calls.supported), so the page leaves them to it.
+            userAgentString = "$userAgentString UniHubAndroid/${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE}) UniHubBridge/$BRIDGE_LEVEL" +
+                if (Calls.supported(this@MainActivity)) " UniHubCalls" else ""
         }
         WebView.setWebContentsDebuggingEnabled(BuildConfig.DEBUG)
         CookieManager.getInstance().setAcceptCookie(true)
@@ -313,7 +318,8 @@ class MainActivity : Activity() {
             PageTheme.save(this, dark, background)
             applyTheme(dark, background)
         }, onNotifications = { action, answer -> notifications(server, action, answer) },
-            onAppLock = { data, answer -> appLock(server, data, answer) })
+            onAppLock = { data, answer -> appLock(server, data, answer) },
+            onCall = { data, answer -> call(server, data, answer) })
         pageBridge.attach(web)
         bridge = pageBridge
 
@@ -911,7 +917,7 @@ class MainActivity : Activity() {
                     }
                     applyLockWindow()
                     if (!AppLock.on) hideCover()
-                    reply(ok().put("capabilities", BiometricAuth.capabilities()))
+                    reply(ok().put("capabilities", BiometricAuth.capabilities().put("calls", Calls.ringsWhileClosed(this))))
                 }
                 "state" -> reply(AppLock.state(ok()).put("covered", cover != null))
                 // The page shows nothing locked: its own lock screen, or what it unlocked (`unlocked`, also with its own PIN).
@@ -926,6 +932,52 @@ class MainActivity : Activity() {
                 }
                 else -> reply(answer(error = getString(R.string.app_lock_invalid)))
             }
+        }
+    }
+
+    // ── Calls (Calls, CallService) ─────────────────────────────────────
+
+    private fun call(server: String, data: JSONObject, reply: (JSONObject) -> Unit) = runOnUiThread {
+        if (isFinishing || isDestroyed || origin != server || !Calls.supported(this)) return@runOnUiThread
+        if (data.optString("type") == "callSetup") return@runOnUiThread callSetup(server, data.optString("fix"), reply)
+        when (data.optString("action")) {
+            // A call the open page heard of first; the module ignores one it knows.
+            "ring", "end" -> CallMessage.fromPage(data)?.let { Calls.receive(this, server, it, AppLock.hides(this, server, "chat")) }
+            "place" -> {
+                val user = data.optString("userId").takeIf { CallMessage.ID.matches(it) } ?: return@runOnUiThread
+                val name = data.optString("name").take(120).ifEmpty { getString(R.string.call_ongoing) }
+                // Android cannot ask for the microphone over the lock screen, so it asks here, before the call.
+                if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                    CallService.place(this, server, user, name)
+                } else {
+                    pendingCall = Triple(server, user, name)
+                    AppLock.handOff()
+                    requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), REQUEST_CALL_MICROPHONE)
+                }
+            }
+        }
+    }
+
+    /** "Calls on this phone" (Settings › Chat): what is allowed, or opens Android's question or setting for one. */
+    private fun callSetup(server: String, fix: String, reply: (JSONObject) -> Unit) {
+        val manager = getSystemService(NotificationManager::class.java)
+        when (fix) {
+            "" -> reply(JSONObject().put("ok", true).put("checks", JSONObject()
+                .put("microphone", checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED)
+                .put("full_screen", Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE || manager.canUseFullScreenIntent())
+                .put("notifications", manager.areNotificationsEnabled() && AppNotifications.wantedOn(this, server))
+                .put("background", AppNotifications.backgroundAllowed(this))))
+            "microphone" -> {
+                AppLock.handOff()
+                requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), REQUEST_CALL_MICROPHONE)
+            }
+            "full_screen" -> if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                AppLock.handOff()
+                try { startActivity(Intent(Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT, Uri.parse("package:$packageName"))) } catch (_: Exception) { }
+            }
+            // Android's question, then the same turning on as Settings › Notifications.
+            "notifications" -> if (manager.areNotificationsEnabled() || AppNotifications.needsPermission(this)) enableNotifications(server) { } else openNotificationSettings()
+            "background" -> askBackground { }
         }
     }
 
@@ -1013,6 +1065,16 @@ class MainActivity : Activity() {
             } else {
                 toast(R.string.contacts_denied)
                 finishContacts(null)
+            }
+            return
+        }
+        if (requestCode == REQUEST_CALL_MICROPHONE) {
+            val call = pendingCall
+            pendingCall = null
+            if (grantResults.firstOrNull() != PackageManager.PERMISSION_GRANTED) {
+                if (call != null) toast(R.string.call_microphone_needed)
+            } else if (call != null && call.first == origin) {
+                CallService.place(this, call.first, call.second, call.third)
             }
             return
         }
@@ -1111,14 +1173,16 @@ class MainActivity : Activity() {
         private const val REQUEST_CONTACTS = 3
         private const val REQUEST_NOTIFICATIONS = 4
         private const val REQUEST_BACKGROUND = 5
+        private const val REQUEST_CALL_MICROPHONE = 6
         private const val CONTACTS_CHECK_INTERVAL_MS = 15_000L
         private const val STATE_CONNECT_ASKED = "connectAsked"
         // What the page may ask of WebBridge, announced in the user agent:
         // 1 up to 0.24 (files from the page, downloads, theme, notifications),
         // 2 from 0.25 (fileAction: open with, save, share with a download ticket),
         // 3 from 0.29 (appLock: the app lock with the phone's own unlock),
-        // 4: saveFileStart's target, Open with and Share of a file the page made.
-        const val BRIDGE_LEVEL = 4
+        // 4: saveFileStart's target, Open with and Share of a file the page made,
+        // 5: calls (call, callSetup; the call screen's own messages in CallActivity).
+        const val BRIDGE_LEVEL = 5
         private const val COVER_LOCK = 1
         /** Debug builds only: the cover going up and down and the page's first visible content, in order (tools/e2e/android/app-lock-bridge.test.mjs). */
         private const val LOCK_LOG = "UniHubLock"

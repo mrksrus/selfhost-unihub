@@ -1,6 +1,7 @@
+import { useSyncExternalStore } from 'react';
 import { Mic, MicOff, Phone, PhoneOff, Volume2 } from 'lucide-react';
 import type { CallView, ChatCalls } from '@/lib/chat/call';
-import { callAudioRoutes } from '@/lib/platform';
+import { callAudioRoutes, subscribeCallAudioRoutes } from '@/lib/platform';
 import { cn } from '@/lib/utils';
 import { AlertDialogDescription, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { Button } from '@/components/ui/button';
@@ -30,7 +31,8 @@ export function CallBody({ calls, call, name, connected, dialog, onAnswer, onOpe
   const ringing = state === 'ringing';
   const ended = state === 'ended';
   const words = callWords(call, name, connected);
-  const { routes, choose } = callAudioRoutes();
+  const { routes, choose } = useSyncExternalStore(subscribeCallAudioRoutes, callAudioRoutes);
+  const route = routes.find(item => item.active);
 
   return (
     <div className="flex flex-col items-center gap-5 text-center">
@@ -50,7 +52,8 @@ export function CallBody({ calls, call, name, connected, dialog, onAnswer, onOpe
         {call.muted && !ended && <p className="text-sm text-muted-foreground">Your microphone is off.</p>}
       </div>
       {call.silenced && <Button variant="secondary" onClick={() => calls.play()}><Volume2 aria-hidden="true" />Tap for sound</Button>}
-      <div className="flex w-full flex-wrap justify-center gap-2">
+      {/* One row: "Hang up" stays where "Decline" was, also with the routes' button beside "Mute". */}
+      <div className="flex w-full justify-center gap-2">
         {ringing ? <>
           <Button variant="destructive" className="min-w-28" onClick={() => void calls.decline()}><PhoneOff aria-hidden="true" />Decline</Button>
           <Button className="min-w-28" onClick={onAnswer}><Phone aria-hidden="true" />Answer</Button>
@@ -64,9 +67,11 @@ export function CallBody({ calls, call, name, connected, dialog, onAnswer, onOpe
           </Button>
           {routes.length > 0 && (
             <DropdownMenu>
-              <DropdownMenuTrigger asChild><Button variant="outline"><Volume2 aria-hidden="true" />{routes.find(route => route.active)?.name ?? 'Sound'}</Button></DropdownMenuTrigger>
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline" size="icon" aria-label={`Sound: ${route?.name ?? 'choose where'}`} title={route?.name}><Volume2 aria-hidden="true" /></Button>
+              </DropdownMenuTrigger>
               <DropdownMenuContent>
-                <DropdownMenuRadioGroup value={routes.find(route => route.active)?.id} onValueChange={choose}>
+                <DropdownMenuRadioGroup value={route?.id} onValueChange={choose}>
                   {routes.map(route => <DropdownMenuRadioItem key={route.id} value={route.id}>{route.name}</DropdownMenuRadioItem>)}
                 </DropdownMenuRadioGroup>
               </DropdownMenuContent>

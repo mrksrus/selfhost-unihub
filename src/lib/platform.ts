@@ -42,8 +42,8 @@ export function androidApp(userAgent = typeof navigator === 'undefined' ? '' : n
 /**
  * The messages the app's bridge understands (MainActivity.BRIDGE_LEVEL, sent
  * as "UniHubBridge/<level>" in the user agent): 1 for apps up to 0.24, which do
- * not say, 2 from 0.25 (file actions), then 3 (the app lock) and 4 (Open with
- * and Share of a file the page made). 0 outside the app.
+ * not say, 2 from 0.25 (file actions), then 3 (the app lock), 4 (Open with
+ * and Share of a file the page made) and 5 (calls). 0 outside the app.
  */
 export function appBridgeLevel(userAgent = typeof navigator === 'undefined' ? '' : navigator.userAgent) {
   if (!androidApp(userAgent)) return 0;
@@ -152,20 +152,36 @@ function askApp(bridge: AndroidBridge, message: { type: string; id: string } & R
 /** The first bridge level whose app rings for calls and holds them in its own call screen. */
 export const CALL_BRIDGE_LEVEL = 5;
 
+// From bridge level 5 the app says in the user agent whether it takes calls
+// (UniHubCalls) and which WebView is its call screen (UniHubCallScreen).
+const ua = () => (typeof navigator === 'undefined' ? '' : navigator.userAgent);
+const appCallScreenView = () => appBridgeLevel() >= CALL_BRIDGE_LEVEL && /\bUniHubCallScreen\b/.test(ua());
+const appTakesCalls = () => appBridgeLevel() >= CALL_BRIDGE_LEVEL && /\bUniHubCalls\b/.test(ua()) && !!window.UniHubAndroid;
+
 /**
  * Who takes calls on this page: `page` runs them here with the browser's
  * WebRTC (a browser, the installed web app, an app without the call module
- * while it is open, and the app's own call screen at /call); `app` leaves them
- * to the Android app's call module; null where this page cannot (no WebRTC,
- * or no microphone outside a secure context).
+ * while it is open, and the app's own call screen); `app` leaves them to the
+ * Android app's call module; null where this page cannot (no WebRTC, or no
+ * microphone outside a secure context).
  */
 export function callSupport(): 'page' | 'app' | null {
-  if (appBridgeLevel() >= CALL_BRIDGE_LEVEL && window.location.pathname !== '/call') return 'app';
+  if (!appCallScreenView() && appTakesCalls()) return 'app';
   return typeof RTCPeerConnection === 'function' && window.isSecureContext && !!navigator.mediaDevices?.getUserMedia ? 'page' : null;
 }
 
 /** Whether this is an Android app that rings only while it is open ("Update the UniHub app to get calls while it is closed."). */
 export const appNeedsUpdateForCalls = () => { const level = appBridgeLevel(); return level > 0 && level < CALL_BRIDGE_LEVEL; };
+
+/** In an app that takes calls: a call this page heard of rings through the app (it ignores one it knows), or `end` stops its ring. */
+export function handCallToApp(id: string, event: 'ring' | 'end', name: string) {
+  if (appTakesCalls()) postToApp({ type: 'call', action: event, id, name });
+}
+
+/** In an app that takes calls: the app places the call (it asks for the microphone first) and opens its call screen. */
+export function placeCallInApp(userId: string, name: string) {
+  postToApp({ type: 'call', action: 'place', userId, name });
+}
 
 /** Where a call's sound plays and is picked up in the Android app. */
 export interface CallAudioRoute {
@@ -176,13 +192,64 @@ export interface CallAudioRoute {
   active: boolean;
 }
 
+/** What the app tells its call screen to do; the screen's call does it as if the person had pressed it there. */
+export type AppCallCommand =
+  | { command: 'answer' | 'decline' | 'hangUp'; id: string }
+  | { command: 'start'; userId: string; name: string }
+  | { command: 'mute'; muted: boolean };
+
+/** The call as the call screen reports it to the app: its state ('none' once nothing is shown), the server's id and the microphone. */
+export interface AppCallReport { state: string; id: string | null; muted: boolean }
+
+const ROUTE_KINDS = new Set(['earpiece', 'speaker', 'bluetooth', 'wired']);
+let audioRoutes: { routes: CallAudioRoute[]; choose(id: string): void } = { routes: [], choose: () => undefined };
+const routeListeners = new Set<() => void>();
+
+function readRoutes(value: unknown): CallAudioRoute[] {
+  return Array.isArray(value) ? value.filter((route): route is CallAudioRoute => !!route && typeof route === 'object'
+    && typeof route.id === 'string' && ROUTE_KINDS.has(route.kind) && typeof route.name === 'string' && typeof route.active === 'boolean') : [];
+}
+
+/**
+ * Inside the app's call screen: the app's commands and the audio routes come
+ * in, the call's state goes out. Null everywhere else. The first report also
+ * tells the app that the page is ready for its commands.
+ */
+export function appCallScreen(): { report(report: AppCallReport): void; listen(listener: (command: AppCallCommand) => void): () => void; open(path: string): void } | null {
+  const bridge = appCallScreenView() ? window.UniHubAndroid : undefined;
+  if (!bridge) return null;
+  return {
+    report: report => bridge.postMessage(JSON.stringify({ type: 'call', ...report })),
+    open: path => bridge.postMessage(JSON.stringify({ type: 'call', action: 'open', path })),
+    listen(listener) {
+      const onMessage = (event: { data: string }) => {
+        let message: Record<string, unknown>;
+        try { message = JSON.parse(event.data) as Record<string, unknown>; } catch { return; }
+        if (message?.type !== 'call') return;
+        if ('routes' in message) {
+          audioRoutes = { routes: readRoutes(message.routes), choose: route => bridge.postMessage(JSON.stringify({ type: 'call', action: 'route', route })) };
+          routeListeners.forEach(notify => notify());
+        }
+        const { command } = message;
+        if ((command === 'answer' || command === 'decline' || command === 'hangUp') && typeof message.id === 'string') listener({ command, id: message.id });
+        else if (command === 'start' && typeof message.userId === 'string' && typeof message.name === 'string') listener({ command, userId: message.userId, name: message.name });
+        else if (command === 'mute' && typeof message.muted === 'boolean') listener({ command, muted: message.muted });
+      };
+      bridge.addEventListener?.('message', onMessage);
+      return () => bridge.removeEventListener?.('message', onMessage);
+    },
+  };
+}
+
 /**
  * The audio routes of the call on the app's call screen, and the choice of
  * one. None in a browser and in apps without the call module: the call
  * screen then shows no control, and the sound follows the device's own choice.
  */
-export function callAudioRoutes(): { routes: CallAudioRoute[]; choose(id: string): void } {
-  return { routes: [], choose: () => undefined };
+export const callAudioRoutes = () => audioRoutes;
+export function subscribeCallAudioRoutes(listener: () => void) {
+  routeListeners.add(listener);
+  return () => { routeListeners.delete(listener); };
 }
 
 /** One thing a phone needs before the app can ring and hold calls; `fix` opens Android's question or setting for it. */
@@ -192,9 +259,16 @@ export interface CallSetupCheck {
   fix(): void;
 }
 
+const SETUP_IDS = ['microphone', 'full_screen', 'notifications', 'background'] as const;
+
 /** What the Android app reports for "Calls on this phone" (Settings › Chat); null in a browser and in apps without the call module, where the card is not shown. */
-export function callSetup(): CallSetupCheck[] | null {
-  return null;
+export async function callSetup(): Promise<CallSetupCheck[] | null> {
+  const bridge = appTakesCalls() ? window.UniHubAndroid : undefined;
+  if (!bridge) return null;
+  const reply = await askApp(bridge, { type: 'callSetup', id: crypto.randomUUID() }, { timeoutMs: 10_000, failure: 'The app did not answer.' }).catch(() => null);
+  const checks = reply?.checks as Record<string, unknown> | undefined;
+  if (!checks || typeof checks !== 'object') return null;
+  return SETUP_IDS.map(id => ({ id, ok: checks[id] === true, fix: () => postToApp({ type: 'callSetup', fix: id }) }));
 }
 
 /** The first bridge level whose file hand-over takes a target (`handOverFile`). */
@@ -369,7 +443,7 @@ export interface DeviceLockState {
  */
 export type DeviceLockEvent = 'hidden' | 'visible' | 'locked' | 'unlocked';
 
-export interface DeviceLockCapabilities { secureWindow: boolean; hideRecents: boolean; deviceLockSignal: boolean }
+export interface DeviceLockCapabilities { secureWindow: boolean; hideRecents: boolean; deviceLockSignal: boolean; calls?: boolean }
 
 export interface DeviceLock {
   /** Also refreshes `capabilities` from the app's answer. */
@@ -432,7 +506,7 @@ function createNativeDeviceLock(bridge: AndroidBridge): DeviceLock {
   const readCapabilities = (value: unknown) => {
     if (!value || typeof value !== 'object') return;
     const reported = value as Partial<Record<keyof DeviceLockCapabilities, unknown>>;
-    for (const key of ['secureWindow', 'hideRecents', 'deviceLockSignal'] as const) {
+    for (const key of ['secureWindow', 'hideRecents', 'deviceLockSignal', 'calls'] as const) {
       if (typeof reported[key] === 'boolean') capabilities[key] = reported[key];
     }
   };

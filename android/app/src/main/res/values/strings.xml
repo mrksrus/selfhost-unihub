@@ -65,6 +65,14 @@
     <string name="call_answer">Answer</string>
     <string name="call_decline">Decline</string>
     <string name="call_hang_up">Hang up</string>
+    <string name="call_calling">Calling…</string>
+    <string name="call_connecting">Connecting…</string>
+    <string name="call_reconnecting">Reconnecting…</string>
+    <string name="call_open_to_talk">Open UniHub to talk</string>
+    <string name="call_open_to_talk_text">Not connected yet: the caller hears ringing until you open UniHub.</string>
+    <string name="call_not_placed">The call could not be started. End the other call on this phone first.</string>
+    <string name="call_microphone_needed">Calls need the microphone. Allow it to call.</string>
+    <string name="channel_calls_missed">Missed calls</string>
     <string name="channel_app_update">App updates</string>
     <string name="update_ready_title">UniHub update downloaded</string>
     <string name="update_ready_text">Tap to install it.</string>
@@ -93,6 +101,7 @@
     <string name="notification_locked_todo">New ToDo</string>
     <string name="notification_locked_reminder">Reminder</string>
     <string name="notification_locked_chat">New message</string>
+    <string name="notification_locked_call_missed">Missed call</string>
     <!-- Home-screen widgets (Widgets.kt). -->
     <string name="widget_agenda_name">Calendar</string>
     <string name="widget_tasks_name">ToDo</string>

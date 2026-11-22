@@ -39,6 +39,8 @@ class WebBridge(
     private val onNotifications: (action: String, answer: (JSONObject) -> Unit) -> Unit,
     // The app lock (AppLock): the message's JSON; the answer is the reply's JSON.
     private val onAppLock: (data: JSONObject, answer: (JSONObject) -> Unit) -> Unit,
+    // Calls (`call`: a ring the page heard, a call to place; `callSetup`): the message's JSON; the answer is the reply's JSON.
+    private val onCall: (data: JSONObject, answer: (JSONObject) -> Unit) -> Unit,
 ) {
     fun attach(webView: WebView): Boolean {
         if (!WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) return false
@@ -113,6 +115,18 @@ class WebBridge(
                     activity.runOnUiThread {
                         try {
                             reply.postMessage(answer.put("id", id).toString())
+                        } catch (_: Exception) {
+                            // The page is gone.
+                        }
+                    }
+                }
+            }
+            "call", "callSetup" -> {
+                val id = data.optString("id").takeIf { validId(it) }
+                onCall(data) { answer ->
+                    activity.runOnUiThread {
+                        try {
+                            if (id != null) reply.postMessage(answer.put("id", id).toString())
                         } catch (_: Exception) {
                             // The page is gone.
                         }

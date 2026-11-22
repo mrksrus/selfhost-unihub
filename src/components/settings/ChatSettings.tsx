@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useChatEngine } from '@/hooks/use-chat-engine';
 import { usePolicies } from '@/hooks/use-policies';
@@ -31,7 +31,7 @@ const PROTECTION = [
 const CALL_SETUP: Record<CallSetupCheck['id'], { label: string; description: string }> = {
   microphone: { label: 'Microphone', description: 'Android cannot ask for it over the lock screen, so it is asked before your first call.' },
   full_screen: { label: 'Full-screen call screens', description: 'An incoming call shows over the lock screen. Without it Android shows a banner.' },
-  notifications: { label: 'Notifications', description: 'Calls ring on this phone only while UniHub\'s notifications are on.' },
+  notifications: { label: 'Notifications', description: 'While the app is closed, calls ring on this phone only while UniHub\'s notifications are on.' },
   background: { label: 'Allow in background', description: 'The phone rings reliably while it sleeps.' },
 };
 const SCREENSHOTS = 'A browser cannot block screenshots; the Android app blocks them while Chat is open.';
@@ -55,7 +55,15 @@ export default function ChatSettings() {
   const detail = settings.chat_notification_detail;
   const state = snapshot?.readiness.state ?? 'starting';
   const retention = policies['chat.retention_days'].value;
-  const setup = callSetup();
+  const [setup, setSetup] = useState<CallSetupCheck[] | null>(null);
+  // Asked again when the page shows: Android's question or setting may have changed an answer.
+  useEffect(() => {
+    let stopped = false;
+    const ask = () => { if (document.visibilityState === 'visible') void callSetup().then(checks => { if (!stopped) setSetup(checks); }); };
+    ask();
+    document.addEventListener('visibilitychange', ask);
+    return () => { stopped = true; document.removeEventListener('visibilitychange', ask); };
+  }, []);
 
   return (
     <>

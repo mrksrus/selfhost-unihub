@@ -357,6 +357,8 @@ export class AppLockController {
       secure_window: this.lock.capabilities.secureWindow,
       recents_hidden: this.lock.capabilities.hideRecents,
       device_lock_signal: this.lock.capabilities.deviceLockSignal,
+      // Only an app that can take a call while closed says so: the server then rings it by its notification connection.
+      ...this.lock.capabilities.calls ? { calls: true } : {},
     };
   }
 

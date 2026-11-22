@@ -42,6 +42,7 @@ object AppNotifications {
     private const val CHANNEL_CALENDAR = "calendar"
     private const val CHANNEL_RECORDINGS = "recordings"
     private const val CHANNEL_CHAT = "chat"
+    private const val CHANNEL_CALLS_MISSED = "calls-missed"
     private const val CHANNEL_ACCOUNT = "account"
 
     /** The device this phone registered on a server, for one user. */
@@ -278,6 +279,7 @@ object AppNotifications {
             NotificationChannel(CHANNEL_CALENDAR, context.getString(R.string.channel_calendar), NotificationManager.IMPORTANCE_HIGH),
             NotificationChannel(CHANNEL_RECORDINGS, context.getString(R.string.channel_recordings), NotificationManager.IMPORTANCE_DEFAULT),
             NotificationChannel(CHANNEL_CHAT, context.getString(R.string.channel_chat), NotificationManager.IMPORTANCE_HIGH),
+            NotificationChannel(CHANNEL_CALLS_MISSED, context.getString(R.string.channel_calls_missed), NotificationManager.IMPORTANCE_HIGH),
             NotificationChannel(CHANNEL_ACCOUNT, context.getString(R.string.channel_account), NotificationManager.IMPORTANCE_DEFAULT),
             NotificationChannel(CHANNEL_CONNECTION, context.getString(R.string.channel_connection), NotificationManager.IMPORTANCE_MIN).apply {
                 description = context.getString(R.string.channel_connection_description)
@@ -291,6 +293,7 @@ object AppNotifications {
         "calendar", "todo", "reminder" -> CHANNEL_CALENDAR
         "recording" -> CHANNEL_RECORDINGS
         "chat" -> CHANNEL_CHAT
+        "call_missed" -> CHANNEL_CALLS_MISSED
         else -> CHANNEL_ACCOUNT
     }
 
@@ -309,9 +312,9 @@ object AppNotifications {
         if (payload.optInt("version") != 1 || payload.optString("userId") != device.user) return true
         val dedupe = payload.optString("dedupeKey").takeIf { it.isNotEmpty() && it.length <= 512 } ?: return true
         if (!firstTime(context, "${device.user}:$dedupe")) return true
-        // A call rings through Android's call handling instead of showing as a notification.
-        CallMessage.parse(payload)?.let { call ->
-            Calls.receive(context, origin, call, AppLock.hides(context, origin, "chat"))
+        // A call rings through Android's call handling; it never shows as a notification, not even one it cannot read.
+        if (payload.optString("kind") == "call") {
+            CallMessage.parse(payload)?.let { call -> Calls.receive(context, origin, call, AppLock.hides(context, origin, "chat")) }
             return true
         }
         val tag = payload.optString("tag").takeIf { it.isNotEmpty() && it.length <= 128 } ?: dedupe
@@ -375,6 +378,7 @@ object AppNotifications {
         "todo" -> context.getString(R.string.notification_locked_todo)
         "reminder" -> context.getString(R.string.notification_locked_reminder)
         "chat" -> context.getString(R.string.notification_locked_chat)
+        "call_missed" -> context.getString(R.string.notification_locked_call_missed)
         else -> context.getString(R.string.notification_hidden)
     }
 

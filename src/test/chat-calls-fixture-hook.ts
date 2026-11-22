@@ -14,3 +14,4 @@ const calls: ChatCalls = { subscribe: () => () => undefined, snapshot: () => cal
 const held = { calls, call };
 
 export const useChatCalls = () => held;
+export const useHandCallsToApp = () => undefined;

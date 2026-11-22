@@ -10,7 +10,7 @@ import { usePolicy } from '@/hooks/use-policies';
 import { useUserSettings } from '@/hooks/use-settings';
 import type { CallView, ChatCalls } from '@/lib/chat/call';
 import { playCallSound } from '@/lib/chat/call-sound';
-import { androidApp, callSupport } from '@/lib/platform';
+import { androidApp, callSupport, placeCallInApp } from '@/lib/platform';
 import { clock } from '@/components/chat/chat-state';
 
 /** Who can be called: a colleague by their account, with what a chat knows of them. */
@@ -36,14 +36,18 @@ export function useCallTo(person: CallPerson | undefined): { reason: string | un
   const userId = person?.user_id;
   if (!engine || !person || !userId || userId === ownId) return null;
   const call = held?.call;
+  const support = callSupport();
   const reason = rule
     ?? (person.can_write === false ? person.reason ?? `${person.name} cannot be called now.` : undefined)
     ?? forbidden.get(refusal(ownId, userId))
     ?? (lock.locked('chat') ? 'Unlock Chat to call.'
-      : callSupport() !== 'page' ? 'This browser cannot make calls.'
+      : support === 'app' ? undefined
+      : support !== 'page' ? 'This browser cannot make calls.'
       : call?.ended === 'other-tab' ? 'You are on a call in another tab.'
       : call && call.state !== 'ended' ? 'You are on a call.' : undefined);
   // By the person, also from their chat: a refusal is then known to be about them.
+  // The app's call screen starts it and shows a refusal; this page holds no call.
+  if (support === 'app') return { reason, start: () => placeCallInApp(userId, person.name) };
   return { reason, start: () => { void held?.calls.start({ user_id: userId }, person.name).catch(() => undefined); } };
 }
 
