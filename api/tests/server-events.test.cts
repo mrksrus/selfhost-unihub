@@ -147,9 +147,12 @@ test('presence follows whether the person holds a stream that takes chat events:
   const told: [string, boolean][] = [];
   bus.onPresence((userId: string, present: boolean) => told.push([userId, present]));
   let joined = false;
+  let gate: Promise<void> | null = null;
   const revalidate = async (stream: FixtureValue) => {
-    stream.withheld = new Set(joined ? [] : ['chat']);
-    stream.modules = new Set(joined ? ['chat'] : []);
+    const now = joined;
+    if (gate) await gate;
+    stream.withheld = new Set(now ? [] : ['chat']);
+    stream.modules = new Set(now ? ['chat'] : []);
     return true;
   };
   open('blair', { modules: ['chat'], withheld: ['chat'], revalidate });
@@ -158,8 +161,14 @@ test('presence follows whether the person holds a stream that takes chat events:
   assert.deepEqual(told, [['blair', true]], 'a page in Chat opened beside it');
   page.res.emit('close');
   assert.deepEqual(told.at(-1), ['blair', false], 'and closed again');
+  // The device joins while a heartbeat check that read the state before is still running.
+  let release!: () => void;
+  gate = new Promise(resolve => { release = () => { gate = null; resolve(); }; });
+  const heartbeat = bus.tick();
   joined = true;
-  await bus.revalidateUser('blair');
+  const join = bus.revalidateUser('blair');
+  release();
+  await Promise.all([heartbeat, join]);
   assert.deepEqual(told, [['blair', true], ['blair', false], ['blair', true]], 'the waiting device joined');
 });
 

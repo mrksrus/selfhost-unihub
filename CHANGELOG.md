@@ -20,6 +20,8 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
   first call, at "Call" or from Settings › Chat › "Calls on this phone".
 - When you call someone from the Android app at the moment they call you,
   the app now answers their call instead of ending it as failed.
+- A device that joins Chat gets chat updates at once, also when the server
+  was just checking its live connection, instead of up to 25 seconds later.
 
 ## 0.35.0
 
