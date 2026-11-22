@@ -61,16 +61,27 @@ The LGPL-3.0 and GPL-3.0 texts are in `licenses/third-party`.
 
 ## Android app
 
-The Android app (`android/`) contains, unmodified, AndroidX libraries from the
-Android Open Source Project and JetBrains' Kotlin libraries, all under
-Apache-2.0 (licence text in `licenses/third-party/Apache-2.0.txt`):
-`androidx.webkit:webkit`, `androidx.core:core` and `androidx.core:core-telecom`
-(calls), the AndroidX libraries these pull in (annotation, collection,
-concurrent-futures, interpolator, lifecycle, arch core, profileinstaller,
-startup, tracing, versionedparcelable), Guava's `listenablefuture`, the Kotlin
-standard library and `kotlinx-coroutines`. `android/app/build.gradle.kts`
-names the versions; Gradle's dependency report of the `:app` project lists
-every library in the APK.
+The Android app (`android/`) contains, unmodified, these libraries, all under
+Apache-2.0 (licence text in `licenses/third-party/Apache-2.0.txt`): the
+AndroidX libraries of the Android Open Source Project
+`androidx.webkit:webkit` 1.12.1, `androidx.core:core` 1.13.1 and
+`androidx.core:core-telecom` 1.1.0 (calls), and what they pull in:
+`androidx.annotation:annotation` and `annotation-jvm` 1.9.0,
+`annotation-experimental` 1.4.1, `androidx.collection:collection` 1.0.0,
+`androidx.concurrent:concurrent-futures` 1.1.0,
+`androidx.interpolator:interpolator` 1.0.0, `androidx.lifecycle:lifecycle-common`,
+`lifecycle-common-jvm`, `lifecycle-runtime`, `lifecycle-runtime-android` and
+`lifecycle-service` 2.8.1, `androidx.arch.core:core-common` and `core-runtime`
+2.2.0, `androidx.profileinstaller:profileinstaller` 1.3.1,
+`androidx.startup:startup-runtime` 1.1.1, `androidx.tracing:tracing` 1.0.0,
+`androidx.versionedparcelable:versionedparcelable` 1.1.1; Guava's
+`com.google.guava:listenablefuture` 1.0; and JetBrains'
+`org.jetbrains.kotlin:kotlin-stdlib` 2.2.20,
+`org.jetbrains.kotlinx:kotlinx-coroutines-core`, `kotlinx-coroutines-core-jvm`
+and `kotlinx-coroutines-android` 1.9.0 and `org.jetbrains:annotations` 23.0.0.
+Gradle's dependency report of the `:app` project for the release configuration
+(`./gradlew :app:dependencies --configuration releaseRuntimeClasspath`) lists
+the same set.
 
 ## Container programs
 

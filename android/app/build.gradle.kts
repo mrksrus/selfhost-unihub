@@ -15,7 +15,8 @@ val serverVersionCode = serverVersion.split(".").map { it.toInt() }.let { (major
 
 android {
     namespace = "io.github.mrksrus.unihub"
-    compileSdk = 35
+    compileSdk = 36
+    compileSdkMinor = 1
 
     defaultConfig {
         // Never change: Android only installs an update over an app with the
@@ -72,10 +73,10 @@ dependencies {
     implementation("androidx.webkit:webkit:1.12.1")
     // FileProvider for "Open with…" and "Share" (FileActions); the version core-telecom already brings.
     implementation("androidx.core:core:1.13.1")
-    // Calls through Android's call handling (CallService). 1.1.0 needs compileSdk 36.1 and AGP 8.9.1.
-    implementation("androidx.core:core-telecom:1.0.1")
+    // Calls through Android's call handling (CallService); it needs compileSdk 36.1, so AGP 8.13.
+    implementation("androidx.core:core-telecom:1.1.0")
     // The library's runtime dependency, which its API is written in; the version it asks for.
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.8.1")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.9.0")
     // JVM tests of code without Android classes (PushCrypto), run by scripts/build-apk.sh.
     testImplementation("junit:junit:4.13.2")
     // The real org.json for those tests (contact cards); Android's own is a stub there.

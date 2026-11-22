@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.INTERNET" />
     <!-- Recordings: the page asks for the microphone, the app forwards the request. -->
@@ -27,12 +28,14 @@
     <uses-permission android:name="android.permission.USE_BIOMETRIC" />
     <!-- Voice calls (Calls, CallService): the app's calls go through Android's
          call handling, ring full screen over the lock screen and keep running
-         once answered. None of these asks the person. Core-Telecom also
-         declares BLUETOOTH_CONNECT, which the app never asks for. -->
+         once answered. None of these asks the person. -->
     <uses-permission android:name="android.permission.MANAGE_OWN_CALLS" />
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_PHONE_CALL" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <!-- Core-Telecom's, unused: Android 14+ names Bluetooth routes itself, and the
+         library reads device names only after checking the permission. -->
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" tools:node="remove" />
 
     <application
         android:allowBackup="false"
@@ -85,6 +88,11 @@
             android:showWhenLocked="true"
             android:taskAffinity="io.github.mrksrus.unihub.call"
             android:turnScreenOn="true" />
+
+        <!-- Core-Telecom registers this receiver in code where it needs it; the exported entry does nothing. -->
+        <receiver
+            android:name="androidx.core.telecom.internal.MuteStateReceiver"
+            tools:node="remove" />
 
         <!-- The answered call. Core-Telecom adds its own call provider for Android 13 and older. -->
         <service

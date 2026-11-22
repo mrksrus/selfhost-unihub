@@ -57,7 +57,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends unzip && rm -rf
     && mv "$ANDROID_HOME/cmdline-tools/cmdline-tools" "$ANDROID_HOME/cmdline-tools/latest" \
     && rm /tmp/tools.zip \
     && yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null \
-    && "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" "build-tools;35.0.0" >/dev/null
+    && "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36.1" "build-tools;35.0.0" >/dev/null
 WORKDIR /build
 COPY package.json ./
 COPY android ./android
