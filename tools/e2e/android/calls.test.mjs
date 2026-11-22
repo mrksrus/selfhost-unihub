@@ -1,30 +1,38 @@
 // Voice calls between the app and a desktop browser through the real server:
 // its ring by the app's notification connection, its signals and the call's
 // entry in the chat. The phone's person ("me") is in the app; the other
-// ("desk") in a desktop Chromium whose microphone is Chromium's generated
-// tone. The app's WebViews get the same generated tone (WebView's
-// command-line file on this debuggable emulator), so both sides can count
-// received sound in the connection's statistics: energy, not packets.
+// ("desk") in a desktop Chromium whose microphone is a sound file the test
+// writes. The app's WebViews get Chromium's generated tone (WebView's
+// command-line file on this debuggable emulator): never the same signal on
+// both ends, which the phone's echo cancellation would take for an echo and
+// remove. Both sides count received sound in the connection's statistics:
+// energy above a floor, not packets.
 //
 // A browser calls the locked phone (answered on the call screen, sound both
 // ways, a speaker route through Telecom, the call notification after a
 // minute, the browser hangs up, both chats show the entry); the phone calls
 // the browser from the app's "Call"; Decline on the notification; a call
-// cancelled while it rings; the app lock on; the app's notifications off
-// with the app open; a headset's answer with nothing of the app on screen.
+// cancelled while it rings; UniHub's app lock on; the app's notifications off
+// with the app open; a headset's answer with nothing of the app on screen; an
+// answer without the microphone permission.
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { chromium } from 'playwright-core';
 import {
-  PACKAGE, adb, answerSlowDialogs, appLockMessage, bridgeMessage, clearDevicePin, lockCoverShown, navigate, openApp, setDevicePin,
-  shownNotifications, signOutApp, sleep, sleepScreen, tapNative, unlockKeyguard,
+  PACKAGE, adb, answerPromptWithPin, answerSlowDialogs, appLockMessage, bridgeMessage, clearDevicePin, lockCoverShown, navigate, openApp, setDevicePin,
+  shownNotifications, signOutApp, sleep, sleepScreen, tapNative, touch, unlockKeyguard, unlockPromptShown, waitForUnlockPrompt,
 } from '../support/android.mjs';
 import { PASSWORD, acknowledge, addPerson, ok, resetPeople } from '../support/people.mjs';
 
 const base = process.env.UNIHUB_E2E_URL ?? `http://127.0.0.1:${8087 + Number(process.env.UNIHUB_E2E_INSTANCE ?? '1')}`;
 const sdk = Number(adb('shell', 'getprop', 'ro.build.version.sdk').trim());
 const FAKE_MICROPHONE = ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream'];
+// Received sound energy in three seconds: a sent tone gives about 0.3 to 0.9, silence or a cancelled echo near 0.
+const SOUND = 0.05;
 const WEBVIEW_FLAGS = '/data/local/tmp/webview-command-line';
 const shell = (...args) => adb('shell', ...args);
 const results = {};
@@ -39,6 +47,23 @@ const topActivity = () => /topResumedActivity=[^\n]*\/\.(\w+)/.exec(shell('dumps
 const callNotification = () => shell('dumpsys', 'notification', '--noredact').split(/\n\s*NotificationRecord\(/).find(r => r.includes(`pkg=${PACKAGE}`) && /category=call/.test(r)) ?? '';
 const fullScreenIntents = allowed => shell('appops', 'set', PACKAGE, 'USE_FULL_SCREEN_INTENT', allowed ? 'allow' : 'deny');
 const seconds = since => +((Date.now() - since) / 1000).toFixed(2);
+
+/** The desk's microphone: a 16-bit WAV of a tone sliding between 100 and 500 Hz, in bursts of 0.6 s every 0.8 s. */
+function deskSound() {
+  const rate = 48_000, samples = rate * 4, wav = Buffer.alloc(44 + samples * 2);
+  wav.write('RIFF', 0); wav.writeUInt32LE(36 + samples * 2, 4); wav.write('WAVEfmt ', 8);
+  wav.writeUInt32LE(16, 16); wav.writeUInt16LE(1, 20); wav.writeUInt16LE(1, 22); wav.writeUInt32LE(rate, 24); wav.writeUInt32LE(rate * 2, 28);
+  wav.writeUInt16LE(2, 32); wav.writeUInt16LE(16, 34); wav.write('data', 36); wav.writeUInt32LE(samples * 2, 40);
+  let phase = 0;
+  for (let i = 0; i < samples; i++) {
+    const t = i / rate;
+    phase += 2 * Math.PI * (300 + 200 * Math.sin(2 * Math.PI * 0.7 * t)) / rate;
+    wav.writeInt16LE(t % 0.8 < 0.6 ? Math.round(16_000 * Math.sin(phase)) : 0, 44 + i * 2);
+  }
+  fs.writeFileSync(DESK_SOUND, wav);
+  return DESK_SOUND;
+}
+const DESK_SOUND = path.join(os.tmpdir(), `unihub-calls-desk-${process.pid}.wav`);
 
 async function until(check, what, timeoutMs = 60_000, every = 500) {
   const end = Date.now() + timeoutMs;
@@ -109,7 +134,7 @@ async function heard(page) {
   const now = await read();
   return { packets: now.packets - before.packets, energy: +(now.energy - before.energy).toFixed(4) };
 }
-const flows = async (page, what) => until(async () => { const got = await heard(page); return got.energy > 0 && got; }, `sound reaching ${what}`, 60_000, 0);
+const flows = async (page, what) => until(async () => { const got = await heard(page); return got.energy >= SOUND && got; }, `sound reaching ${what}`, 60_000, 0);
 
 /** The call screen's page: the app's process has one WebView debugging socket for both WebViews, so it is found among the main page's targets. */
 async function callPage() {
@@ -157,7 +182,7 @@ before(async () => {
 
   // The desk: Chat set up through the page's engine (src/lib/chat/test-hook.ts), our chat open.
   chrome = await chromium.launch({ ...(process.env.UNIHUB_E2E_CHROMIUM ? { executablePath: process.env.UNIHUB_E2E_CHROMIUM } : { channel: 'chrome' }),
-    args: [...FAKE_MICROPHONE, '--autoplay-policy=no-user-gesture-required'] });
+    args: [...FAKE_MICROPHONE, `--use-file-for-fake-audio-capture=${deskSound()}`, '--autoplay-policy=no-user-gesture-required'] });
   const context = await chrome.newContext({ viewport: { width: 1440, height: 900 }, permissions: ['microphone'] });
   await context.addInitScript(KEEP_CONNECTIONS);
   assert.equal((await context.request.post(`${base}/api/auth/signin`, { data: { email: other.email, password: PASSWORD } })).status(), 200, 'the desk signs in');
@@ -181,6 +206,7 @@ before(async () => {
 after(async () => {
   console.log(`calls: ${JSON.stringify(results)}`);
   shell(`rm -f ${WEBVIEW_FLAGS}`);
+  fs.rmSync(DESK_SOUND, { force: true });
   fullScreenIntents(true);
   try { await unlockKeyguard(); } catch { /* not locked */ }
   clearDevicePin();
@@ -234,7 +260,7 @@ test('a browser calls the locked phone: it rings, is answered on the call screen
   // The ring's notification times out after 45 seconds; the running call's, in its place, does not.
   await sleep(Math.max(0, 65_000 - (Date.now() - answered)));
   assert.match(callNotification(), /category=call/, 'the call notification after a minute of the call');
-  assert.ok((await heard(page)).energy > 0, 'sound after a minute');
+  assert.ok((await heard(page)).energy >= SOUND, 'sound after a minute');
 
   const hung = Date.now();
   await desk.getByRole('button', { name: 'Hang up', exact: true }).click();
@@ -306,45 +332,58 @@ test('a call cancelled while it rings stops the ring and leaves a missed-call no
   await until(async () => /^\/chat$/.test(new URL(app.page.url()).pathname) && new URL(app.page.url()).searchParams.get('c'), 'the chat opening', 60_000);
 });
 
-test('with UniHub\'s app lock on, answering shows only the call; "Open chat" asks Android for the unlock and the call goes on', { timeout: 400_000 }, async () => {
+/** Settings › App lock: a row of "Lock", touched in the middle of the screen (the bottom bar covers the lower edge); the phone's PIN confirms. */
+async function appLock(page, row) {
+  await page.goto(new URL('/settings?section=app-lock', page.url()).href);
+  const radio = page.getByRole('radio', { name: row });
+  await radio.waitFor({ state: 'attached' });
+  if (await radio.isChecked()) return;
+  const label = page.getByRole('radiogroup', { name: 'Lock' }).getByText(row, { exact: true });
+  await label.evaluate(element => element.scrollIntoView({ block: 'center' }));
+  await touch(page, label);
+  await waitForUnlockPrompt();
+  await answerPromptWithPin();
+  await until(() => radio.isChecked(), `the lock "${row}"`, 30_000);
+}
+
+test('with UniHub\'s app lock on, answering shows only the call; "Open chat" shows UniHub locked while the call goes on; unlocking opens the chat', { timeout: 400_000 }, async () => {
   shell('am', 'start', '-n', `${PACKAGE}/.MainActivity`);
   await sleep(2500);
-  const locked = await appLockMessage(app.page, 'configure', { scope: ['app'], relockAfterMs: 0, onDeviceLock: true, blockScreenshots: false });
-  assert.equal(locked.ok, true, JSON.stringify(locked));
-  adb('logcat', '-c');
-  shell('input', 'keyevent', 'KEYCODE_HOME');
   setDevicePin();
+  await appLock(await mainPage(), 'Whole app');
+  shell('input', 'keyevent', 'KEYCODE_HOME');
   await sleepScreen();
   await deskCalls();
   await until(() => topActivity() === 'CallActivity', 'the call screen over the lock screen', 60_000, 250);
   const page = await callPage();
   await page.getByRole('button', { name: 'Answer', exact: true }).click();
   await flows(desk, 'the desk');
-  // Only the call: the person's name is hidden while UniHub is locked, nothing else of the app is there.
-  assert.equal(await page.getByRole('button', { name: 'Open chat' }).isVisible(), true);
+  // Only the call: while UniHub is locked the caller's name is not shown either.
+  assert.equal((await page.locator('body').innerText()).includes(deskName), false, 'no name on the locked call screen');
   await page.getByRole('button', { name: 'Open chat' }).click();
   // Android's own unlock comes first; then the app opens behind its own lock.
   await sleep(2000);
   shell('input', 'text', '1111');
   shell('input', 'keyevent', '66');
   await until(() => topActivity() === 'MainActivity', 'the app after the unlock', 30_000);
-  // The app's cover, until the page shows its own lock screen in its place.
-  const appLocked = await until(async () => lockCoverShown() || await (await mainPage()).getByText(/UniHub is locked|Unlock/).first().isVisible(), 'UniHub\'s own lock', 30_000).catch(() => false);
+  const main = await mainPage();
+  const lockScreen = main.getByText('UniHub is locked', { exact: true });
+  await until(async () => lockCoverShown() || await lockScreen.isVisible(), 'UniHub\'s own lock', 30_000);
   assert.ok(ourCall('ACTIVE'), 'the call goes on behind the app');
   assert.ok(callScreenUp(), 'the call screen stays');
-  const still = { desk: await heard(desk), phone: await heard(page).catch(error => String(error.message).slice(0, 100)),
-    deskSays: (await desk.getByRole('dialog').innerText().catch(() => '')).slice(0, 200),
-    track: await page.evaluate(() => { const t = window.callConnections?.at(-1)?.getSenders()[0]?.track; return { visibility: document.visibilityState, enabled: t?.enabled, muted: t?.muted, state: t?.readyState }; }).catch(e => String(e.message).slice(0, 80)),
-    recording: [...shell('dumpsys', 'audio').matchAll(/rec (\w+) riid:\d+ uid:\d+ session:\d+ src:(\w+) (not silenced|silenced) pack:io\.github\.mrksrus\.unihub/g)].slice(-3).map(m => m.slice(1).join(' ')),
-    micMuted: /mic mute FromSwitch=\w+ FromRestrictions=\w+ FromApi=(\w+)/.exec(shell('dumpsys', 'audio'))?.[1],
-    log: adb('logcat', '-d', '-s', 'UniHubCalls:*').split('\n').slice(-12).join('\n') };
   const back = Date.now();
-  await flows(desk, 'the desk after "Open chat"');
-  results.appLock = { openChat: 'Android unlock first', appLocked, callGoesOn: true, firstSample: still, secondsUntilSound: seconds(back) };
+  const toDesk = await flows(desk, 'the desk after "Open chat"');
+  const toPhone = await flows(page, 'the phone after "Open chat"');
+  results.appLock = { secondsUntilSound: seconds(back), deskHeard3s: toDesk, phoneHeard3s: toPhone };
+  await lockScreen.waitFor({ timeout: 30_000 });
+  if (!unlockPromptShown()) await touch(main, main.getByRole('button', { name: 'Unlock' }));
+  await waitForUnlockPrompt();
+  await answerPromptWithPin();
+  await lockScreen.waitFor({ state: 'hidden', timeout: 30_000 });
+  await until(() => new URL(main.url()).pathname === '/chat' && new URL(main.url()).searchParams.get('c') === conversation, 'the chat opening after the unlock', 30_000);
   await desk.getByRole('button', { name: 'Hang up', exact: true }).click();
   await callOver();
-  await unlockKeyguard().catch(() => {});
-  await appLockMessage(app.page, 'configure', { scope: [], relockAfterMs: 0, onDeviceLock: false, blockScreenshots: false }).catch(() => {});
+  await appLock(main, 'Off');
   clearDevicePin();
 });
 
@@ -384,4 +423,33 @@ test('a headset answers with nothing of the app on screen: the notification says
   await desk.getByRole('button', { name: 'Hang up', exact: true }).click();
   await callOver();
   fullScreenIntents(true);
+});
+
+test('an answer without the microphone permission ends the call at once: the caller reads that it failed, not a ring until the limit', { timeout: 300_000 }, async () => {
+  // A revoke stops the app's process: the app opens again, and its notification connection with it.
+  shell('pm', 'revoke', PACKAGE, 'android.permission.RECORD_AUDIO');
+  await app.device.close().catch(() => {});
+  app = await openApp({ email: me.email });
+  await sleep(5000);
+  shell('input', 'keyevent', 'KEYCODE_HOME');
+  setDevicePin();
+  await sleepScreen();
+  try {
+    await deskCalls();
+    await until(() => topActivity() === 'CallActivity', 'the call screen over the lock screen', 60_000, 250);
+    const page = await callPage();
+    await page.getByRole('button', { name: 'Answer', exact: true }).click();
+    const answered = Date.now();
+    const phoneSays = await page.getByText(/Allow the microphone/).first().innerText({ timeout: 10_000 }).catch(() => '');
+    // The caller's call ends (its screen offers "Close"), well before the 45 seconds of the ring.
+    await desk.getByRole('button', { name: 'Close', exact: true }).waitFor({ timeout: 15_000 });
+    results.microphoneRefused = { secondsToTheCaller: seconds(answered), phoneSays, deskSays: (await desk.getByRole('dialog').innerText().catch(() => '')).slice(0, 200) };
+    await desk.getByRole('button', { name: 'Close', exact: true }).click();
+    await desk.getByRole('list', { name: `Messages with ${myName}` }).getByText(/^Call failed/).last().waitFor({ timeout: 30_000 });
+    await callOver();
+  } finally {
+    shell('pm', 'grant', PACKAGE, 'android.permission.RECORD_AUDIO');
+    await unlockKeyguard().catch(() => {});
+    clearDevicePin();
+  }
 });
