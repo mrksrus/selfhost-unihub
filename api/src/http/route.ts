@@ -14,7 +14,7 @@ type RouteMethod = 'GET' | 'POST' | 'PUT' | 'DELETE';
 type RouteAuth = 'public' | 'user' | 'admin';
 type RouteBodyKind = 'json' | 'backup-upload' | 'upload' | 'none';
 type RouteCsrf = 'token' | 'background-header' | 'none';
-type RouteResponseMode = 'json' | 'stream';
+type RouteResponseMode = 'json' | 'stream' | 'upgrade';
 type RouteGates = 'exempt' | 'background-sync';
 
 // The body a route with kind 'upload' receives: the raw request body, spooled
@@ -59,7 +59,9 @@ interface RoutePolicy {
   // that issue the token. The bearer-without-cookie rule is global (auth.ts).
   csrf?: RouteCsrf;
   // 'stream': the handler may write and own the response (SSE); the boundary
-  // serializes nothing once headers were sent.
+  // serializes nothing once headers were sent. 'upgrade', GET only: the only
+  // routes a WebSocket handshake reaches (http/websocket.ts); the handler
+  // accepts it after its checks and returns nothing, or refuses with JSON.
   response?: RouteResponseMode;
   // F13, 'user' routes only: the policies of the data a mutating route
   // removes or resets (destructive), and those of the other actions a policy
@@ -116,7 +118,7 @@ const DEFAULT_BODY_LIMIT = 16384;
 const AUTH_VALUES = new Set<string>(['public', 'user', 'admin']);
 const BODY_KINDS = new Set<string>(['json', 'backup-upload', 'upload', 'none']);
 const CSRF_VALUES = new Set<string>(['token', 'background-header', 'none']);
-const RESPONSE_MODES = new Set<string>(['json', 'stream']);
+const RESPONSE_MODES = new Set<string>(['json', 'stream', 'upgrade']);
 const GATES_VALUES = new Set<string>(['exempt', 'background-sync']);
 const POLICY_FIELDS = ['destructive', 'requires'] as const;
 const isQueryValue = (value: unknown) => typeof value === 'string'
@@ -151,6 +153,7 @@ function defineRoutes<T extends RouteTable>(table: T): T {
     }
     if (spec.csrf !== undefined && !CSRF_VALUES.has(spec.csrf)) invalid(key, `unknown csrf ${String(spec.csrf)}`);
     if (spec.response !== undefined && !RESPONSE_MODES.has(spec.response)) invalid(key, `unknown response ${String(spec.response)}`);
+    if (spec.response === 'upgrade' && method !== 'GET') invalid(key, 'only a GET route takes a WebSocket');
     if (spec.gates !== undefined && !GATES_VALUES.has(spec.gates)) invalid(key, `unknown gates ${String(spec.gates)}`);
     if (spec.gates !== undefined && spec.auth === 'public') invalid(key, 'only a signed-in route declares gates');
     // A spec written for 0.29 would silently lose its exemption.
