@@ -107,7 +107,8 @@ async function finish(cx: SqlExecutor, row: RowDataPacket, outcome: ChatCallOutc
     VALUES (?, ?, ?, NULL, ?, ?, 'call', NULL, NULL)`, [messageId, row.conversation_id, seq, row.caller_user_id, row.caller_chat_device_id]);
   await cx.execute("UPDATE chat_calls SET state = 'ended', outcome = ?, ended_at = UTC_TIMESTAMP(), message_id = ? WHERE id = ?", [outcome, messageId, row.id]);
   await cx.execute('DELETE FROM chat_call_signals WHERE call_id = ?', [row.id]);
-  if (row.state === 'ringing') await stopRinging(cx, row, null);
+  // A busy call never rang anywhere.
+  if (row.state === 'ringing' && outcome !== 'busy') await stopRinging(cx, row, null);
   if (MISSED.includes(outcome) && row.callee_user_id) {
     await enqueueFromSource({ kind: 'call_missed', userId: String(row.callee_user_id), sourceId: String(row.id), dedupeKey: `call_missed:${row.id}`,
       url: `/chat?c=${encodeURIComponent(String(row.conversation_id))}`, data: { conversationId: String(row.conversation_id) } }, cx);
@@ -262,13 +263,14 @@ async function callIceServers(userId: string, token: string | null, callId: stri
  * missed-call notification for a call of the past.
  */
 async function sweepCalls(startup = false) {
-  const [due] = await db.execute<RowDataPacket[]>(`SELECT id FROM chat_calls
-    WHERE (state = 'ringing' AND created_at < UTC_TIMESTAMP() - INTERVAL ${RING_SECONDS} SECOND)
-      OR (state = 'active' AND alive_at < UTC_TIMESTAMP() - INTERVAL ${ALIVE_SECONDS} SECOND)`);
+  const overdue = `((state = 'ringing' AND created_at < UTC_TIMESTAMP() - INTERVAL ${RING_SECONDS} SECOND)
+    OR (state = 'active' AND alive_at < UTC_TIMESTAMP() - INTERVAL ${ALIVE_SECONDS} SECOND))`;
+  const [due] = await db.execute<RowDataPacket[]>(`SELECT id FROM chat_calls WHERE ${overdue}`);
   let swept = 0;
   for (const { id } of due) {
     const row = await withTransaction(async cx => {
-      const [[call]] = await cx.execute<RowDataPacket[]>("SELECT * FROM chat_calls WHERE id = ? AND state <> 'ended' FOR UPDATE", [id]);
+      // Still overdue under the lock: an answer or a sign of life may have arrived since the list was read.
+      const [[call]] = await cx.execute<RowDataPacket[]>(`SELECT * FROM chat_calls WHERE id = ? AND ${overdue} FOR UPDATE`, [id]);
       if (!call) return null;
       await finish(cx, call, startup || call.state === 'active' ? 'failed' : 'missed');
       return call;

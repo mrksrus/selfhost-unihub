@@ -125,6 +125,7 @@ test('chat calls: ringing, the first answer, signals, endings and entries, busy,
   assert.equal(busy.outcome, 'busy');
   assert.deepEqual([(await conversationOf(blair, busy.conversation_id)).unread, (await conversationOf(casey, busy.conversation_id)).unread], [1, 0]);
   assert.deepEqual(await missedTitles(busy.id), ['Missed call from Casey Stranger']);
+  assert.deepEqual(await rows("SELECT id FROM notification_events WHERE kind = 'call' AND source_id = ?", [busy.id]), [], 'a busy call never rang, so no phone is told to stop');
 
   // ── Hanging up: the signals go, one entry with its length, read for both ──
   const hung = await call(alex, 'POST', route(first, 'end'), {});
