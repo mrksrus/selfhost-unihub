@@ -426,6 +426,17 @@ export const POLICIES_ADMIN_APP_LOCK = {
 };
 
 // ── 0.30 organisation: people, groups, a group's rules, setup links, required two-factor authentication ──
+/** Server settings › Storage: two folders, nobody listed per person. */
+const SERVER_STORAGE = {
+  generated_at: at('06-15T09:00:00.000Z'),
+  totals: { users: 6, active_users: 5, mail_accounts: 4, emails: 1830, contacts: 212, calendar_events: 96, bytes: 734_003_200, files: 1204 },
+  sections: [
+    { key: 'mail', label: 'Mail attachments', bytes: 512_000_000, files: 940, path_exists: true, scan_error: null },
+    { key: 'recordings', label: 'Recordings', bytes: 222_003_200, files: 264, path_exists: true, scan_error: null },
+  ],
+  users: [],
+};
+
 const ALL_PERMISSIONS = ['users.read', 'users.manage', 'server.settings', 'storage.read', 'audit.read', 'groups.manage', 'admins.manage', 'owner.transfer', 'contacts.books.manage', 'calendars.manage'];
 /** The administrator of the server pages is the owner: every permission, so every control shows. */
 const OWNER = { ...USER, role: 'owner' as const, permissions: ALL_PERMISSIONS, manages_groups: false, two_factor_enabled: true };
@@ -728,6 +739,11 @@ function defaultRoutes(emails: typeof EMAILS, admin = false): Route[] {
     ['POST', /^\/devices\/current\/lock-state$/, () => ok({})],
     ['GET', /^\/settings\/values\/device$/, () => ok({ device_id: DEVICES[0].id, settings: CURRENT_DEVICE.settings })],
     ['GET', /^\/admin\/instance-backup$/, () => ok(INSTANCE_BACKUP)],
+    // Server settings. The calls' check: the harness passes no WebSocket, and the plain request gets UniHub's answer to that.
+    ['GET', /^\/admin\/settings\/signup-mode$/, () => ok({ signup_mode: 'approval', calls_relay: false })],
+    ['GET', /^\/chat\/calls\/check$/, () => ({ status: 426, body: { error: 'This address takes a WebSocket. The reverse proxy in front of UniHub may not pass WebSockets.', code: 'CHAT_CALL_MEDIA_UPGRADE' } })],
+    ['GET', /^\/admin\/storage$/, () => ok({ storage: SERVER_STORAGE })],
+    ['GET', /^\/admin\/audit$/, () => ok({ entries: [], cursor: null })],
     // 0.30 organisation: people, a person's devices and data, groups and their rules, the setup link's public check.
     ['GET', /^\/admin\/users$/, () => ok({ users: PEOPLE })],
     ['GET', /^\/admin\/users\/[^/]+\/devices$/, () => ok({ devices: DEVICES.slice(1) })],

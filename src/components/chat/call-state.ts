@@ -8,7 +8,7 @@ import { useChatCalls } from '@/hooks/use-chat-calls';
 import { useChatEngine } from '@/hooks/use-chat-engine';
 import { usePolicy } from '@/hooks/use-policies';
 import { useUserSettings } from '@/hooks/use-settings';
-import type { CallView, ChatCalls } from '@/lib/chat/call';
+import type { CallCause, CallView, ChatCalls } from '@/lib/chat/call';
 import { playCallSound } from '@/lib/chat/call-sound';
 import { androidApp, callSupport, placeCallInApp } from '@/lib/platform';
 import { clock } from '@/components/chat/chat-state';
@@ -54,6 +54,14 @@ export function useCallTo(person: CallPerson | undefined): { reason: string | un
 const CLOSES_AFTER_MS = 3000;
 const ALLOW_MICROPHONE = androidApp() ? 'Allow it under Android settings › Apps › UniHub › Permissions.' : 'Allow it with the icon beside the address, or in your browser\'s settings for this site.';
 
+/** Why a call could not go through UniHub either; without the name (Chat is locked here) it names no one. */
+const CAUSES: Record<CallCause, (name: string | null) => string> = {
+  proxy: () => 'The call could not go through UniHub: the reverse proxy in front of it does not pass WebSockets. An administrator can switch on WebSocket support there.',
+  busy: () => 'UniHub is carrying too many calls right now. Try again in a few minutes.',
+  'this-browser': () => 'This browser cannot carry calls between networks. Call from the UniHub app or another browser.',
+  'other-browser': name => `${name ?? 'The other person'} is on a browser that cannot carry calls between networks.`,
+};
+
 /** Endings with nothing to read: the screen closes itself. */
 const closesItself = (call: CallView) => call.ended === 'hung-up' || call.ended === 'answered-elsewhere' || (call.ended === 'cancelled' && !call.incoming);
 
@@ -71,9 +79,9 @@ export function callWords(call: CallView, name: string | null, connected: boolea
     case 'no-answer': return `${who} did not answer.`;
     case 'cancelled': return call.incoming ? `${who} hung up before you answered.` : 'Call cancelled.';
     // Never answered: the other side could not take it (its microphone, its app), not the relay.
-    case 'failed': return call.reason ?? (connected ? 'The connection was lost and did not come back.'
+    case 'failed': return call.cause ? CAUSES[call.cause](name) : call.reason ?? (connected ? 'The connection was lost and did not come back.'
       : !call.incoming && !call.answered_at ? `${who} could not take the call.`
-      : 'Could not connect. Your administrator may need to set up the relay for calls.');
+      : 'Could not connect. Check the connection and try again.');
     case 'answered-elsewhere': return 'Answered on another device.';
     case 'other-tab': return 'You are on a call in another tab.';
     case 'microphone': return call.reason?.includes('no microphone') ? call.reason : `${call.reason ?? 'The microphone could not be used.'} ${ALLOW_MICROPHONE}`;

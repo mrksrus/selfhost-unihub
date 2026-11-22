@@ -3,7 +3,8 @@ import { test } from '@e2e-dev/web';
 import { expect } from 'e2e';
 import { stack } from '../support/env.ts';
 import { onlyOn } from '../support/ui.ts';
-import { callScreen, chatBrowser, FAKE_MICROPHONE, gone, heard, keepConnections, leave, messagesOf, ringing, shows, startChat, twoPeople, type Kept } from './chat-helpers.ts';
+import { addPerson } from '../organisation/organisation-helpers.ts';
+import { callScreen, chatBrowser, confirmRules, FAKE_MICROPHONE, gone, heard, keepConnections, leave, messagesOf, ringing, secondBrowser, shows, startChat, twoPeople, type Kept } from './chat-helpers.ts';
 
 // Calls between two browsers that cannot connect directly and have no relay:
 // each call connection gets no servers and may use only the relay, so it has
@@ -54,6 +55,7 @@ test('a call between two browsers that cannot connect directly carries sound bot
     console.log(`call through UniHub: sound ${toSound.toFixed(1)} s after the answer; in 3 s Alex received ${alexHears.packets} packets (energy ${alexHears.energy.toFixed(4)}), Blair ${blairHears.packets} packets (energy ${blairHears.energy.toFixed(4)})`);
     for (const [who, sound] of [['Alex', alexHears], ['Blair', blairHears]] as const) expect(sound.energy, `${who} hears the other`).toBeGreaterThan(SOUND);
     for (const page of [a, b]) expect(await page.evaluate(() => (window as Kept).directConnected ?? false), 'the direct connection never came').toBe(false);
+    for (const [page, other] of [[a, blair], [b, alex]] as const) await shows(callScreen(page, other.name).getByText('Through UniHub', { exact: true }));
 
     // Blair mutes: Alex receives silence, Blair still hears Alex.
     await callScreen(b, alex.name).getByRole('button', { name: 'Mute', exact: true }).click();
@@ -74,7 +76,7 @@ test('a call between two browsers that cannot connect directly carries sound bot
   }
 });
 
-test('behind a proxy that does not pass WebSockets, a call that cannot connect directly fails and says what the proxy must pass', { timeout: 600_000 }, async ({ browser }) => {
+test('behind a proxy that does not pass WebSockets, a call that cannot connect directly fails and says what the proxy must pass, as Server settings do', { timeout: 600_000 }, async ({ browser }) => {
   await onlyOn(browser, 'desktop');
   const people = await twoPeople();
   const [alex, blair] = people;
@@ -92,8 +94,19 @@ test('behind a proxy that does not pass WebSockets, a call that cannot connect d
     await a.getByRole('button', { name: `Call ${blair.name}`, exact: true }).click();
     await shows(ringing(b, alex.name), 60_000);
     await ringing(b, alex.name).getByRole('button', { name: 'Answer', exact: true }).click();
-    await shows(callScreen(b, alex.name).getByText(/the reverse proxy in front of UniHub does not pass on/), 120_000);
+    await shows(callScreen(b, alex.name).getByText(/the reverse proxy in front of it does not pass WebSockets/), 120_000);
     await shows(callScreen(a, blair.name).getByRole('button', { name: 'Close', exact: true }), 60_000);
+
+    // An administrator's Server settings check from their own browser: behind this proxy, and without it.
+    const casey = await addPerson('casey', { role: 'admin' });
+    people.push(casey);
+    await confirmRules(casey);
+    for (const [through, says] of [[args, 'blocked by the reverse proxy'], [[], 'working']] as const) {
+      const server = await secondBrowser(casey, { args: [...through] });
+      opened.push(server);
+      await server.page.goto(`${stack.url}/admin/settings`);
+      await shows(server.page.getByText(`Calls between networks: ${says}`, { exact: true }), 60_000);
+    }
     passed = true;
   } finally {
     await leave(opened, people, passed);

@@ -50,12 +50,15 @@ describe('a call over the page', () => {
     expect(calls.hangUp).toHaveBeenCalledTimes(1);
   });
 
-  it('a call that failed before it was answered names the other person, not the relay', () => {
+  it('a call that failed before it was answered names the other person, and one through UniHub says why', () => {
     show(view({ state: 'ended', ended: 'failed', answered_at: null }));
     expect(screen.getByRole('dialog')).toHaveTextContent('Blair Example could not take the call.');
     cleanup();
     show(view({ state: 'ended', ended: 'failed' }));
-    expect(screen.getByRole('dialog')).toHaveTextContent('Your administrator may need to set up the relay for calls.');
+    expect(screen.getByRole('dialog')).toHaveTextContent('Could not connect. Check the connection and try again.');
+    cleanup();
+    show(view({ state: 'ended', ended: 'failed', cause: 'other-browser' }));
+    expect(screen.getByRole('dialog')).toHaveTextContent('Blair Example is on a browser that cannot carry calls between networks.');
   });
 
   it('another tab\'s call is a line without controls', () => {
