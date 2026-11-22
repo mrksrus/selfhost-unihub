@@ -25,6 +25,9 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 - The relay for calls is now also offered over TCP port 3478 when
   `TURN_URLS` names a `turn:` address without a transport, as the
   examples do, so calls from networks that block UDP can use it.
+- When the start refuses the relay's secret or `TURN_EXTERNAL_IP` (and logs a
+  warning), the relay is no longer offered to devices and the Server page no
+  longer says it is configured.
 
 ## 0.35.0
 
