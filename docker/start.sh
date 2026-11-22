@@ -152,6 +152,9 @@ if [ -n "$turn_secret" ]; then
   ) &
 fi
 
+# A relay left off is not offered: the API tells devices about none, and the Server page says it is not configured.
+[ -n "$turn_secret" ] || unset TURN_URLS
+
 # The supervisor exits if either service dies, allowing the existing Docker
 # restart policy to recover the whole app. It also forwards shutdown signals.
 export UNIHUB_API_START_DELAY_SECONDS

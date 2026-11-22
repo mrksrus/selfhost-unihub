@@ -330,11 +330,18 @@ done
 # A port above 1023 needs no NET_BIND_SERVICE. 4000 is the API's own port
 # inside the container: Nginx gets it and the API moves to 4001.
 start_variant 4000 --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add SETGID --cap-add SETUID \
-  -e "TURN_SECRET=$turn_secret" -e TURN_EXTERNAL_IP=203.0.113.7/10.0.0.1
+  -e "TURN_SECRET=$turn_secret" -e TURN_EXTERNAL_IP=203.0.113.7/10.0.0.1 -e TURN_URLS=turn:localhost:3478
 # A public/private pair would allow the private address: a warning, and nothing listens on the relay's port.
 variant_log="$(docker logs "${container_name}-variant" 2>&1)"
 [[ "$variant_log" == *'TURN_EXTERNAL_IP must be one IPv4 or IPv6 address'* && "$variant_log" != *'without TURN_URLS'* ]] \
   || { echo 'A TURN_EXTERNAL_IP with / must turn the relay off with one warning.' >&2; exit 1; }
+# Nor is the relay offered: the supervisor and the API do not have its addresses.
+docker exec "${container_name}-variant" node -e '
+const fs=require("node:fs");
+const told=fs.readdirSync("/proc").filter(pid=>/^\d+$/.test(pid)&&Number(pid)!==process.pid).filter(pid=>{try{
+  return fs.readFileSync(`/proc/${pid}/cmdline`,"utf8").includes("/app/api/")&&fs.readFileSync(`/proc/${pid}/environ`,"utf8").split("\0").some(entry=>entry.startsWith("TURN_URLS="))}catch{return false}});
+if(told.length)throw new Error(`The relay is off, yet processes ${told} would offer it (TURN_URLS)`);
+console.log("The relay is off and not offered")'
 node "$script_dir/relay-smoke.mts"
 stop_variant
 docker run --rm --network none --entrypoint chown \
