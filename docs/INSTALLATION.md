@@ -361,6 +361,12 @@ other machines on those networks and of this server itself, through Docker's
 gateway, become reachable through the relay for anyone signed in. The relay
 carries UDP only.
 
+One own address is open: on Docker's network the container's IPv4 address,
+where nothing but the relay receives UDP, so that two devices that both need
+the relay reach each other through it. With host networking the container's
+addresses are the server's, with the server's own UDP services, and stay
+refused; a call between two such devices does not connect there.
+
 **Check it.** `docker compose logs unihub` shows "Starting the relay for
 calls" and coturn's own lines; a warning names a missing `TURN_URLS` or
 secret, or a value the relay refused. From a computer on another network,

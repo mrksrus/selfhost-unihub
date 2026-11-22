@@ -123,6 +123,16 @@ if [ -n "$turn_secret" ]; then
   # Private networks and carrier-grade NAT, unless everyone calls from one private network or VPN.
   [ "${TURN_ALLOW_PRIVATE_PEERS:-}" = true ] || turn_denied="$turn_denied 10.0.0.0-10.255.255.255
     172.16.0.0-172.31.255.255 192.168.0.0-192.168.255.255 100.64.0.0-100.127.255.255 fc00::-fdff:ffff:ffff:ffff:ffff:ffff:ffff:ffff"
+  # Two devices that both need the relay: each one's peer is another allocation on the
+  # container's own IPv4 address. coturn checks peers by address alone and its allow list
+  # wins over the denied ranges, so the own address is allowed only in a network namespace
+  # of the container's own (every interface but loopback the end of a pair, as on Docker's
+  # bridge), where nothing but the relay receives UDP. On the host's network the address
+  # is the host's, with the host's UDP services, and stays refused.
+  turn_allowed="$(printf '%s\n' $turn_own_ipv4 | grep -v '^127\.')"
+  for net in /sys/class/net/*; do
+    [ "${net##*/}" = lo ] || [ "$(cat "$net/iflink" 2>/dev/null)" != "$(cat "$net/ifindex" 2>/dev/null)" ] || turn_allowed=
+  done
   # max-bps is bytes per second each way per allocation: 512 kbit/s, about five times a voice call.
   (
     umask 077 && exec > "$turn_dir/turnserver.conf" || exit 1
@@ -132,6 +142,7 @@ if [ -n "$turn_secret" ]; then
     [ -z "${TURN_EXTERNAL_IP:-}" ] || echo "external-ip=$TURN_EXTERNAL_IP"
     [ -z "$turn_user" ] || printf '%s\n' "proc-user=$turn_user" "proc-group=$turn_group"
     for peer in $turn_denied; do echo "denied-peer-ip=$peer"; done
+    for peer in $turn_allowed; do echo "allowed-peer-ip=$peer"; done
   ) || exit 1
   echo "✓ Starting the relay for calls on port 3478..."
   # Mail, calendars and chat matter more than relayed calls: the relay's end is only logged.
