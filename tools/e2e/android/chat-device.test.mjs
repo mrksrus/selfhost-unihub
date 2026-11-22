@@ -94,7 +94,8 @@ test('the app signed in fresh waits for Chat and gets no chat notification; appr
     const browserSees = mine.getByRole('list', { name: `Messages with ${blairName}` });
     await browserSees.getByText(first, { exact: true }).waitFor({ timeout: 120_000 });
 
-    // The app, signed in fresh with notifications on, waits: Chat shows no chat.
+    // The app, signed in fresh with notifications on, waits: Chat shows no chat. The test above left the administrator signed in.
+    await signOutApp();
     app = await openApp({ email: me.email });
     const { page } = app;
     const enabled = await bridgeMessage(page, 'notifications', 'enable', {}, { timeoutMs: 120_000 });
