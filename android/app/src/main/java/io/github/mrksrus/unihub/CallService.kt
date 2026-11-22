@@ -183,7 +183,9 @@ class CallService : Service() {
                     ended(id, DisconnectCause.ERROR, server = true, failed = true)
                 }
             }
-            main.postDelayed({ if (current === call && call.control == null) ended(id, DisconnectCause.ERROR, server = true, failed = true) }, TELECOM_MS)
+            main.postDelayed({
+                if (current === call && call.control == null) { ended(id, DisconnectCause.ERROR, server = true, failed = true); call.job?.cancel() }
+            }, TELECOM_MS)
             // Not answered at the server by then: the server made it a missed call.
             main.postDelayed({ if (current === call && !call.atServer) ended(id, DisconnectCause.MISSED) }, RING_MS)
         }
@@ -368,7 +370,7 @@ class CallService : Service() {
 
         // Before Telecom has the call, `ring` hangs up once it does. Not in the call's own scope, which a failure cancels.
         private fun hangUp(call: Call, cause: Int) {
-            val control = call.control ?: return run { call.job?.cancel() }
+            val control = call.control ?: return
             scope.launch {
                 control.disconnect(DisconnectCause(cause))
                 call.job?.cancel()
