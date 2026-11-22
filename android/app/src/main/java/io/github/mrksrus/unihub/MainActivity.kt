@@ -673,9 +673,7 @@ class MainActivity : Activity() {
             notificationsServer = server
             AppNotifications.markAsked(this)
             AppLock.handOff()
-            // The microphone too: a call that rings over the lock screen cannot ask for it.
-            val microphone = Manifest.permission.RECORD_AUDIO.takeIf { Calls.supported(this) && checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
-            requestPermissions(listOfNotNull(Manifest.permission.POST_NOTIFICATIONS, microphone).toTypedArray(), REQUEST_NOTIFICATIONS)
+            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQUEST_NOTIFICATIONS)
         } else {
             enableNotifications(server, reply)
         }
