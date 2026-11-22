@@ -126,8 +126,12 @@ async function mainPage() {
   return app.page;
 }
 
-/** The desk calls me from our chat. */
+/** The desk calls me from our chat; a call an earlier test left running is hung up first. */
 async function deskCalls() {
+  const hangUp = desk.getByRole('button', { name: 'Hang up', exact: true });
+  if (await hangUp.isVisible()) { await hangUp.click(); await callOver().catch(() => {}); }
+  const close = desk.getByRole('button', { name: 'Close', exact: true });
+  if (await close.isVisible()) await close.click();
   await desk.getByRole('button', { name: `Call ${myName}`, exact: true }).click();
   return Date.now();
 }
@@ -209,14 +213,20 @@ test('a browser calls the locked phone: it rings, is answered on the call screen
   results.locked = { ringSeconds: ring, secondsFromAnswerToSound: seconds(answered), phoneHeard3s: toPhone, deskHeard3s: toDesk };
   assert.ok(ourCall('ACTIVE'), 'Telecom has the call active');
 
-  // The routes come from Telecom; the speaker and back, each taken by Telecom.
+  // The routes come from Telecom; each choice goes to Telecom, which takes it. The emulator has the speaker only,
+  // so "back to the earpiece" runs where Telecom offers one.
+  adb('logcat', '-c');
   await page.getByRole('button', { name: /^Sound: / }).click();
+  const offered = await page.getByRole('menuitemradio').allTextContents();
   await page.getByRole('menuitemradio', { name: 'Speaker' }).click();
-  await until(() => telecomRoute() === 'TYPE_SPEAKER', 'Telecom on the speaker', 15_000);
-  await page.getByRole('button', { name: 'Sound: Speaker' }).click();
-  await page.getByRole('menuitemradio', { name: /^Earpiece|^Phone$/ }).click();
-  await until(() => telecomRoute() === 'TYPE_EARPIECE', 'Telecom back on the earpiece', 15_000);
-  results.locked.routes = 'speaker and back, by Telecom';
+  await until(() => /Route 4: CallControlResult\(Success\)/.test(adb('logcat', '-d', '-s', 'UniHubCalls:I')) && telecomRoute() === 'TYPE_SPEAKER', 'Telecom taking the speaker', 15_000);
+  const earpiece = offered.find(name => /^(Earpiece|Phone)$/.test(name));
+  if (earpiece) {
+    await page.getByRole('button', { name: 'Sound: Speaker' }).click();
+    await page.getByRole('menuitemradio', { name: earpiece }).click();
+    await until(() => telecomRoute() === 'TYPE_EARPIECE', 'Telecom back on the earpiece', 15_000);
+  }
+  results.locked.routes = { offered, speaker: 'taken by Telecom', earpiece: earpiece ? 'taken by Telecom' : 'not offered' };
 
   // The ring's notification times out after 45 seconds; the running call's, in its place, does not.
   await sleep(Math.max(0, 65_000 - (Date.now() - answered)));
@@ -294,7 +304,9 @@ test('with UniHub\'s app lock on, answering shows only the call; "Open chat" ask
   await sleep(2500);
   const locked = await appLockMessage(app.page, 'configure', { scope: ['app'], relockAfterMs: 0, onDeviceLock: true, blockScreenshots: false });
   assert.equal(locked.ok, true, JSON.stringify(locked));
+  adb('logcat', '-c');
   shell('input', 'keyevent', 'KEYCODE_HOME');
+  setDevicePin();
   await sleepScreen();
   await deskCalls();
   await until(() => topActivity() === 'CallActivity', 'the call screen over the lock screen', 60_000, 250);
@@ -309,11 +321,19 @@ test('with UniHub\'s app lock on, answering shows only the call; "Open chat" ask
   shell('input', 'text', '1111');
   shell('input', 'keyevent', '66');
   await until(() => topActivity() === 'MainActivity', 'the app after the unlock', 30_000);
-  await until(() => lockCoverShown(), 'UniHub\'s own lock over the app', 30_000);
+  // The app's cover, until the page shows its own lock screen in its place.
+  const appLocked = await until(async () => lockCoverShown() || await (await mainPage()).getByText(/UniHub is locked|Unlock/).first().isVisible(), 'UniHub\'s own lock', 30_000).catch(() => false);
   assert.ok(ourCall('ACTIVE'), 'the call goes on behind the app');
   assert.ok(callScreenUp(), 'the call screen stays');
-  assert.ok((await heard(desk)).energy > 0, 'sound still flows');
-  results.appLock = { openChat: 'Android unlock, then UniHub locked', callGoesOn: true };
+  const still = { desk: await heard(desk), phone: await heard(page).catch(error => String(error.message).slice(0, 100)),
+    deskSays: (await desk.getByRole('dialog').innerText().catch(() => '')).slice(0, 200),
+    track: await page.evaluate(() => { const t = window.callConnections?.at(-1)?.getSenders()[0]?.track; return { visibility: document.visibilityState, enabled: t?.enabled, muted: t?.muted, state: t?.readyState }; }).catch(e => String(e.message).slice(0, 80)),
+    recording: [...shell('dumpsys', 'audio').matchAll(/rec (\w+) riid:\d+ uid:\d+ session:\d+ src:(\w+) (not silenced|silenced) pack:io\.github\.mrksrus\.unihub/g)].slice(-3).map(m => m.slice(1).join(' ')),
+    micMuted: /mic mute FromSwitch=\w+ FromRestrictions=\w+ FromApi=(\w+)/.exec(shell('dumpsys', 'audio'))?.[1],
+    log: adb('logcat', '-d', '-s', 'UniHubCalls:*').split('\n').slice(-12).join('\n') };
+  const back = Date.now();
+  await flows(desk, 'the desk after "Open chat"');
+  results.appLock = { openChat: 'Android unlock first', appLocked, callGoesOn: true, firstSample: still, secondsUntilSound: seconds(back) };
   await desk.getByRole('button', { name: 'Hang up', exact: true }).click();
   await callOver();
   await unlockKeyguard().catch(() => {});

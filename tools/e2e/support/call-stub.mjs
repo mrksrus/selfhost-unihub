@@ -62,7 +62,7 @@ const bridge = window.UniHubAndroid;
 // The page reports the call's state, as the server's /call page does (CallActivity).
 const tell = state => bridge.postMessage(JSON.stringify({ type: 'call', state, id: call, muted: false }));
 let pending = [], routes = [], state = 'ringing';
-const report = next => { state = next; document.getElementById('state').textContent = next; log('state', next); tell(next); };
+const showState = next => { state = next; document.getElementById('state').textContent = next; log('state', next); tell(next); };
 async function onSignal(data) {
   if (data.kind === 'command') {
     if (data.action === 'hangUp') hangUp();
@@ -70,7 +70,7 @@ async function onSignal(data) {
     if (route) bridge.postMessage(JSON.stringify({ type: 'call', action: 'route', route: route.id }));
     return;
   }
-  if (data.kind === 'hangup') { stop(); report('ended'); setTimeout(() => tell('none'), 500); return; }
+  if (data.kind === 'hangup') { stop(); showState('ended'); setTimeout(() => tell('none'), 500); return; }
   if (!pc) { pending.push(data); return; }
   if (data.kind === 'offer') {
     await pc.setRemoteDescription(data.description);
@@ -84,17 +84,17 @@ let starting = false;
 async function start() {
   if (starting || ended) return;
   starting = true;
-  report('connecting');
+  showState('connecting');
   let stream;
   try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
   catch (error) { log('microphone-failed', error.name + ': ' + error.message); return; }
   log('microphone', stream.getAudioTracks()[0].label);
   connect(stream.getAudioTracks()[0]);
-  pc.addEventListener('connectionstatechange', () => { if (pc.connectionState === 'connected' && state !== 'active') report('active'); });
+  pc.addEventListener('connectionstatechange', () => { if (pc.connectionState === 'connected' && state !== 'active') showState('active'); });
   const queued = pending; pending = [];
   for (const data of queued) await onSignal(data);
 }
-function hangUp() { if (ended) return; signal({ kind: 'hangup' }); stop(); report('ended'); setTimeout(() => tell('none'), 500); }
+function hangUp() { if (ended) return; signal({ kind: 'hangup' }); stop(); showState('ended'); setTimeout(() => tell('none'), 500); }
 bridge.addEventListener('message', event => {
   const message = JSON.parse(event.data);
   if (message.type !== 'call') return;
@@ -102,7 +102,7 @@ bridge.addEventListener('message', event => {
   if (!message.command) return;
   log('command', message.command);
   if (message.command === 'answer') start();
-  if ((message.command === 'hangUp' || message.command === 'decline') && !ended) { signal({ kind: 'hangup' }); stop(); report('ended'); }
+  if ((message.command === 'hangUp' || message.command === 'decline') && !ended) { signal({ kind: 'hangup' }); stop(); showState('ended'); }
 });
 document.getElementById('answer').onclick = start;
 document.getElementById('hangup').onclick = hangUp;
