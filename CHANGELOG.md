@@ -8,6 +8,14 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
 ## 0.35.1 (unreleased)
 
+### Added
+
+- The server can now carry a call's sound when the two devices cannot
+  connect directly: each end opens a WebSocket to UniHub, which passes the
+  sound, encrypted on the devices, from one end to the other without
+  reading or storing it. Up to 100 calls at once; signing out or a revoked
+  session closes it at once.
+
 ### Fixed
 
 - A call that fails before it is answered, for example because the other

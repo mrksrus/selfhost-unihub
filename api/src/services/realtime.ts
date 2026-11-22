@@ -9,8 +9,9 @@
 // with a module therefore never reaches a phone, and one published without a
 // module reaches every channel of the user. Every producer below names a
 // module, so phones receive nothing from them today.
-import { serverEvents } from './server-events';
+import { hashToken, serverEvents } from './server-events';
 import { androidStreams } from './android-push';
+import { callMedia } from './call-media';
 import { OPERATION_STATES } from './mail-engine/operation-states';
 import { JOB_KINDS } from './mail-engine/job-kinds';
 
@@ -39,7 +40,8 @@ interface MailJobHint {
 }
 interface OperationHint { accountId: string | null; operationIds: (string | null)[]; state: string | null }
 
-function createRealtime({ browser, devices }: { browser: BrowserBus; devices: Bus }) {
+// `media` is the calls' media sockets: a session's end closes them too.
+function createRealtime({ browser, devices, media = null }: { browser: BrowserBus; devices: Bus; media?: Pick<typeof callMedia, 'closeUser' | 'closeTokenHash'> | null }) {
   const buses = [browser, devices];
 
   function publishToUser<T>(userId: unknown, type: string, data: T, options: PublishOptions<T> = {}) {
@@ -63,21 +65,21 @@ function createRealtime({ browser, devices }: { browser: BrowserBus; devices: Bu
   function closeSession(token: unknown, { reason = 'session_ended' }: CloseOptions = {}) {
     let closed = 0;
     for (const bus of buses) closed += bus.closeToken(token, { reason });
-    return closed;
+    return closed + (media?.closeTokenHash(hashToken(token)) ?? 0);
   }
 
   /** Ends the streams of a session known by its stored token hash (a session ended from another device). */
   function closeSessionKey(key: string, { reason = 'session_ended' }: CloseOptions = {}) {
     let closed = 0;
     for (const bus of buses) closed += bus.closeTokenHash(key, { reason });
-    return closed;
+    return closed + (media?.closeTokenHash(key) ?? 0);
   }
 
   /** Ends a user's streams on every channel, except those of `exceptToken`. */
   function closeUser(userId: unknown, { exceptToken = null, reason = 'session_ended' }: CloseUserOptions = {}) {
     let closed = 0;
     for (const bus of buses) closed += bus.closeUser(userId, { exceptToken, reason });
-    return closed;
+    return closed + (media?.closeUser(userId, exceptToken) ?? 0);
   }
 
   function isOnline(userId: unknown) {
@@ -111,7 +113,7 @@ function createRealtime({ browser, devices }: { browser: BrowserBus; devices: Bu
   return { publishToUser, publishToUsers, publishToBrowsers, revalidateUser, closeSession, closeSessionKey, closeUser, isOnline, isPresent, onPresence, setUserModules, stats };
 }
 
-const realtime = createRealtime({ browser: serverEvents, devices: androidStreams });
+const realtime = createRealtime({ browser: serverEvents, devices: androidStreams, media: callMedia });
 
 // --- Mail event producers -------------------------------------------------
 // Each producer reduces its input to ids/states/counters before publishing.
