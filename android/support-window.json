@@ -22,10 +22,20 @@
   ],
   "releases": [
     {
+      "version": "0.35.0",
+      "apk": {
+        "versionCode": 35000,
+        "sha256": null,
+        "signing": "release"
+      },
+      "shell": "supported",
+      "note": "From this app the bridge speaks level 5: calls go through Android's call handling (Core-Telecom), ring while the app is closed and run in a call screen of their own at /call; the lock report sends `capabilities.calls: true` on Android 11 or later. Servers ring a device for calls only when it reports that; older apps ring only while open, in the page."
+    },
+    {
       "version": "0.34.0",
       "apk": {
         "versionCode": 34000,
-        "sha256": null,
+        "sha256": "deae3b8f4207d4ab5e4ac5a3cdf0b23d7a89eefab2171f3b4cfaa66541f24a61",
         "signing": "release"
       },
       "shell": "supported",
@@ -50,16 +60,6 @@
       },
       "shell": "supported",
       "note": "From this app the home-screen widgets look for `calendar-widgets`: only then do they read GET /api/widgets; against an older server they say the server needs an update. Older apps have no widgets."
-    },
-    {
-      "version": "0.31.0",
-      "apk": {
-        "versionCode": 31000,
-        "sha256": "82cfe569e50252be36a3488288cf9a6b4b9abdd13dcb043f8dfe26da9414dfe7",
-        "signing": "release"
-      },
-      "shell": "supported",
-      "note": "From this app the contacts sync also looks for `contacts-books`: only then does it read GET /api/address-books/phone and put shared books on the phone, read-only and one way. Older apps never see a shared book, so /api/contacts must keep leaving book rows out."
     }
   ],
   "handshake": {

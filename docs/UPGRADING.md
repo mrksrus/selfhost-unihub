@@ -50,7 +50,9 @@ chats ([Data recovery](DATA_RECOVERY.md#backup-versions-and-restore-behavior)).
 - **Android app.** Calls that ring while the app is closed or the phone is
   locked need the 0.35.0 app (offered under Settings → General → App) on
   Android 11 or later. Older apps ring only while they are open and say so
-  under Settings › Chat.
+  under Settings › Chat. The app window is now 0.35.0 back to 0.32.0; the
+  0.31.0 app leaves it
+  ([Android compatibility](ANDROID_COMPATIBILITY.md#current-window)).
 - **Browsers.** A call needs a browser with WebRTC and the microphone,
   which the browser asks for at the first call.
 - **API clients.** The new routes are under `/api/chat/calls` and

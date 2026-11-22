@@ -6,7 +6,7 @@ Read the [upgrade guide](docs/UPGRADING.md) before updating an existing
 installation, and keep a consistent backup of the database, uploads, configuration and
 secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
-## 0.35.0 (unreleased)
+## 0.35.0
 
 Voice calls between two colleagues, in the browser, the installed web app
 and the Android app, with the sound encrypted between the two devices; and
