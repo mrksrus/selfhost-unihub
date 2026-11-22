@@ -6,6 +6,14 @@ Read the [upgrade guide](docs/UPGRADING.md) before updating an existing
 installation, and keep a consistent backup of the database, uploads, configuration and
 secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
+## 0.35.1 (unreleased)
+
+### Fixed
+
+- A call that fails before it is answered, for example because the other
+  phone could not use its microphone, now says "<name> could not take the
+  call." instead of pointing at the relay for calls.
+
 ## 0.35.0
 
 Voice calls between two colleagues, in the browser, the installed web app

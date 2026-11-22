@@ -70,7 +70,10 @@ export function callWords(call: CallView, name: string | null, connected: boolea
     case 'busy': return call.reason ?? `${who} is on another call.`;
     case 'no-answer': return `${who} did not answer.`;
     case 'cancelled': return call.incoming ? `${who} hung up before you answered.` : 'Call cancelled.';
-    case 'failed': return call.reason ?? (connected ? 'The connection was lost and did not come back.' : 'Could not connect. Your administrator may need to set up the relay for calls.');
+    // Never answered: the other side could not take it (its microphone, its app), not the relay.
+    case 'failed': return call.reason ?? (connected ? 'The connection was lost and did not come back.'
+      : !call.incoming && !call.answered_at ? `${who} could not take the call.`
+      : 'Could not connect. Your administrator may need to set up the relay for calls.');
     case 'answered-elsewhere': return 'Answered on another device.';
     case 'other-tab': return 'You are on a call in another tab.';
     case 'microphone': return call.reason?.includes('no microphone') ? call.reason : `${call.reason ?? 'The microphone could not be used.'} ${ALLOW_MICROPHONE}`;
