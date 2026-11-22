@@ -48,8 +48,10 @@ export function ChatPassphraseGate({ engine, readiness, onLater, newKeyRefused }
   const waiting = readiness.state === 'waiting';
   const words = WORDS[readiness.state];
   const Icon = waiting ? LockKeyhole : KeyRound;
-  // The devices a new key waits for: the ones the server named, or the ones it will name.
-  const inChat = newKeyRefused ?? (waiting ? readiness.approvers : []);
+  // A refusal from before this screen opened may be out of date: a device can have been signed out in Settings since.
+  const [earlier] = useState(newKeyRefused);
+  // The devices a new key waits for: the ones the server named just now, or the ones it will name.
+  const inChat = (newKeyRefused !== earlier ? newKeyRefused : null) ?? (waiting ? readiness.approvers : []);
   // A device signed out a moment ago, in Settings, no longer stands in the way.
   useEffect(() => { if (waiting) void engine.sync().catch(() => undefined); }, [engine, waiting]);
   const [chosen, setChosen] = useState<string | null>(null);
