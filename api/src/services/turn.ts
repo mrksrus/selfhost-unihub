@@ -13,7 +13,9 @@ import { readSecret } from '../config';
 const LIFETIME_SECONDS = 12 * 60 * 60;
 
 function relay(): { urls: string[]; secret: string } | null {
-  const urls = (process.env.TURN_URLS ?? '').split(',').map(url => url.trim()).filter(Boolean);
+  // A turn: address without a transport is tried over UDP only: it is told for TCP as well, which the relay also takes.
+  const urls = [...new Set((process.env.TURN_URLS ?? '').split(',').map(url => url.trim()).filter(Boolean)
+    .flatMap(url => /^turn:[^?]+$/i.test(url) ? [`${url}?transport=udp`, `${url}?transport=tcp`] : [url]))];
   let secret: string | undefined;
   try { secret = readSecret('TURN_SECRET'); } catch { secret = undefined; }
   return urls.length && secret ? { urls, secret } : null;

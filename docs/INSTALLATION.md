@@ -323,7 +323,8 @@ and the public IP address explained below:
     UNIHUB_TURN_EXTERNAL_IP=
 
 `TURN_URLS` is the address devices are told: a name or IP address of this
-server that devices outside reach, and its port. Then uncomment the relay's
+server that devices outside reach, and its port. Devices are told it for
+UDP and for TCP, for networks that block UDP. Then uncomment the relay's
 three `ports:` lines in `docker-compose.yml` and run `docker compose up -d`.
 They are off by default because Docker opens a published port in the firewall
 and holds it even while nothing listens. Instead of the secret itself,
