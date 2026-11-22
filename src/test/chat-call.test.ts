@@ -3,6 +3,8 @@ import { ALEX, BLAIR, PASSPHRASES, browser, context, open, pair, server, settled
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { startChatCalls } from '@/lib/chat/call';
+import { callKey, callMediaKeys, type CallMediaEvents } from '@/lib/chat/call-media';
+import { openFrame, replayCheck, sealFrame } from '@/lib/chat/call-media.worker';
 import { fromBase64Url } from '@/lib/chat/bytes';
 import { open as openSealed, type SealKey } from '@/lib/chat/seal';
 import { ChatStore } from '@/lib/chat/store';
@@ -10,7 +12,34 @@ import type { ChatThreadCall } from '@/lib/chat/types';
 
 // Calls against the in-memory delivery service's call routes, with a fake
 // RTCPeerConnection that connects once both descriptions and a candidate of
-// the other side are in, while the network is up. Real sound is the e2e's.
+// the other side are in, while the network is up, and a fake path through
+// the server whose frames, refusals and slow starts the tests make. Real sound
+// is the e2e's.
+
+const media = vi.hoisted(() => {
+  const state = { unable: new Set<string>(), all: [] as FakeMedia[], gate: null as Promise<void> | null, who: () => '' };
+  class FakeMedia {
+    user = state.who();
+    started: { url: string; events: CallMediaEvents } | null = null;
+    server: boolean | null = null;
+    closed = false;
+    static async open() {
+      const user = state.who();
+      await state.gate;
+      if (state.unable.has(user)) return null;
+      const made = new FakeMedia();
+      made.user = user;
+      state.all.push(made);
+      return made;
+    }
+    start(url: string, _keys: unknown, events: CallMediaEvents) { this.started = { url, events }; }
+    route(server: boolean) { this.server = server; }
+    async play() {}
+    close() { this.closed = true; }
+  }
+  return { state, FakeMedia };
+});
+vi.mock('@/lib/chat/call-media', async original => ({ ...await original<typeof import('@/lib/chat/call-media')>(), CallMedia: media.FakeMedia }));
 
 chatDeliveryHooks();
 
@@ -67,6 +96,7 @@ class FakeConnection {
   close() { this.connectionState = 'closed'; }
 }
 vi.stubGlobal('RTCPeerConnection', FakeConnection);
+vi.stubGlobal('location', new URL('https://unihub.example/call'));
 vi.stubGlobal('Audio', class {
   srcObject: unknown = null;
   async play() {
@@ -151,6 +181,7 @@ describe('a call', () => {
     Object.assign(mic, { allow: true, asked: 0, tracks: [], holding: false, held: [] });
     Object.assign(speaker, { allow: true, played: [] });
     FakeConnection.all = [];
+    Object.assign(media.state, { unable: new Set(), all: [], gate: null, who: () => context.getStore()?.userId ?? '' });
   });
   afterEach(() => {
     phones.splice(0).forEach(item => item.as(calls => calls.close()));
@@ -184,7 +215,7 @@ describe('a call', () => {
     expect(alex.view()!.answered_at).not.toBeNull();
     expect(blair2.view()).toMatchObject({ state: 'ended', ended: 'answered-elsewhere', here: false });
     // Candidates went in batches, not one signal each.
-    expect(call().signals.length).toBeLessThanOrEqual(4);
+    expect(call().signals.filter(item => !item.payload.includes('"t":"key"')).length).toBeLessThanOrEqual(4);
 
     alex.as(calls => calls.mute(true));
     expect(alex.view()?.muted).toBe(true);
@@ -456,6 +487,118 @@ describe('a call', () => {
     await blairTab.as(calls => calls.start({ user_id: ALEX }, 'Alex Example'));
     await settle();
     expect(blairTab.view()).toMatchObject({ state: 'calling', here: true });
+  });
+});
+
+describe('a call through the server', () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] });
+    for (const name of ['setTimeout', 'setInterval'] as const) {
+      const fake = globalThis[name] as (callback: () => void, ms?: number) => unknown;
+      (globalThis as Record<string, unknown>)[name] = (callback: () => void, ms?: number) => { const run = AsyncLocalStorage.snapshot(); return fake(() => run(callback), ms); };
+    }
+    server.state.hint = users => phones.filter(item => users.includes(item.browser.userId)).forEach(item => item.as(calls => void calls.sync()));
+    // No direct connection comes up.
+    Object.assign(network, { up: false });
+    Object.assign(mic, { allow: true, asked: 0, tracks: [], holding: false, held: [] });
+    FakeConnection.all = [];
+    Object.assign(media.state, { unable: new Set(), all: [], gate: null, who: () => context.getStore()?.userId ?? '' });
+  });
+  afterEach(() => {
+    phones.splice(0).forEach(item => item.as(calls => calls.close()));
+    vi.useRealTimers();
+  });
+  const of = (user: string) => media.state.all.find(item => item.user === user && !item.closed);
+  const heard = (on: Phone) => on.as(() => of(on.browser.userId)!.started!.events.heard());
+  /** The keys' arithmetic runs outside the fake timers. */
+  const until = (check: () => void) => vi.waitFor(check, { timeout: 5000 });
+  async function dialled() {
+    const alex = phone([ALEX, 'a1']);
+    const blair = phone([BLAIR, 'b1']);
+    await alex.as(calls => calls.start({ user_id: BLAIR }, 'Blair Example'));
+    await settle();
+    await blair.as(calls => calls.answer());
+    await settle();
+    return { alex, blair };
+  }
+
+  it('carries the call while the direct connection is down, hands it to the direct one when that comes, and takes it back when it drops', async () => {
+    const { alex, blair } = await dialled();
+    // Both ends opened their path to the call's socket; nothing arrived yet.
+    await until(() => expect(of(BLAIR)?.started && of(ALEX)?.started).toBeTruthy());
+    expect([of(ALEX)?.started?.url, of(BLAIR)?.started?.url].map(url => url && new URL(url).pathname)).toEqual([`/api/chat/calls/${call().id}/media`, `/api/chat/calls/${call().id}/media`]);
+    expect([alex.view()?.state, blair.view()?.state]).toEqual(['connecting', 'connecting']);
+    heard(alex);
+    heard(blair);
+    expect(alex.view()).toMatchObject({ state: 'active', through_server: true });
+    expect([of(ALEX)!.server, of(BLAIR)!.server]).toEqual([true, true]);
+
+    // The direct connection comes: the server path stops sending and its sound is muted.
+    const [mine] = connections();
+    alex.as(() => mine.become('connected'));
+    expect(alex.view()).toMatchObject({ state: 'active', through_server: false });
+    expect(of(ALEX)!.server).toBe(false);
+    // It drops: the server path takes over at once while its frames come.
+    heard(alex);
+    alex.as(() => mine.become('failed'));
+    expect(alex.view()).toMatchObject({ state: 'active', through_server: true });
+    expect(of(ALEX)!.server).toBe(true);
+
+    // The frames stop too: reconnecting after two seconds, failed after thirty, with the reverse proxy named.
+    await settle(3000);
+    expect(alex.view()).toMatchObject({ state: 'reconnecting', through_server: false });
+    alex.as(() => of(ALEX)!.started!.events.refused('CHAT_CALL_MEDIA_UPGRADE', 'Upgrade required'));
+    await settle(30_000);
+    expect(alex.view()).toMatchObject({ state: 'ended', ended: 'failed', reason: expect.stringMatching(/reverse proxy/) });
+    expect(media.state.all.every(item => item.closed)).toBe(true);
+    expect(connections()).toEqual([]);
+  });
+
+  it('never starts where the other browser cannot carry it, and says which browser cannot', async () => {
+    media.state.unable.add(BLAIR);
+    const { alex, blair } = await dialled();
+    await until(() => expect(media.state.all.map(item => [item.user, !!item.started, item.closed])).toEqual([[ALEX, false, true]]));
+    await settle(31_000);
+    expect(alex.view()).toMatchObject({ state: 'ended', ended: 'failed', reason: 'The other person\'s browser cannot carry calls between networks.' });
+    expect(blair.view()).toMatchObject({ state: 'ended', ended: 'failed', reason: 'This browser cannot carry calls between networks.' });
+  });
+
+  it('a path that is ready only after the call ended is closed and never started', async () => {
+    let open!: () => void;
+    media.state.gate = new Promise<void>(resolve => { open = resolve; });
+    const { alex, blair } = await dialled();
+    await alex.as(calls => calls.hangUp());
+    await settle();
+    const signals = server.messages.length;
+    open();
+    await settle();
+    await until(() => expect(media.state.all.map(item => [item.started, item.closed])).toEqual([[null, true], [null, true]]));
+    expect(server.messages.length).toBe(signals);
+    expect(blair.view()).toMatchObject({ state: 'ended', ended: 'hung-up' });
+  });
+});
+
+describe('a call\'s frames through the server', () => {
+  it('open only under the key of their direction and call, unchanged, and once', async () => {
+    const [alex, blair] = await Promise.all([callKey(), callKey()]);
+    const sending = await callMediaKeys('call-1', alex.pair, alex.raw, blair.raw, true);
+    const receiving = await callMediaKeys('call-1', blair.pair, alex.raw, blair.raw, false);
+    const packet = new Uint8Array([5, 6, 7, 8]);
+    const frame = await sealFrame(sending.send, sending.sendSalt, 7, packet);
+    expect(await openFrame(receiving.receive, receiving.receiveSalt, frame)).toEqual({ sequence: 7, packet });
+    // A changed header (the sender's byte) or ciphertext is refused.
+    for (const at of [1, frame.length - 1]) {
+      const changed = frame.slice();
+      changed[at] ^= 1;
+      expect(await openFrame(receiving.receive, receiving.receiveSalt, changed)).toBeNull();
+    }
+    // The other direction has its own key, and another call other keys.
+    expect(await openFrame(sending.receive, sending.receiveSalt, frame)).toBeNull();
+    const other = await callMediaKeys('call-2', blair.pair, alex.raw, blair.raw, false);
+    expect(await openFrame(other.receive, other.receiveSalt, frame)).toBeNull();
+
+    const fresh = replayCheck();
+    expect([100, 100, 60, 50, 49].map(fresh)).toEqual([true, false, true, true, false]);
   });
 });
 

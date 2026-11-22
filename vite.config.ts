@@ -39,7 +39,7 @@ function recordingUploadsWorker(): Plugin {
 
 // Keep classic worker URLs stable while authoring their source in TypeScript.
 function classicWorkers(): Plugin {
-  const files = ["sw-custom.js", "audio-recorder-worklet.js"];
+  const files = ["sw-custom.js", "audio-recorder-worklet.js", "call-media-worklet.js"];
   return {
     name: "unihub-classic-workers",
     configureServer(server) {

@@ -10,6 +10,14 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
 ### Added
 
+- When two devices cannot connect directly for a call (on different
+  networks without a relay), the call's sound now goes through UniHub's own
+  web connection, encrypted on the two devices with a key made for that call,
+  which the server cannot work out. The direct connection, and a configured
+  relay, are still tried first and take over as soon as they connect. The
+  reverse proxy in front of UniHub must pass WebSockets; a call that cannot
+  connect either way then says so. Browsers without WebCodecs audio (Firefox
+  on Android, Safari before 26) still call directly only.
 - The server can now carry a call's sound when the two devices cannot
   connect directly: each end opens a WebSocket to UniHub, which passes the
   sound, encrypted on the devices, from one end to the other without
