@@ -1,7 +1,8 @@
 // Voice calls on this device: one logic for the browser, the installed web
 // app and the Android app's call screen (/call). The server rings and carries
 // the signals as rows (contracts/chat.ts); the sound goes from device to
-// device over the browser's own RTCPeerConnection, encrypted by WebRTC. The
+// device over the browser's own RTCPeerConnection, encrypted by WebRTC, and
+// through UniHub (call-media.ts) while that connection is not up. The
 // caller makes every offer, a restart included, so there is no negotiation to
 // settle. One tab of the device holds a call (a Web Lock): only that tab
 // touches the microphone and the connection; the others show that it is held
@@ -9,6 +10,8 @@
 import { ApiError, hasCode, policyRefusal } from '@/lib/api-error';
 import { onAppEvent } from '@/lib/app-events';
 import { chatApi, unreachable } from '@/lib/chat-api';
+import { fromBase64Url, toBase64Url } from '@/lib/chat/bytes';
+import { CallMedia, callKey, callMediaKeys } from '@/lib/chat/call-media';
 import type { ChatCall, ChatCallAnswerResponse, ChatCallOutcome, ChatCallStartRequest, ChatCallStartResponse, ChatIceServer } from '../../../api/src/contracts/chat';
 
 const ALIVE_MS = 30_000;
@@ -18,6 +21,8 @@ const BATCH_MS = 250;
 /** The server's ring time and a margin for its sweep, from when this page first saw the call (the device's clock may be off): a call still ringing then stops here without waiting for a hint. */
 const RING_MS = 45_000 + 5_000;
 const LOCK = 'unihub-call:';
+/** The server path carries the call while the other end's frames came this recently. */
+const HEARD_MS = 2000;
 
 /**
  * - `calling`: this person called and it rings on the other side (play the ring-back);
@@ -64,6 +69,8 @@ export interface CallView {
   silenced: boolean;
   /** The start was refused under the administrator's rule on calls (`reason` says for whom): the screens keep "Call" greyed for that person. */
   forbidden: boolean;
+  /** The sound goes through UniHub's server now, not directly between the devices. */
+  through_server: boolean;
 }
 
 export interface ChatCalls {
@@ -84,9 +91,11 @@ export interface ChatCalls {
   dismiss(): void;
 }
 
-type Signal = { t: 'offer' | 'answer'; sdp: string } | { t: 'candidates'; c: RTCIceCandidateInit[] } | { t: 'restart' };
+/** `key`: this end's public half for the server path (empty without one), and whether it can carry the path. */
+type Signal = { t: 'offer' | 'answer'; sdp: string } | { t: 'candidates'; c: RTCIceCandidateInit[] } | { t: 'restart' } | { t: 'key'; k: string; media: boolean };
 
 const ENDINGS: Record<ChatCallOutcome, CallEnding> = { answered: 'hung-up', missed: 'no-answer', cancelled: 'cancelled', declined: 'declined', busy: 'busy', failed: 'failed' };
+const PROXY = 'Calls between networks need WebSockets, which the reverse proxy in front of UniHub does not pass on. Your administrator can switch them on.';
 const said = (error: unknown) => policyRefusal(error)?.reason ?? (error instanceof Error ? error.message : null);
 
 class Calls implements ChatCalls {
@@ -99,6 +108,14 @@ class Calls implements ChatCalls {
   private stream: MediaStream | null = null;
   private audio: HTMLAudioElement | null = null;
   private unlock: (() => void) | null = null;
+  /** The server path: this end's key and whether it can carry the path, the other end's half, this end's media, the other end's last frame, why the socket was refused. */
+  private own: { key: Awaited<ReturnType<typeof callKey>> | null; able: boolean } | null = null;
+  private peer: { key: Uint8Array<ArrayBuffer> | null; media: boolean } | null = null;
+  private media: CallMedia | null = null;
+  private started = false;
+  private heardAt = 0;
+  private refusal: string | null = null;
+  private watch: ReturnType<typeof setInterval> | undefined;
   /** The other end's signals read so far; candidates to post, and received ones waiting for the remote description. */
   private after = 0;
   private outgoing: RTCIceCandidateInit[] = [];
@@ -177,7 +194,7 @@ class Calls implements ChatCalls {
 
   private viewOf(call: ChatCall, here: boolean): CallView {
     const incoming = call.callee_user_id === this.me;
-    return { id: call.id, conversation_id: call.conversation_id, incoming, ended: null, reason: null, answered_at: call.answered_at, muted: false, here, sound: null, silenced: false, forbidden: false,
+    return { id: call.id, conversation_id: call.conversation_id, incoming, ended: null, reason: null, answered_at: call.answered_at, muted: false, here, sound: null, silenced: false, forbidden: false, through_server: false,
       peer: incoming ? { user_id: call.caller_user_id, name: call.caller_name } : { user_id: call.callee_user_id, name: call.callee_name },
       state: call.state === 'ringing' ? (incoming ? 'ringing' : 'calling') : 'connecting' };
   }
@@ -215,11 +232,16 @@ class Calls implements ChatCalls {
   /** The call this tab holds, as the server has it now. */
   private async follow(call: ChatCall) {
     // Whether it was answered tells a failure of the other side from one of the connection.
-    if (call.state === 'ended') { this.update({ answered_at: call.answered_at }); return this.finish(ENDINGS[call.outcome ?? 'failed']); }
+    if (call.state === 'ended') {
+      this.update({ answered_at: call.answered_at });
+      const ending = ENDINGS[call.outcome ?? 'failed'];
+      return this.finish(ending, ending === 'failed' ? this.why() : null);
+    }
     if (call.state !== 'active') return;
     if (this.view!.state === 'calling') {
       this.update({ state: 'connecting', answered_at: call.answered_at });
       this.connectBy();
+      void this.offerMedia(this.attempt);
     }
     if (this.pc) await this.readSignals();
   }
@@ -261,7 +283,7 @@ class Calls implements ChatCalls {
     if (view && view.state !== 'ended') throw new Error('You are on a call.');
     const attempt = this.attempt;
     this.set({ id: null, conversation_id: 'conversation_id' in target ? target.conversation_id : null, peer: { user_id: 'user_id' in target ? target.user_id : null, name },
-      incoming: false, state: 'calling', ended: null, reason: null, answered_at: null, muted: false, here: true, sound: null, silenced: false, forbidden: false });
+      incoming: false, state: 'calling', ended: null, reason: null, answered_at: null, muted: false, here: true, sound: null, silenced: false, forbidden: false, through_server: false });
     if (!await this.take(attempt)) return;
     let answer: ChatCallStartResponse;
     try {
@@ -330,6 +352,7 @@ class Calls implements ChatCalls {
     if (this.stale(attempt)) { void chatApi.endCall(id).catch(() => undefined); return; }
     this.update({ answered_at: answer.call.answered_at });
     await this.connect(id, answer.ice_servers, false, attempt);
+    void this.offerMedia(attempt);
     // The offer waits among the signals.
     await this.sync();
   }
@@ -360,9 +383,9 @@ class Calls implements ChatCalls {
   }
 
   play() {
-    const audio = this.audio;
-    const silenced = (silenced: boolean) => { if (audio === this.audio) this.update({ silenced }); };
-    void audio?.play().then(() => silenced(false), () => silenced(true));
+    const audio = this.audio, media = this.media;
+    const silenced = (silenced: boolean) => { if (audio === this.audio && media === this.media) this.update({ silenced }); };
+    void Promise.all([audio?.play(), media?.play()]).then(() => silenced(false), () => silenced(true));
   }
 
   dismiss() {
@@ -440,15 +463,74 @@ class Calls implements ChatCalls {
 
   private connection(pc: RTCPeerConnection) {
     if (pc !== this.pc) return;
-    if (pc.connectionState === 'connected') {
+    if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') this.reconnect();
+    this.refresh();
+  }
+
+  /**
+   * Which path carries the sound: the direct connection while it is up; otherwise this end sends
+   * through the server and plays what the server brings. The call is active while either carries it.
+   */
+  private refresh() {
+    const pc = this.pc, view = this.view;
+    if (!pc || !view || !this.holds() || view.state === 'calling') return;
+    const direct = pc.connectionState === 'connected';
+    const server = !direct && Date.now() - this.heardAt < HEARD_MS;
+    this.media?.route(!direct);
+    if (direct || server) {
       clearTimeout(this.deadline);
       this.deadline = undefined;
-      this.update({ state: 'active' });
-    } else if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
-      if (this.view?.state === 'active') this.update({ state: 'reconnecting' });
+      this.update({ state: 'active', through_server: server });
+    } else {
+      if (view.state === 'active') this.update({ state: 'reconnecting', through_server: false });
       this.connectBy();
-      this.reconnect();
     }
+  }
+
+  // --- Through the server ------------------------------------------------------------------
+
+  /** This end of the server path: its key, and whether this browser can carry the path, go to the other end. */
+  private async offerMedia(attempt: number) {
+    if (!this.stream) return;
+    const [key, media] = await Promise.all([callKey().catch(() => null), CallMedia.open(this.stream)]);
+    if (this.stale(attempt) || !key) media?.close();
+    if (this.stale(attempt)) return;
+    this.own = { key, able: !!(key && media) };
+    this.media = key ? media : null;
+    await this.signal({ t: 'key', k: key ? toBase64Url(key.raw) : '', media: this.own.able });
+    await this.startMedia();
+  }
+
+  /** Starts the path once both halves are known; where the other end cannot carry it, this end's media goes. */
+  private async startMedia() {
+    const { own, peer, media } = this, id = this.view?.id, attempt = this.attempt;
+    if (!own?.key || !peer || !media || !id || this.started || !this.holds()) return;
+    this.started = true;
+    const incoming = this.view!.incoming;
+    const keys = peer.key && peer.media ? await callMediaKeys(id, own.key.pair, incoming ? peer.key : own.key.raw, incoming ? own.key.raw : peer.key, !incoming).catch(() => null) : null;
+    if (this.stale(attempt)) return;
+    if (!keys) {
+      media.close();
+      this.media = null;
+      return;
+    }
+    // The page's own origin: the socket goes through the request boundary as every request.
+    media.start(new URL(`/api/chat/calls/${id}/media`, location.href).href, keys, {
+      heard: () => { if (media !== this.media) return; this.heardAt = Date.now(); this.refresh(); },
+      refused: (code, error) => { if (media === this.media) this.refusal = code === 'CHAT_CALL_MEDIA_UPGRADE' ? PROXY : code === 'CHAT_CALL_MEDIA_BUSY' ? error : null; },
+      track: () => { if (media === this.media) this.play(); },
+    });
+    // Frames that stop arriving are noticed without an event.
+    this.watch = setInterval(() => this.refresh(), 1000);
+    this.refresh();
+  }
+
+  /** Why neither path carried the call, where it is known. */
+  private why() {
+    if (this.own && !this.own.able) return 'This browser cannot carry calls between networks.';
+    // No name: the screen shows this also while Chat is locked.
+    if (this.peer && !this.peer.media) return 'The other person\'s browser cannot carry calls between networks.';
+    return this.refusal;
   }
 
   /** A broken connection or a change of network: the caller restarts it, the callee asks for that. */
@@ -520,6 +602,10 @@ class Calls implements ChatCalls {
         else this.incoming.push(...signal.c);
       } else if (signal.t === 'restart' && !this.view!.incoming) {
         await this.restart();
+      } else if (signal.t === 'key' && !this.peer && typeof signal.k === 'string') {
+        this.peer = { key: signal.k ? fromBase64Url(signal.k) : null, media: signal.media === true };
+        // Not awaited: the signals behind it (candidates) do not wait for the key's arithmetic.
+        void this.startMedia();
       }
     } catch {
       // A signal this connection cannot take costs only itself: a restart or the deadline follows.
@@ -533,21 +619,26 @@ class Calls implements ChatCalls {
 
   private async fail() {
     const id = this.view?.id;
-    this.finish('failed');
+    this.finish('failed', this.why());
     if (id) await chatApi.endCall(id, true).catch(() => undefined);
   }
 
-  /** Ends the call here; nothing of it is left: microphone, connection, timers, the tab's lock. */
+  /** Ends the call here; nothing of it is left: microphone, connections, the server path, timers, the tab's lock. */
   private finish(ending: CallEnding, reason: string | null = null, forbidden = false) {
     this.attempt++;
     clearTimeout(this.batch);
     clearInterval(this.alive);
     clearTimeout(this.deadline);
-    this.batch = this.alive = this.deadline = undefined;
+    clearInterval(this.watch);
+    this.batch = this.alive = this.deadline = this.watch = undefined;
     if (this.ring) clearTimeout(this.ring.timer);
     this.ring = null;
     this.pc?.close();
     this.pc = null;
+    this.media?.close();
+    this.own = this.peer = this.media = this.refusal = null;
+    this.started = false;
+    this.heardAt = 0;
     this.stream?.getTracks().forEach(track => track.stop());
     this.stream = null;
     if (this.audio) this.audio.srcObject = null;
@@ -557,7 +648,7 @@ class Calls implements ChatCalls {
     this.after = 0;
     this.outgoing = [];
     this.incoming = [];
-    if (this.view) this.set({ ...this.view, state: 'ended', ended: ending, reason, silenced: false, forbidden });
+    if (this.view) this.set({ ...this.view, state: 'ended', ended: ending, reason, silenced: false, forbidden, through_server: false });
   }
 }
 

@@ -11,7 +11,7 @@ vi.mock('@/hooks/use-chat-calls', () => ({ useChatCalls: () => state.held, useHa
 
 const view = (fields: Partial<CallView>): CallView => ({
   id: 'call-1', conversation_id: 'chat-blair', peer: { user_id: 'user-blair', name: 'Blair Example' }, incoming: false, state: 'active', ended: null, reason: null,
-  answered_at: new Date().toISOString(), muted: false, here: true, sound: null, silenced: false, forbidden: false, ...fields,
+  answered_at: new Date().toISOString(), muted: false, here: true, sound: null, silenced: false, forbidden: false, through_server: false, ...fields,
 });
 function show(call: CallView) {
   const calls = { subscribe: () => () => undefined, snapshot: () => call, sync: vi.fn(), start: vi.fn(), answer: vi.fn(), decline: vi.fn(), hangUp: vi.fn(), mute: vi.fn(), play: vi.fn(), dismiss: vi.fn() };
