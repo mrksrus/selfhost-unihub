@@ -111,20 +111,20 @@
       "bytes": 105512
     },
     "call-active-phone-dark.png": {
-      "sha256": "fdfda9a35363ab9803fb173cafd607635a6e96d4f41e2fa54b38df4afa83786b",
-      "bytes": 42183
+      "sha256": "52be81ad9ac59f993cbb3611141f7e6ce54cda3e59e48be6c482aebcc46ae3ba",
+      "bytes": 41821
     },
     "call-active-phone-light.png": {
-      "sha256": "1c98e04934dd0b60cf2587cbe851ded1000cd05cdbc05fc192f93863ce5cde46",
-      "bytes": 44786
+      "sha256": "803035a7e0bc88b218f2768da560e9c415c2a397e90c6e0beafe9458197b20b5",
+      "bytes": 44247
     },
     "call-active-wide-dark.png": {
-      "sha256": "e35e5922c5ec762778205e1f47e7f9fb7654063dc5ea87a32a3c02016690b7ce",
-      "bytes": 84499
+      "sha256": "d649b6095430c7f85a1cd8e6f3424362d5649f15dfb2730285b23607cc9c9446",
+      "bytes": 85369
     },
     "call-active-wide-light.png": {
-      "sha256": "551a37ae0d630fcfbd675a4249fb7bad13c0be19bd3ea15406c5fef5f2d5ce93",
-      "bytes": 87869
+      "sha256": "ba1660031a378b549d81763a3eb107c56aa9d67cf0537ba0a3aff9545b4381fa",
+      "bytes": 88594
     },
     "call-calling-phone-dark.png": {
       "sha256": "d510ef9e3520be7fdbfce404a91e6558d46751aace399e59ac5659700ff284ff",
@@ -143,20 +143,20 @@
       "bytes": 88686
     },
     "call-ended-phone-dark.png": {
-      "sha256": "e040e94c30d7f62a4ae5e382f7adfa9d2ef5e7d7028cd512b51c508059d4a005",
-      "bytes": 42809
+      "sha256": "af5ba9e30075cfc796cf2dda4363c7368f96cf584254cacaafd12ab8e6e27217",
+      "bytes": 42790
     },
     "call-ended-phone-light.png": {
-      "sha256": "86b1c0b31babc1c04ae577887a5f3d0220f43c88f95f24762dd92dda6c2e7c07",
-      "bytes": 46550
+      "sha256": "c14e8cffcdacd96da2f6f6eaa69807c5c16a1ef557b5617dcf2d1ce63c632eeb",
+      "bytes": 47116
     },
     "call-ended-wide-dark.png": {
-      "sha256": "ff0dd25bcedae0e1e2cbda7e7e3fbc4a94b21c794a9cc9efc2dc512a720fdaa1",
-      "bytes": 85730
+      "sha256": "70d60b273b9e56d68234890c222203b8cc3d73bc95840b95cfd3433d35a0e989",
+      "bytes": 92156
     },
     "call-ended-wide-light.png": {
-      "sha256": "3e42ba755ec126514f91506b9dfe30f7182dfd79519df711a91d1a7e5acc2c9b",
-      "bytes": 89862
+      "sha256": "5c080b02b8fcdcd39c7c3ee98d2baeaef922c8360748b1f9b0bd163c87ced274",
+      "bytes": 98332
     },
     "call-page-phone-dark.png": {
       "sha256": "a988e8f5a9da13ad5890e20358d167f935167964091ba6afb66f5bf3040d10ce",
@@ -653,6 +653,22 @@
     "server-calendars-wide-light.png": {
       "sha256": "ccbd95dd7710f863e5ca0224e76c1d4077a155bba5e78b81d24e2998c4b5685c",
       "bytes": 151441
+    },
+    "server-settings-phone-dark.png": {
+      "sha256": "71e3cb9b83b2dd138ea100773ad9c9818343f155dc803dab3e69247a4066b2e2",
+      "bytes": 68084
+    },
+    "server-settings-phone-light.png": {
+      "sha256": "e2cef603807ac22f456e7cc9491929f895df1d5403e125d802e44c0f6bc5ecf5",
+      "bytes": 72511
+    },
+    "server-settings-wide-dark.png": {
+      "sha256": "466595b72f86c62f7d4c4117ee932064574f8e6331fe5aeef19df59ae77a6e02",
+      "bytes": 136735
+    },
+    "server-settings-wide-light.png": {
+      "sha256": "a13773ce7a6f943a176d940d134939ad2035d81f7a5be36da6dc73f1b8c04f9d",
+      "bytes": 139906
     },
     "settings-app-lock-phone-dark.png": {
       "sha256": "bb4541e80707badd4bb3b434512d21718006a99a8e78a84d2de284130cec89ca",
@@ -2235,6 +2251,57 @@
         "call-reconnecting-phone-light.png",
         "call-reconnecting-wide-dark.png",
         "call-reconnecting-wide-light.png"
+      ],
+      "removed": []
+    },
+    {
+      "date": "2026-11-22T23:31:33.946Z",
+      "reason": "Calls through UniHub: 'Through UniHub' on the active call, the reverse proxy's words on the failed call, and Server settings with the calls' check",
+      "source": {
+        "commit": "0184b20701890ee0cd9992c4ae9d1fddd140e0e4",
+        "branch": "feat/0.35.1-p3-screens",
+        "dirty": true,
+        "digest": "84a88be0eda21b87cba133bf5a2408fb810f7500a394e819e93e2275a0d54b4f"
+      },
+      "render": {
+        "playwright": "1.64.0",
+        "browser": "chromium-headless-shell 156.0.8078.4",
+        "browserArgs": [
+          "--font-render-hinting=none",
+          "--disable-lcd-text",
+          "--force-color-profile=srgb",
+          "--disable-gpu",
+          "--disable-skia-runtime-opts",
+          "--num-raster-threads=1",
+          "--disable-partial-raster"
+        ],
+        "platform": "linux-x64",
+        "fonts": {
+          "@fontsource/inter": "5.3.0",
+          "@fontsource/jetbrains-mono": "5.3.0"
+        },
+        "fontconfig": "isolated",
+        "deviceScaleFactor": 1
+      },
+      "host": {
+        "node": "v26.12.1",
+        "ci": false
+      },
+      "added": [
+        "server-settings-phone-dark.png",
+        "server-settings-phone-light.png",
+        "server-settings-wide-dark.png",
+        "server-settings-wide-light.png"
+      ],
+      "changed": [
+        "call-active-phone-dark.png",
+        "call-active-phone-light.png",
+        "call-active-wide-dark.png",
+        "call-active-wide-light.png",
+        "call-ended-phone-dark.png",
+        "call-ended-phone-light.png",
+        "call-ended-wide-dark.png",
+        "call-ended-wide-light.png"
       ],
       "removed": []
     }

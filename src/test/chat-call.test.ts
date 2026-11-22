@@ -549,7 +549,7 @@ describe('a call through the server', () => {
     expect(alex.view()).toMatchObject({ state: 'reconnecting', through_server: false });
     alex.as(() => of(ALEX)!.started!.events.refused('CHAT_CALL_MEDIA_UPGRADE', 'Upgrade required'));
     await settle(30_000);
-    expect(alex.view()).toMatchObject({ state: 'ended', ended: 'failed', reason: expect.stringMatching(/reverse proxy/) });
+    expect(alex.view()).toMatchObject({ state: 'ended', ended: 'failed', cause: 'proxy' });
     expect(media.state.all.every(item => item.closed)).toBe(true);
     expect(connections()).toEqual([]);
   });
@@ -560,7 +560,7 @@ describe('a call through the server', () => {
     alex.as(() => of(ALEX)!.started!.events.refused('CHAT_CALL_MEDIA_UPGRADE', 'Upgrade required'));
     alex.as(() => of(ALEX)!.started!.events.opened());
     await settle(31_000);
-    expect(alex.view()).toMatchObject({ state: 'ended', ended: 'failed', reason: null });
+    expect(alex.view()).toMatchObject({ state: 'ended', ended: 'failed', cause: null });
   });
 
   it('never starts where the other browser cannot carry it, and says which browser cannot', async () => {
@@ -568,8 +568,8 @@ describe('a call through the server', () => {
     const { alex, blair } = await dialled();
     await until(() => expect(media.state.all.map(item => [item.user, !!item.started, item.closed])).toEqual([[ALEX, false, true]]));
     await settle(31_000);
-    expect(alex.view()).toMatchObject({ state: 'ended', ended: 'failed', reason: 'The other person\'s browser cannot carry calls between networks.' });
-    expect(blair.view()).toMatchObject({ state: 'ended', ended: 'failed', reason: 'This browser cannot carry calls between networks.' });
+    expect(alex.view()).toMatchObject({ state: 'ended', ended: 'failed', cause: 'other-browser' });
+    expect(blair.view()).toMatchObject({ state: 'ended', ended: 'failed', cause: 'this-browser' });
   });
 
   it('a path that is ready only after the call ended is closed and never started', async () => {

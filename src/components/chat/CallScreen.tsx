@@ -49,6 +49,7 @@ export function CallBody({ calls, call, name, connected, dialog, onAnswer, onOpe
         {(state === 'active' || state === 'reconnecting') && (
           <p role="timer" aria-label="Call time" className={cn('text-3xl font-semibold tabular-nums tracking-tight', state === 'reconnecting' && 'text-muted-foreground')}>{callTime(call)}</p>
         )}
+        {call.through_server && <p className="text-xs text-muted-foreground">Through UniHub</p>}
         {call.muted && !ended && <p className="text-sm text-muted-foreground">Your microphone is off.</p>}
       </div>
       {call.silenced && <Button variant="secondary" onClick={() => calls.play()}><Volume2 aria-hidden="true" />Tap for sound</Button>}

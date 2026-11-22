@@ -18,6 +18,16 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
   reverse proxy in front of UniHub must pass WebSockets; a call that cannot
   connect either way then says so. Browsers without WebCodecs audio (Firefox
   on Android, Safari before 26) still call directly only.
+- The call's screen says "Through UniHub" under the time while the sound
+  goes through UniHub's server. A call that cannot connect either way says
+  why where it is known: the reverse proxy does not pass WebSockets (an
+  administrator can switch on WebSocket support there), this browser or the
+  other person's cannot carry calls between networks, or UniHub is carrying
+  too many calls right now.
+- Server settings › Calls shows "Calls between networks: working" or
+  "blocked by the reverse proxy", checked from the administrator's own
+  browser, with a link to what the reverse proxy needs. The relay for calls
+  is now described as optional.
 - The server can now carry a call's sound when the two devices cannot
   connect directly: each end opens a WebSocket to UniHub, which passes the
   sound, encrypted on the devices, from one end to the other without

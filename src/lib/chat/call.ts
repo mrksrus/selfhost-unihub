@@ -71,7 +71,12 @@ export interface CallView {
   forbidden: boolean;
   /** The sound goes through UniHub's server now, not directly between the devices. */
   through_server: boolean;
+  /** Why a failed call could not go through UniHub either, where it is known. */
+  cause?: CallCause | null;
 }
+
+/** `proxy`: the reverse proxy refused the call's WebSocket; `busy`: UniHub carries too many calls; or which browser cannot carry the path. */
+export type CallCause = 'proxy' | 'busy' | 'this-browser' | 'other-browser';
 
 export interface ChatCalls {
   subscribe(listener: () => void): () => void;
@@ -95,7 +100,6 @@ export interface ChatCalls {
 type Signal = { t: 'offer' | 'answer'; sdp: string } | { t: 'candidates'; c: RTCIceCandidateInit[] } | { t: 'restart' } | { t: 'key'; k: string; media: boolean };
 
 const ENDINGS: Record<ChatCallOutcome, CallEnding> = { answered: 'hung-up', missed: 'no-answer', cancelled: 'cancelled', declined: 'declined', busy: 'busy', failed: 'failed' };
-const PROXY = 'Calls between networks need WebSockets, which the reverse proxy in front of UniHub does not pass on. Your administrator can switch them on.';
 const said = (error: unknown) => policyRefusal(error)?.reason ?? (error instanceof Error ? error.message : null);
 
 class Calls implements ChatCalls {
@@ -114,7 +118,7 @@ class Calls implements ChatCalls {
   private media: CallMedia | null = null;
   private started = false;
   private heardAt = 0;
-  private refusal: string | null = null;
+  private refusal: CallCause | null = null;
   private watch: ReturnType<typeof setInterval> | undefined;
   /** The other end's signals read so far; candidates to post, and received ones waiting for the remote description. */
   private after = 0;
@@ -235,7 +239,7 @@ class Calls implements ChatCalls {
     if (call.state === 'ended') {
       this.update({ answered_at: call.answered_at });
       const ending = ENDINGS[call.outcome ?? 'failed'];
-      return this.finish(ending, ending === 'failed' ? this.why() : null);
+      return this.finish(ending, null, false, ending === 'failed' ? this.why() : null);
     }
     if (call.state !== 'active') return;
     if (this.view!.state === 'calling') {
@@ -515,7 +519,7 @@ class Calls implements ChatCalls {
     media.start(new URL(`/api/chat/calls/${id}/media`, location.href).href, keys, {
       heard: () => { if (media !== this.media) return; this.heardAt = Date.now(); this.refresh(); },
       opened: () => { if (media === this.media) this.refusal = null; },
-      refused: (code, error) => { if (media === this.media) this.refusal = code === 'CHAT_CALL_MEDIA_UPGRADE' ? PROXY : code === 'CHAT_CALL_MEDIA_BUSY' ? error : null; },
+      refused: code => { if (media === this.media) this.refusal = code === 'CHAT_CALL_MEDIA_UPGRADE' ? 'proxy' : code === 'CHAT_CALL_MEDIA_BUSY' ? 'busy' : null; },
       track: () => { if (media === this.media) this.play(); },
     });
     // Frames that stop arriving are noticed without an event.
@@ -524,10 +528,9 @@ class Calls implements ChatCalls {
   }
 
   /** Why neither path carried the call, where it is known. */
-  private why() {
-    if (this.own && !this.own.able) return 'This browser cannot carry calls between networks.';
-    // No name: the screen shows this also while Chat is locked.
-    if (this.peer && !this.peer.media) return 'The other person\'s browser cannot carry calls between networks.';
+  private why(): CallCause | null {
+    if (this.own && !this.own.able) return 'this-browser';
+    if (this.peer && !this.peer.media) return 'other-browser';
     return this.refusal;
   }
 
@@ -617,12 +620,12 @@ class Calls implements ChatCalls {
 
   private async fail() {
     const id = this.view?.id;
-    this.finish('failed', this.why());
+    this.finish('failed', null, false, this.why());
     if (id) await chatApi.endCall(id, true).catch(() => undefined);
   }
 
   /** Ends the call here; nothing of it is left: microphone, connections, the server path, timers, the tab's lock. */
-  private finish(ending: CallEnding, reason: string | null = null, forbidden = false) {
+  private finish(ending: CallEnding, reason: string | null = null, forbidden = false, cause: CallCause | null = null) {
     this.attempt++;
     clearTimeout(this.batch);
     clearInterval(this.alive);
@@ -646,7 +649,7 @@ class Calls implements ChatCalls {
     this.after = 0;
     this.outgoing = [];
     this.incoming = [];
-    if (this.view) this.set({ ...this.view, state: 'ended', ended: ending, reason, silenced: false, forbidden, through_server: false });
+    if (this.view) this.set({ ...this.view, state: 'ended', ended: ending, reason, silenced: false, forbidden, through_server: false, cause });
   }
 }
 

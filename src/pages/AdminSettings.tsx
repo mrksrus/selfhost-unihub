@@ -1,7 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { can } from '@/lib/permissions';
 import { useAuth } from '@/contexts/useAuth';
-import { fetchSignupMode, fetchStorageOverview, saveSignupMode, signupModeQueryKey, storageQueryKey, type SignupMode, type StorageUser } from '@/lib/admin-api';
+import { callsCheckQueryKey, checkCallsBetweenNetworks, fetchSignupMode, fetchStorageOverview, saveSignupMode, signupModeQueryKey, storageQueryKey, type SignupMode, type StorageUser } from '@/lib/admin-api';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { LoadingState } from '@/components/ui/page-states';
 import { useToast } from '@/hooks/use-toast';
@@ -14,6 +14,13 @@ import { ROW_LINK } from '@/components/admin/person-words';
 import { cn } from '@/lib/utils';
 
 const CALLS_RELAY_DOCS_URL = 'https://github.com/mrksrus/selfhost-unihub/blob/main/docs/INSTALLATION.md#calls-and-the-relay';
+const CALLS_PROXY_DOCS_URL = 'https://github.com/mrksrus/selfhost-unihub/blob/main/docs/UPGRADING.md#0351-calls-between-networks';
+const CALLS_CHECK = {
+  working: ['working', 'Calls that cannot connect directly go through UniHub\'s own web connection, encrypted on the two devices.'],
+  blocked: ['blocked by the reverse proxy', 'The reverse proxy in front of UniHub does not pass WebSockets, so calls connect only where the two devices reach each other. Switch on WebSocket support in the reverse proxy.'],
+  unknown: ['could not be checked', 'This browser could not reach UniHub\'s check. Load the page again to check once more.'],
+  pending: ['checking…', 'This browser is checking whether the reverse proxy passes WebSockets.'],
+} as const;
 
 function formatBytes(value: number | null | undefined) {
   const bytes = Number(value) || 0;
@@ -45,6 +52,15 @@ const AdminSettings = () => {
   });
 
   const signupMode = server?.mode ?? 'disabled';
+
+  // From this browser, as a call's device would reach UniHub: the server cannot see its own reverse proxy.
+  const callsCheck = useQuery({
+    queryKey: callsCheckQueryKey,
+    queryFn: checkCallsBetweenNetworks,
+    enabled: can(user, 'server.settings'),
+    retry: false,
+  });
+  const [callsState, callsWords] = CALLS_CHECK[callsCheck.isPending ? 'pending' : callsCheck.data ?? 'unknown'];
 
   const { data: storageOverview, isLoading: storageLoading } = useQuery({
     queryKey: storageQueryKey,
@@ -86,8 +102,11 @@ const AdminSettings = () => {
       </SettingsSection>
 
       <SettingsSection title="Calls">
+        <SettingsRow label={`Calls between networks: ${callsState}`}
+          description={<span className="block max-w-prose">{callsWords}{' '}
+            <a href={CALLS_PROXY_DOCS_URL} target="_blank" rel="noopener noreferrer" className={cn(ROW_LINK, 'text-accent underline underline-offset-2')}>What the reverse proxy needs</a></span>} />
         <SettingsRow label={`Relay for calls: ${server?.callsRelay ? 'configured' : 'not configured'}`}
-          description={<span className="block max-w-prose">{server?.callsRelay ? 'Calls that cannot connect directly go through the relay, encrypted.' : 'Without it, calls connect only between devices on the same network.'}{' '}
+          description={<span className="block max-w-prose">{server?.callsRelay ? 'Calls that cannot connect directly try the relay, encrypted, before they go through UniHub.' : 'Optional. A relay can carry calls between networks better on poor mobile connections.'}{' '}
             <a href={CALLS_RELAY_DOCS_URL} target="_blank" rel="noopener noreferrer" className={cn(ROW_LINK, 'text-accent underline underline-offset-2')}>How to set up the relay</a></span>} />
       </SettingsSection>
 

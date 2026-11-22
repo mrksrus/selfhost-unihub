@@ -149,9 +149,9 @@ function calls(viewport: 'wide' | 'phone', theme: string) {
     for (const [name, call, shows] of [
       ['call-ringing', { incoming: true, state: 'ringing', here: false }, 'Answer'],
       ['call-calling', { state: 'calling' }, 'Hang up'],
-      ['call-active', { state: 'active', answered_at: CALL_ANSWERED_AT }, 'Hang up'],
+      ['call-active', { state: 'active', answered_at: CALL_ANSWERED_AT, through_server: true }, 'Hang up'],
       ['call-reconnecting', { state: 'reconnecting', answered_at: CALL_ANSWERED_AT, muted: true }, 'Hang up'],
-      ['call-ended', { state: 'ended', ended: 'failed', answered_at: CALL_ANSWERED_AT }, 'Close'],
+      ['call-ended', { state: 'ended', ended: 'failed', answered_at: CALL_ANSWERED_AT, cause: 'proxy' }, 'Close'],
     ] as const) {
       test(`${name} (${viewport}, ${theme})`, async ({ page, open, settle }) => {
         await withChat(page);
@@ -171,6 +171,16 @@ function calls(viewport: 'wide' | 'phone', theme: string) {
       await expect(page.getByRole('button', { name: 'Answer', exact: true })).toBeVisible();
       await settle();
       await expectBaseline(page, `call-page-${viewport}-${theme}.png`);
+    });
+
+    test.describe('as an administrator', () => {
+      test.use({ admin: true });
+      test(`server settings with the calls' check (${viewport}, ${theme})`, async ({ page, open, settle }) => {
+        await open('/admin/settings');
+        await expect(page.getByText('Calls between networks: blocked by the reverse proxy', { exact: true })).toBeVisible();
+        await settle();
+        await expectBaseline(page, `server-settings-${viewport}-${theme}.png`);
+      });
     });
 
     test(`calls in a chat (${viewport}, ${theme})`, async ({ page, open, settle }) => {

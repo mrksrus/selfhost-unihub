@@ -104,6 +104,18 @@ export async function fetchSignupMode(signal?: AbortSignal): Promise<{ mode: Sig
   const data = unwrap(await api.get<{ signup_mode: SignupMode; calls_relay?: boolean }>('/admin/settings/signup-mode', { signal }));
   return { mode: data?.signup_mode || 'disabled', callsRelay: !!data?.calls_relay };
 }
+export const callsCheckQueryKey = ['admin', 'calls-check'] as const;
+/** Whether a WebSocket from this browser reaches UniHub through the reverse proxy, as calls between networks need; null where that cannot be told. */
+export async function checkCallsBetweenNetworks(): Promise<'working' | 'blocked' | null> {
+  const opened = await new Promise<boolean>(resolve => {
+    const socket = new WebSocket(new URL('/api/chat/calls/check', location.href).href.replace(/^http/, 'ws'));
+    socket.onopen = () => { resolve(true); socket.close(); };
+    socket.onclose = () => resolve(false);
+  });
+  if (opened) return 'working';
+  // A refused socket tells nothing of why; only UniHub answers the same address without the upgrade with this code.
+  return (await api.get('/chat/calls/check')).code === 'CHAT_CALL_MEDIA_UPGRADE' ? 'blocked' : null;
+}
 export async function saveSignupMode(mode: SignupMode) {
   unwrap(await api.put('/admin/settings/signup-mode', { signup_mode: mode }));
 }
