@@ -28,7 +28,7 @@ const FAKE_MICROPHONE = ['--use-fake-device-for-media-stream', '--use-fake-ui-fo
 const WEBVIEW_FLAGS = '/data/local/tmp/webview-command-line';
 const shell = (...args) => adb('shell', ...args);
 const results = {};
-let chrome, desk, app, me, other, myName, deskName;
+let chrome, desk, app, me, other, myName, deskName, conversation;
 
 // Telecom's live calls (mCalls), not its history.
 const liveCalls = () => { const text = shell('dumpsys', 'telecom'); return text.slice(text.indexOf('mCalls:'), text.indexOf('mCallAudioManager:')); };
@@ -174,7 +174,8 @@ before(async () => {
   await app.page.goto(new URL('/chat', app.page.url()).href);
   await desk.goto(`${base}/contacts?book=company&contact=${me.id}`);
   await desk.getByRole('button', { name: 'Message', exact: true }).click();
-  await desk.waitForURL(/\/chat\?c=/, { timeout: 60_000 }).catch(async error => { await desk.screenshot({ path: `${process.env.TMPDIR ?? '.'}/calls-desk.png` }); throw error; });
+  await desk.waitForURL(/\/chat\?c=/, { timeout: 60_000 });
+  conversation = new URL(desk.url()).searchParams.get('c');
 });
 
 after(async () => {
@@ -196,8 +197,10 @@ test('a browser calls the locked phone: it rings, is answered on the call screen
   // The app closed (its task gone, its notification connection running): only the server's `call` message can ring it,
   // which the server sends only to an app whose lock report said it takes calls.
   shell('input', 'keyevent', 'KEYCODE_HOME');
-  for (const [, id] of shell('dumpsys', 'activity', 'recents').matchAll(/Task\{\w+ #(\d+) type=standard A=\d+:io\.github\.mrksrus\.unihub\}/g)) shell('am', 'stack', 'remove', id);
-  await until(() => !/A=\d+:io\.github\.mrksrus\.unihub\}/.test(shell('dumpsys', 'activity', 'recents')), 'the app\'s task gone', 10_000);
+  const appTasks = () => [...shell('dumpsys', 'activity', 'recents').matchAll(/Task\{\w+ #(\d+)[^\n]*?A=\d+:io\.github\.mrksrus\.unihub\}/g)].map(m => m[1]);
+  for (const id of appTasks()) { try { shell('am', 'stack', 'remove', id); } catch { /* not on this Android */ } }
+  // Where the task cannot be removed, the app is still in the background with its page paused.
+  const appClosed = await until(() => appTasks().length === 0, 'the app\'s task gone', 10_000).catch(() => false);
   setDevicePin();
   await sleepScreen();
   const called = await deskCalls();
@@ -210,7 +213,7 @@ test('a browser calls the locked phone: it rings, is answered on the call screen
   const answered = Date.now();
   const toPhone = await flows(page, 'the phone');
   const toDesk = await flows(desk, 'the desk');
-  results.locked = { ringSeconds: ring, secondsFromAnswerToSound: seconds(answered), phoneHeard3s: toPhone, deskHeard3s: toDesk };
+  results.locked = { appClosed, ringSeconds: ring, secondsFromAnswerToSound: seconds(answered), phoneHeard3s: toPhone, deskHeard3s: toDesk };
   assert.ok(ourCall('ACTIVE'), 'Telecom has the call active');
 
   // The routes come from Telecom; each choice goes to Telecom, which takes it. The emulator has the speaker only,
@@ -248,6 +251,10 @@ test('a browser calls the locked phone: it rings, is answered on the call screen
 });
 
 test('the phone calls the browser from the app\'s "Call"; the browser answers; the phone hangs up', { timeout: 300_000 }, async () => {
+  shell('am', 'start', '-n', `${PACKAGE}/.MainActivity`);
+  await sleep(3000);
+  await mainPage();
+  await app.page.goto(new URL(`/chat?c=${conversation}`, app.page.url()).href);
   await app.page.getByRole('button', { name: `Call ${deskName}`, exact: true }).click();
   const placed = Date.now();
   await until(() => ourCall(), 'Telecom holding the outgoing call', 30_000, 250);
