@@ -11,7 +11,7 @@
 // A browser calls the locked phone (answered on the call screen, sound both
 // ways, a speaker route through Telecom, the call notification after a
 // minute, the browser hangs up, both chats show the entry); the phone calls
-// the browser from the app's "Call"; Decline on the notification; a call
+// the browser from the app's "Call"; both call at once; Decline on the notification; a call
 // cancelled while it rings; UniHub's app lock on; the app's notifications off
 // with the app open; a headset's answer with nothing of the app on screen; an
 // answer without the microphone permission.
@@ -298,6 +298,22 @@ test('the phone calls the browser from the app\'s "Call"; the browser answers; t
   await callOver();
   await deskScreenGone();
   results.outgoing.hangUpSeconds = seconds(hung);
+});
+
+test('both call at once: the phone\'s "Call" meets the browser\'s ringing call and answers it', { timeout: 300_000 }, async () => {
+  shell('am', 'start', '-n', `${PACKAGE}/.MainActivity`);
+  await sleep(3000);
+  await mainPage();
+  await app.page.goto(new URL(`/chat?c=${conversation}`, app.page.url()).href);
+  await app.page.getByRole('button', { name: `Call ${deskName}`, exact: true }).click();
+  // Placed here first; the desk's call then reaches the server and rings the phone while the phone's call screen still loads.
+  await until(() => ourCall(), 'Telecom holding the outgoing call', 30_000, 100);
+  await deskCalls();
+  await desk.getByRole('dialog').getByRole('timer', { name: 'Call time' }).waitFor({ timeout: 60_000 });
+  results.bothAtOnce = { deskHeard3s: await flows(desk, 'the desk') };
+  await (await callPage()).getByRole('button', { name: 'Hang up', exact: true }).click();
+  await callOver();
+  await deskScreenGone();
 });
 
 test('Decline on the phone\'s notification: the caller reads "declined" within seconds', { timeout: 300_000 }, async () => {

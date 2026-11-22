@@ -255,7 +255,10 @@ class Calls implements ChatCalls {
   // --- Actions -----------------------------------------------------------------------------
 
   async start(target: ChatCallStartRequest, name: string) {
-    if (this.view && this.view.state !== 'ended') throw new Error('You are on a call.');
+    const view = this.view;
+    // Calling back the person whose call rings here answers it, as the server does when both call at once.
+    if (view?.state === 'ringing' && view.id && ('user_id' in target ? view.peer.user_id === target.user_id : view.conversation_id === target.conversation_id)) return this.answer(view.id);
+    if (view && view.state !== 'ended') throw new Error('You are on a call.');
     const attempt = this.attempt;
     this.set({ id: null, conversation_id: 'conversation_id' in target ? target.conversation_id : null, peer: { user_id: 'user_id' in target ? target.user_id : null, name },
       incoming: false, state: 'calling', ended: null, reason: null, answered_at: null, muted: false, here: true, sound: null, silenced: false, forbidden: false });

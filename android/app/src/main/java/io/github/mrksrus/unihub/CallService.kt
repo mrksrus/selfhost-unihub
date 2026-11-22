@@ -168,6 +168,8 @@ class CallService : Service() {
         /** Hands an incoming call to Telecom and rings once Telecom has it. */
         fun ring(context: Context, origin: String, id: String, name: String) {
             if (known(id)) return
+            // A call placed here that the server has not named yet: its page's start meets this call there and answers it when it is that person's.
+            if (current?.let { it.outgoing && it.serverId == null } == true) return
             // One call at a time: the caller hears at once that this phone cannot take it.
             if (current != null) return endAtServer(context, origin, id, failed = true)
             val call = Call(context, id, name, origin, peer = null).also { current = it }

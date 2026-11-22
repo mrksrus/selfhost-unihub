@@ -271,6 +271,19 @@ describe('a call', () => {
     expect(server.calls.size).toBe(2);
     expect([alex.view()?.state, blair.view()?.state]).toEqual(['active', 'active']);
     expect([alex.view()?.incoming, blair.view()?.incoming].sort()).toEqual([false, true]);
+    await Promise.all([alex.as(calls => calls.hangUp()), blair.as(calls => calls.hangUp())]);
+    await settle();
+    alex.as(calls => calls.dismiss());
+    blair.as(calls => calls.dismiss());
+
+    // Blair's call screen already shows Alex's call ringing when Blair calls Alex: it answers that call.
+    await alex.as(calls => calls.start({ user_id: BLAIR }, 'Blair Example'));
+    await settle();
+    expect(blair.view()?.state).toBe('ringing');
+    await blair.as(calls => calls.start({ user_id: ALEX }, 'Alex Example'));
+    await settle();
+    expect(server.calls.size).toBe(3);
+    expect([alex.view()?.state, blair.view()?.state]).toEqual(['active', 'active']);
   });
 
   it('restarts a broken connection, from either side, and fails the call after 30 seconds without one', async () => {
