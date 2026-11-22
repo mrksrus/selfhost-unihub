@@ -10,6 +10,10 @@ import { PageBody, PageHeader, PageShell } from '@/components/layout/PageShell';
 import { SettingsPanel } from '@/components/settings/SettingsPanel';
 import { AuditLog } from '@/components/settings/AuditLog';
 import { SettingsBlock, SettingsRow, SettingsSection } from '@/components/settings/SettingsLayout';
+import { ROW_LINK } from '@/components/admin/person-words';
+import { cn } from '@/lib/utils';
+
+const CALLS_RELAY_DOCS_URL = 'https://github.com/mrksrus/selfhost-unihub/blob/main/docs/INSTALLATION.md#calls-and-the-relay';
 
 function formatBytes(value: number | null | undefined) {
   const bytes = Number(value) || 0;
@@ -34,11 +38,13 @@ const AdminSettings = () => {
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
-  const { data: signupMode = 'disabled', isLoading } = useQuery({
+  const { data: server, isLoading } = useQuery({
     queryKey: signupModeQueryKey,
     queryFn: ({ signal }) => fetchSignupMode(signal),
     enabled: can(user, 'server.settings'),
   });
+
+  const signupMode = server?.mode ?? 'disabled';
 
   const { data: storageOverview, isLoading: storageLoading } = useQuery({
     queryKey: storageQueryKey,
@@ -77,6 +83,12 @@ const AdminSettings = () => {
             </Select>
           )}
         </SettingsRow>
+      </SettingsSection>
+
+      <SettingsSection title="Calls">
+        <SettingsRow label={`Relay for calls: ${server?.callsRelay ? 'configured' : 'not configured'}`}
+          description={<span className="block max-w-prose">{server?.callsRelay ? 'Calls that cannot connect directly go through the relay, encrypted.' : 'Without it, calls connect only between devices on the same network.'}{' '}
+            <a href={CALLS_RELAY_DOCS_URL} target="_blank" rel="noopener noreferrer" className={cn(ROW_LINK, 'text-accent underline underline-offset-2')}>How to set up the relay</a></span>} />
       </SettingsSection>
 
       <SettingsSection title="Storage">

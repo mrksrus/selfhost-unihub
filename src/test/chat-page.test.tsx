@@ -15,6 +15,7 @@ import { CHAT_CANDIDATES, CHAT_CONVERSATIONS, CHAT_THREADS, createFixtureChatEng
 // The engine is the screens' only source; the session and the router are the real ones.
 const state: { engine: ChatEngine | null } = { engine: null };
 vi.mock('@/hooks/use-chat-engine', () => ({ useChatEngine: () => state.engine }));
+vi.mock('@/hooks/use-chat-calls', () => ({ useChatCalls: () => null }));
 vi.mock('@/hooks/use-modules', () => ({ useModules: () => ({ canAccess: () => true }) }));
 vi.mock('@/lib/platform', async original => ({ ...await original<typeof import('@/lib/platform')>(), saveFile: vi.fn(async () => undefined) }));
 

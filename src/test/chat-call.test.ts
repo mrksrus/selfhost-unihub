@@ -475,9 +475,9 @@ describe('a call entry in the chat', { timeout: 60_000 }, () => {
       .map(item => [item.call.outcome, item.from_me]);
     expect(calls(blair)).toEqual([['missed', false], ['answered', false]]);
     expect(calls(alex)).toEqual([['missed', true], ['answered', true]]);
-    // Only the callee's missed call is unread; no entry shows as a message.
-    expect(blair.engine.snapshot().conversations[0]).toMatchObject({ unread: 1, last_message: null });
-    expect(alex.engine.snapshot().conversations[0].unread).toBe(0);
+    // Only the callee's missed call is unread; the chat list's last line is the newest call, for each from their side.
+    expect(blair.engine.snapshot().conversations[0]).toMatchObject({ unread: 1, last_message: { text: null, from_me: false, call: { outcome: 'answered' } } });
+    expect(alex.engine.snapshot().conversations[0]).toMatchObject({ unread: 0, last_message: { from_me: true, call: { outcome: 'answered' } } });
     // A call entry is neither edited nor deleted.
     const entry = server.messages.find(item => item.kind === 'call')!.id;
     expect(() => alex.engine.edit(entry, 'changed')).toThrow();

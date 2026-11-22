@@ -62,6 +62,8 @@ export interface CallView {
   sound: 'ring' | 'ringback' | null;
   /** The browser refused to play the other person's sound until a tap: the screens offer one that calls `play()`. */
   silenced: boolean;
+  /** The start was refused under the administrator's rule on calls (`reason` says for whom): the screens keep "Call" greyed for that person. */
+  forbidden: boolean;
 }
 
 export interface ChatCalls {
@@ -175,7 +177,7 @@ class Calls implements ChatCalls {
 
   private viewOf(call: ChatCall, here: boolean): CallView {
     const incoming = call.callee_user_id === this.me;
-    return { id: call.id, conversation_id: call.conversation_id, incoming, ended: null, reason: null, answered_at: call.answered_at, muted: false, here, sound: null, silenced: false,
+    return { id: call.id, conversation_id: call.conversation_id, incoming, ended: null, reason: null, answered_at: call.answered_at, muted: false, here, sound: null, silenced: false, forbidden: false,
       peer: incoming ? { user_id: call.caller_user_id, name: call.caller_name } : { user_id: call.callee_user_id, name: call.callee_name },
       state: call.state === 'ringing' ? (incoming ? 'ringing' : 'calling') : 'connecting' };
   }
@@ -255,7 +257,7 @@ class Calls implements ChatCalls {
     if (this.view && this.view.state !== 'ended') throw new Error('You are on a call.');
     const attempt = this.attempt;
     this.set({ id: null, conversation_id: 'conversation_id' in target ? target.conversation_id : null, peer: { user_id: 'user_id' in target ? target.user_id : null, name },
-      incoming: false, state: 'calling', ended: null, reason: null, answered_at: null, muted: false, here: true, sound: null, silenced: false });
+      incoming: false, state: 'calling', ended: null, reason: null, answered_at: null, muted: false, here: true, sound: null, silenced: false, forbidden: false });
     if (!await this.take(attempt)) return;
     let answer: ChatCallStartResponse;
     try {
@@ -264,7 +266,7 @@ class Calls implements ChatCalls {
       // Only the answer may have been lost: while this tab holds the lock, a call of this device is the one it made.
       const made = unreachable(error) && !this.stale(attempt) ? await chatApi.currentCall().catch(() => null) : null;
       if (made?.this_device && !this.stale(attempt)) void chatApi.endCall(made.id, true).catch(() => undefined);
-      if (!this.stale(attempt)) this.finish(hasCode(error, 'CHAT_CALL_BUSY') ? 'busy' : unreachable(error) ? 'failed' : 'refused', said(error));
+      if (!this.stale(attempt)) this.finish(hasCode(error, 'CHAT_CALL_BUSY') ? 'busy' : unreachable(error) ? 'failed' : 'refused', said(error), !!policyRefusal(error));
       return;
     }
     // Hung up before the server answered: the call it made ends too; the other person's own call, found ringing, is theirs.
@@ -532,7 +534,7 @@ class Calls implements ChatCalls {
   }
 
   /** Ends the call here; nothing of it is left: microphone, connection, timers, the tab's lock. */
-  private finish(ending: CallEnding, reason: string | null = null) {
+  private finish(ending: CallEnding, reason: string | null = null, forbidden = false) {
     this.attempt++;
     clearTimeout(this.batch);
     clearInterval(this.alive);
@@ -551,7 +553,7 @@ class Calls implements ChatCalls {
     this.after = 0;
     this.outgoing = [];
     this.incoming = [];
-    if (this.view) this.set({ ...this.view, state: 'ended', ended: ending, reason, silenced: false });
+    if (this.view) this.set({ ...this.view, state: 'ended', ended: ending, reason, silenced: false, forbidden });
   }
 }
 

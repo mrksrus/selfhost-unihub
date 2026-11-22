@@ -69,8 +69,8 @@ export interface ChatConversationSummary {
   retention_days: ChatRetentionDays | null;
   retention_from: string | null;
   last_activity_at: string | null;
-  /** The newest message, for the list's second line; null in a new conversation. */
-  last_message: { text: string | null; from_me: boolean; deleted: boolean } | null;
+  /** The newest message or call, for the list's second line; null in a new conversation. `call` for a call's entry (`from_me`: this person called). */
+  last_message: { text: string | null; from_me: boolean; deleted: boolean; call?: ChatCallEntry } | null;
 }
 
 /**

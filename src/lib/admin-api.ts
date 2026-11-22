@@ -99,8 +99,10 @@ export async function setGroupManager(groupId: string, userId: string, manager: 
 export type SignupMode = 'open' | 'approval' | 'disabled';
 export const signupModeQueryKey = ['admin', 'signup-mode'] as const;
 
-export async function fetchSignupMode(signal?: AbortSignal): Promise<SignupMode> {
-  return unwrap(await api.get<{ signup_mode: SignupMode }>('/admin/settings/signup-mode', { signal }))?.signup_mode || 'disabled';
+/** Who can sign up, and whether the relay for calls is configured (TURN_URLS and its secret). */
+export async function fetchSignupMode(signal?: AbortSignal): Promise<{ mode: SignupMode; callsRelay: boolean }> {
+  const data = unwrap(await api.get<{ signup_mode: SignupMode; calls_relay?: boolean }>('/admin/settings/signup-mode', { signal }));
+  return { mode: data?.signup_mode || 'disabled', callsRelay: !!data?.calls_relay };
 }
 export async function saveSignupMode(mode: SignupMode) {
   unwrap(await api.put('/admin/settings/signup-mode', { signup_mode: mode }));

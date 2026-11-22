@@ -26,6 +26,7 @@ const NotFound = lazy(() => import("./pages/NotFound"));
 const Recordings = lazy(() => import("./pages/Recordings"));
 const Music = lazy(() => import("./pages/Music"));
 const ChatPage = lazy(() => import("./pages/ChatPage"));
+const CallPage = lazy(() => import("./pages/CallPage"));
 const More = lazy(() => import("./pages/More"));
 const AdminSettings = lazy(() => import("./pages/AdminSettings"));
 const AdminPolicies = lazy(() => import("./pages/AdminPolicies"));
@@ -54,6 +55,8 @@ const AuthenticatedApp = () => {
             <Route path="/auth" element={<Auth />} />
             {/* A setup link: public, its token in the fragment. */}
             <Route path="/invite" element={<InviteAccept />} />
+            {/* The call alone, outside the shell and its lock screen. */}
+            <Route path="/call" element={<CallPage />} />
             <Route element={<AppLayout />}>
               <Route path="/" element={<StartRedirect />} />
               <Route path="/dashboard" element={<Dashboard />} />

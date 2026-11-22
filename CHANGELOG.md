@@ -10,8 +10,31 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
 ### Added
 
+- **Voice calls between two colleagues.** "Call" is in a chat between two
+  people, on a colleague in Contacts › Company and on a contact who is a
+  colleague. Every open UniHub page of the other person rings: a dialog over
+  whichever page is open with "Answer" and "Decline", the tab's title, a
+  quiet ring and, where you allowed notifications and the page is not in
+  front, a notification. The call's screen shows the time, "Mute" and "Hang
+  up", says "Reconnecting…" when the connection breaks, and can be put aside
+  with "Hide" while the call goes on; a bar at the bottom brings it back. Calls
+  are sound only, between two people, one at a time. A browser asks for the
+  microphone at the first call.
+- **A call can be answered while UniHub is locked.** The dialog then says
+  "Incoming call" without the name, and answering does not unlock UniHub:
+  only the call shows.
+- **Calls leave a line in the chat**: "Voice call, 5 min", "Missed call",
+  "Call declined", "No answer" or "Call failed", who called and when, and
+  "Call back". The chat list shows it as the chat's last line, and a missed
+  call counts as unread.
 - **A policy for calls.** The administrator policy `chat.calls` allows or
-  forbids voice calls, for everyone or for a group.
+  forbids voice calls, for everyone or for a group: "Calls" in the Chat
+  group of Server › Policies. Where a call cannot be placed, "Call" stays
+  greyed and says why.
+- The Server page says whether the relay for calls is configured.
+- Settings › Chat has "Calls". An Android app from before calls rings only
+  while it is open and says "Update the UniHub app to get calls while it is
+  closed."
 - The image has a relay for calls between different networks (coturn). It
   starts when `TURN_SECRET` is set; publish its ports with it
   ([Calls and the relay](docs/INSTALLATION.md#calls-and-the-relay)).
@@ -35,6 +58,9 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
   set a new passphrase there, or sign a lost device out first under
   Settings › Security › Devices, which marks a device that is not in Chat
   yet "Waiting for Chat".
+- The `Permissions-Policy` header allows `autoplay` for UniHub's own pages
+  (`autoplay=(self)`), so a call can ring and the other person be heard. A
+  reverse proxy that sets this header itself needs the same value.
 - A chat with someone who cannot be written to says why in the new words:
   "<name> has not set up Chat yet." or "<name> is not signed in to Chat on
   any device."

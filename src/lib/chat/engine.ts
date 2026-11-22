@@ -25,7 +25,7 @@ import { MAX_FILES, MAX_FILE_BYTES, PREVIEW_MAX_BYTES, downloadFile, fileRef, ou
 import { searchChats } from './search';
 import { ChatStore, type ChatDeviceRecord } from './store';
 import type {
-  ChatDeliveryState, ChatEngine, ChatEngineSnapshot, ChatFileToSend, ChatReadiness, ChatThreadFile, ChatThreadItem, ChatThreadMessage, ChatThreadNotice,
+  ChatDeliveryState, ChatEngine, ChatEngineSnapshot, ChatFileToSend, ChatReadiness, ChatThreadCall, ChatThreadFile, ChatThreadItem, ChatThreadMessage, ChatThreadNotice,
 } from './types';
 
 export const MAX_TEXT = 8000;
@@ -318,14 +318,15 @@ class Engine implements ChatEngine {
     this.snap ??= {
       readiness: this.readiness(),
       conversations: this.server.map(item => {
-        const messages = this.thread(item.id)?.filter((entry): entry is ChatThreadMessage => entry.kind === 'message') ?? [];
-        const last = messages.at(-1);
+        const entries = this.thread(item.id)?.filter((entry): entry is ChatThreadMessage | ChatThreadCall => entry.kind === 'message' || entry.kind === 'call') ?? [];
+        const messages = entries.filter((entry): entry is ChatThreadMessage => entry.kind === 'message');
+        const last = entries.at(-1);
         return { id: item.id, kind: item.kind, name: nameOfChat(item),
           peer: item.kind === 'direct' ? item.peer : { user_id: null, name: item.name, can_write: true, reason: null, online: null, active: true },
           group: item.kind === 'group' ? { follows: item.follows, role: item.role, member_count: item.member_count, added_by: item.added_by } : null,
           unread: item.unread, mentioned: messages.some(entry => entry.mentions_me && entry.seq !== null && entry.seq > item.read_seq),
           catching_up: this.catchingUp.has(item.id), notify: item.notify, retention_days: item.retention_days, retention_from: item.retention_from,
-          last_activity_at: item.last_activity_at, last_message: last ? { text: last.text, from_me: last.from_me, deleted: last.deleted } : null };
+          last_activity_at: item.last_activity_at, last_message: !last ? null : last.kind === 'call' ? { text: null, from_me: last.from_me, deleted: false, call: last.call } : { text: last.text, from_me: last.from_me, deleted: last.deleted } };
       }),
       holds_history_key: !!this.historyKey,
       restore: this.restoring,

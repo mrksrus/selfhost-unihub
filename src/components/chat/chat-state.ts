@@ -1,7 +1,7 @@
 // How the Chat screens read the engine, and the words they share.
 import { useCallback, useSyncExternalStore } from 'react';
 import { format, isThisYear, isToday, isYesterday } from 'date-fns';
-import type { ChatConversationSummary, ChatDeviceName, ChatEngine, ChatEngineSnapshot, ChatMember, ChatThreadItem, ChatThreadMessage } from '@/lib/chat/types';
+import type { ChatCallEntry, ChatConversationSummary, ChatDeviceName, ChatEngine, ChatEngineSnapshot, ChatMember, ChatThreadItem, ChatThreadMessage } from '@/lib/chat/types';
 import { deviceLabel } from '@/lib/devices-api';
 import { MIN_PASSPHRASE_LENGTH } from '@/lib/chat/key-backup';
 
@@ -53,9 +53,18 @@ export function dayLabel(iso: string) {
   return format(date, isThisYear(date) ? 'EEEE d MMMM' : 'd MMMM yyyy');
 }
 
+const CALL_ENDINGS = { missed: 'Missed call', cancelled: 'Missed call', busy: 'Missed call', declined: 'Call declined', failed: 'Call failed', answered: 'Voice call' } as const;
+
+/** A call's entry in words: "Voice call, 5 min", or how it ended for this person. */
+export function callEntryLine(call: ChatCallEntry, fromMe: boolean) {
+  if (call.outcome === 'answered' && call.answered_at) return `Voice call, ${Math.max(1, Math.round((Date.parse(call.ended_at) - Date.parse(call.answered_at)) / 60_000))} min`;
+  return fromMe && call.outcome !== 'declined' && call.outcome !== 'failed' ? 'No answer' : CALL_ENDINGS[call.outcome];
+}
+
 /** The second line of a conversation's row. */
 export function lastMessageLine({ last_message: last }: ChatConversationSummary) {
   if (!last) return 'No messages yet';
+  if (last.call) return callEntryLine(last.call, last.from_me);
   if (last.deleted) return 'Message deleted';
   if (last.text === null) return 'Message could not be read';
   // A message without text carries files.

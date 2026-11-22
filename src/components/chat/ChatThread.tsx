@@ -1,7 +1,7 @@
 import { Fragment, useContext, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { AtSign, Bell, BellOff, MonitorSmartphone, ArrowLeft, Users } from 'lucide-react';
-import type { ChatConversationSummary, ChatEngine, ChatFileToSend, ChatNotify, ChatThreadCall, ChatThreadFile, ChatThreadMessage } from '@/lib/chat/types';
+import type { ChatConversationSummary, ChatEngine, ChatFileToSend, ChatNotify, ChatThreadFile, ChatThreadMessage } from '@/lib/chat/types';
 import { AuthContext } from '@/contexts/auth-context';
 import { useIsMobile } from '@/hooks/use-mobile';
 import { usePolicy } from '@/hooks/use-policies';
@@ -14,6 +14,8 @@ import { Button } from '@/components/ui/button';
 import { buttonVariants } from '@/components/ui/button-variants';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { EmptyState, LoadingState } from '@/components/ui/page-states';
+import { CallButton } from '@/components/chat/CallButton';
+import { ChatCallEntry } from '@/components/chat/ChatCallEntry';
 import { ChatComposer, type ComposerMode } from '@/components/chat/ChatComposer';
 import { ChatFileViewer } from '@/components/chat/ChatFileViewer';
 import { ChatMessage } from '@/components/chat/ChatMessage';
@@ -24,14 +26,6 @@ import { dayLabel, deliveryLabel, useChatMembers, useChatThread } from '@/compon
 
 // Messages drawn at once; "Show earlier messages" adds as many again.
 const PAGE = 200;
-const CALL_ENDINGS = { missed: 'Missed call', cancelled: 'Missed call', busy: 'Missed call', declined: 'Call declined', failed: 'Call failed', answered: 'Voice call' } as const;
-
-/** A call's entry as one line; the call screens part draws it fully. */
-function callLine({ call, from_me }: ChatThreadCall) {
-  if (call.outcome === 'answered' && call.answered_at) return `Voice call, ${Math.max(1, Math.round((Date.parse(call.ended_at) - Date.parse(call.answered_at)) / 60_000))} min`;
-  return from_me && call.outcome !== 'declined' && call.outcome !== 'failed' ? 'No answer' : CALL_ENDINGS[call.outcome];
-}
-
 // What a chat notifies its reader of; the unread count shows every message either way.
 const NOTIFY = { all: { label: 'All messages', icon: Bell }, mentions: { label: 'Mentions only', icon: AtSign }, none: { label: 'Nothing', icon: BellOff } } as const;
 
@@ -172,7 +166,8 @@ export function ChatThread({ engine, conversation, draft, onDraft }: Props) {
             : peer.online && <p className="text-xs text-muted-foreground">Online</p>}
         </div>
         <div className="flex shrink-0 items-center touch:gap-1">
-          {group && <Button variant="ghost" size="icon" aria-label="People in this chat" onClick={() => setPeople(true)}><Users aria-hidden="true" /></Button>}
+          {group ? <Button variant="ghost" size="icon" aria-label="People in this chat" onClick={() => setPeople(true)}><Users aria-hidden="true" /></Button>
+            : <CallButton icon person={peer} conversationId={conversation.id} />}
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button variant="ghost" size="icon" aria-label={`Notifications: ${NOTIFY[conversation.notify].label}`}><NotifyIcon aria-hidden="true" /></Button>
@@ -209,7 +204,7 @@ export function ChatThread({ engine, conversation, draft, onDraft }: Props) {
                         <li className="py-3 text-center text-xs text-muted-foreground">{dayLabel(item.created_at)}</li>
                       )}
                       {item.kind === 'call' ? (
-                        <li className="py-2 text-center text-xs text-muted-foreground">{callLine(item)}</li>
+                        <ChatCallEntry item={item} peer={peer} conversationId={conversation.id} />
                       ) : item.kind !== 'message' ? (
                         <li className="flex items-center justify-center gap-1.5 py-2 text-center text-xs text-muted-foreground">
                           {item.kind === 'device-added' && <MonitorSmartphone aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />}

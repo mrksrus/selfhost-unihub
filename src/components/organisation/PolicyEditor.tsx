@@ -67,13 +67,14 @@ const GROUPS: { title: string; description?: string; rows: Row[] }[] = [
   },
   {
     title: 'Chat',
-    description: 'What people may switch themselves under Settings › Chat, how long messages are kept, how large a file may be and whom members may add. Messages are always encrypted between the people of a chat; no rule changes that.',
+    description: 'What people may switch themselves under Settings › Chat, how long messages are kept, how large a file may be, whom members may add and whether people may call each other. Messages are always encrypted between the people of a chat; no rule changes that.',
     rows: [
       { key: 'chat.presence', label: 'Presence', description: 'Whether people who chat with each other see that the other has UniHub open.' },
       { key: 'chat.read_receipts', label: 'Read receipts', description: 'Whether the sender sees that a message was read.' },
       { key: RETENTION_KEY, label: 'Delete chat messages after', description: 'Their files too, for everyone in the chat. A chat follows the shortest time among its members.' },
       { key: 'chat.attachment_max_mb', label: 'Largest file in a chat', description: 'Each file or voice message a person sends.' },
       { key: 'chat.reach', label: 'Who members may add to a group chat', description: 'Administrators add anyone. A chat between two people is open to everyone either way.' },
+      { key: 'chat.calls', label: 'Calls', description: 'Voice calls between two people, from a chat or from Contacts.' },
     ],
   },
   {

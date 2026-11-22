@@ -164,6 +164,39 @@ export function callSupport(): 'page' | 'app' | null {
   return typeof RTCPeerConnection === 'function' && window.isSecureContext && !!navigator.mediaDevices?.getUserMedia ? 'page' : null;
 }
 
+/** Whether this is an Android app that rings only while it is open ("Update the UniHub app to get calls while it is closed."). */
+export const appNeedsUpdateForCalls = () => { const level = appBridgeLevel(); return level > 0 && level < CALL_BRIDGE_LEVEL; };
+
+/** Where a call's sound plays and is picked up in the Android app. */
+export interface CallAudioRoute {
+  id: string;
+  kind: 'earpiece' | 'speaker' | 'bluetooth' | 'wired';
+  /** As Android names it ("Speaker", a headset's name). */
+  name: string;
+  active: boolean;
+}
+
+/**
+ * The audio routes of the call on the app's call screen, and the choice of
+ * one. None in a browser and in apps without the call module: the call
+ * screen then shows no control, and the sound follows the device's own choice.
+ */
+export function callAudioRoutes(): { routes: CallAudioRoute[]; choose(id: string): void } {
+  return { routes: [], choose: () => undefined };
+}
+
+/** One thing a phone needs before the app can ring and hold calls; `fix` opens Android's question or setting for it. */
+export interface CallSetupCheck {
+  id: 'microphone' | 'full_screen' | 'notifications' | 'background';
+  ok: boolean;
+  fix(): void;
+}
+
+/** What the Android app reports for "Calls on this phone" (Settings › Chat); null in a browser and in apps without the call module, where the card is not shown. */
+export function callSetup(): CallSetupCheck[] | null {
+  return null;
+}
+
 /** The first bridge level whose file hand-over takes a target (`handOverFile`). */
 export const FILE_HAND_OVER_BRIDGE_LEVEL = 4;
 

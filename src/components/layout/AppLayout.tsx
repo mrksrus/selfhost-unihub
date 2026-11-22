@@ -17,6 +17,7 @@ import { MailPeek } from '@/components/mail/MailPeek';
 import { PreferenceAccent } from '@/components/theme/PreferenceAccent';
 import { PolicyNoticeDialog } from '@/components/policies/PolicyNoticeDialog';
 import { ChatApprovalDialog } from '@/components/chat/ChatApprovalDialog';
+import { ChatCallLayer } from '@/components/chat/ChatCallLayer';
 import { beforeChat } from '@/lib/navigation';
 import { TwoFactorReminder, useTwoFactorPrompt } from '@/components/organisation/TwoFactorRequired';
 import { Button } from '@/components/ui/button';
@@ -93,6 +94,8 @@ const AppLayout = () => {
       <div className="h-dvh overflow-hidden bg-background">
         <PreferenceAccent />
         {lock.status === 'setup' ? <><AppLockRequiredPrompt area="app" variant="page" /><PolicyNoticeDialog /></> : <LockScreen area="app" variant="page" />}
+        {/* A call rings and can be answered over the lock screen; it shows only the call. */}
+        <ChatCallLayer />
       </div>
     );
   }
@@ -118,6 +121,8 @@ const AppLayout = () => {
       <PolicyNoticeDialog />
       {/* Another device of the person asks to join their chats, whichever page is open. */}
       <ChatApprovalDialog />
+      {/* A call rings over whichever page is open. */}
+      <ChatCallLayer />
       <BottomNav />
     </div>
     </TwoFactorGate>

@@ -15,6 +15,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { LoadingState } from '@/components/ui/page-states';
 import { ROW_LINK } from '@/components/admin/person-words';
 import { ContactAvatar } from '@/components/contacts/ContactAvatar';
+import { CallButton } from '@/components/chat/CallButton';
 import { useStartChat } from '@/components/chat/use-start-chat';
 
 interface Props {
@@ -147,7 +148,7 @@ export function ContactDetail({ contact, onEmail, onBack, onEdit, onDelete, onTo
     <article aria-label={name} className="mx-auto w-full max-w-xl px-4 py-4 md:px-6">
       <div className="mb-4 flex items-center gap-1">
         <Button variant="ghost" size="sm" className="-ml-2 min-w-0 lg:hidden" onClick={onBack}><ArrowLeft aria-hidden="true" /><span className="truncate">{book?.name ?? 'Contacts'}</span></Button>
-        <div className="ml-auto flex shrink-0 items-center gap-1">
+        <div className="ml-auto flex flex-wrap items-center justify-end gap-1">
           {onToggleFavorite && (
             <Button variant="ghost" size="icon" aria-pressed={contact.is_favorite} onClick={onToggleFavorite}
               aria-label={contact.is_favorite ? 'Remove from favorites' : 'Add to favorites'}>
@@ -155,6 +156,7 @@ export function ContactDetail({ contact, onEmail, onBack, onEdit, onDelete, onTo
             </Button>
           )}
           {message && <Button variant="outline" size="sm" onClick={message}><MessageCircle aria-hidden="true" />Message</Button>}
+          <CallButton person={colleagueId ? { user_id: colleagueId, name } : undefined} />
           {onEdit && <Button variant="outline" size="sm" onClick={onEdit}>Edit</Button>}
           {(onDelete || copyBooks.length > 0) && (
             <DropdownMenu>

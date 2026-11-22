@@ -371,7 +371,7 @@ that follows any group or everyone, and manage a followed chat they are in
 | DELETE | `/api/admin/groups/:id` | Delete a group, its memberships and its rules; admin's password (`groups.manage`) |
 | PUT | `/api/admin/groups/:id/managers/:userId` | `{ "manager": true \| false }`: name or remove a manager, adding them as a member if needed (`groups.manage`) |
 | GET | `/api/admin/storage` | Aggregate server storage counts and byte usage |
-| GET | `/api/admin/settings/signup-mode` | Read signup mode |
+| GET | `/api/admin/settings/signup-mode` | Read signup mode, and `calls_relay`: whether the relay for calls is configured. The Server page shows it as "Relay for calls: configured" or "not configured", with a link to [Calls and the relay](INSTALLATION.md#calls-and-the-relay) |
 | PUT | `/api/admin/settings/signup-mode` | Set signup mode |
 | GET | `/api/admin/audit` | Activity log, newest first; `?before=<cursor>` for the next page |
 | GET | `/api/admin/instance-backup` | Instance backup: on or off (and what is missing), the read-only destination, the key's fingerprint, the schedule in force (`time_utc`, `keep`, `schedule_source`, `schedule_defaults`), next run, kept count and size, the latest runs and the restore command (`server.settings`) |
@@ -873,7 +873,7 @@ that request reads them.
 | `chat.retention_days` | none, `365`, `180`, `90`, `30` | nothing: chat messages older than that are deleted, also while `bin.delete` is forbidden; a chat follows the shortest among its active members, starting 24 hours after its time got shorter; `GET /api/admin/chat/retention-preview` counts what a value would delete, and only the owner ends the wait early ([Chat](CHAT.md#retention)) |
 | `chat.attachment_max_mb` | `100`, `50`, `25`, `10` | sending a larger file in a chat; default `50` |
 | `chat.reach` | `organisation`, `own_groups` | adding someone to a group chat who shares no organisation group with the member (`own_groups`, the default); administrators add anyone; a 1:1 chat stays open between any two people ([Chat](CHAT.md#group-chats)) |
-| `chat.calls` | `allowed`, `forbidden` | starting a call to or from the person; a call going on is not ended ([Chat](CHAT.md#calls)) |
+| `chat.calls` | `allowed`, `forbidden` | starting a call to or from the person; a call going on is not ended ([Chat](CHAT.md#calls)). Server › Policies has it as "Calls" in the Chat group, for Everyone and for a group. The person's "Call" buttons stay, greyed, with the reason; someone who calls them is refused with "Calls are off for <name>.", and their button for that person is greyed with it until the page is loaded again |
 | `pages.music` | `allowed`, `forbidden` | the Music page alone; recordings keep working |
 | `notifications.detail` | `full`, `sender`, `none` | more detail than that in notifications: the floor of each mail account's `notify_detail` and of `chat_notification_detail`; `none` also floors reminders (a reminder has no sender, so `sender` leaves them full) |
 | `contacts.phone_sync` | `allowed`, `forbidden` | UniHub contacts in the Android app's phone contacts: the app's contacts sync is told Contacts is off (`403 MODULE_DISABLED` with the policy), so the phone removes them at its next sync; they stay in UniHub, and changes made on the phone since its last sync are lost |
