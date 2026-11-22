@@ -22,6 +22,9 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
   the app now answers their call instead of ending it as failed.
 - A device that joins Chat gets chat updates at once, also when the server
   was just checking its live connection, instead of up to 25 seconds later.
+- The relay for calls is now also offered over TCP port 3478 when
+  `TURN_URLS` names a `turn:` address without a transport, as the
+  examples do, so calls from networks that block UDP can use it.
 
 ## 0.35.0
 

@@ -704,8 +704,8 @@ answered gets none. Browsers and older apps ring only in an open page and
 get the missed-call notification. The app's side is in
 [Android](ANDROID.md#calls).
 
-**The relay.** `TURN_URLS` (comma separated, the addresses devices are told)
-with `TURN_SECRET` or `TURN_SECRET_FILE`: each start, answer and
+**The relay.** `TURN_URLS` (comma separated, the addresses devices are told;
+a `turn:` address without `?transport=` is told for UDP and for TCP) with `TURN_SECRET` or `TURN_SECRET_FILE`: each start, answer and
 `GET …/ice` hands the two ends credentials made for the call, valid twelve
 hours (the user name is the expiry and the call's id, the password the
 base64 HMAC-SHA1 of it under the secret), never stored. Without both, no

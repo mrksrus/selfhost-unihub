@@ -227,7 +227,7 @@ test('relay credentials: the standard answer for a fixed secret and time, none w
     process.env.TURN_URLS = 'turn:calls.example.test:3478, turn:calls.example.test:3478?transport=tcp';
     const now = Date.UTC(2026, 0, 1);
     const username = `${now / 1000 + 12 * 3600}:call-1`;
-    assert.deepEqual(iceServers('call-1', now), [{ urls: ['turn:calls.example.test:3478', 'turn:calls.example.test:3478?transport=tcp'], username,
+    assert.deepEqual(iceServers('call-1', now), [{ urls: ['turn:calls.example.test:3478?transport=udp', 'turn:calls.example.test:3478?transport=tcp'], username,
       credential: crypto.createHmac('sha1', 'relay-secret').update(username).digest('base64') }]);
     // The known answer of this secret and user name.
     assert.equal(iceServers('call-1', now)[0].credential, 'RaNcGrGnMXbOr+b/58j3PVQdcRI=');
