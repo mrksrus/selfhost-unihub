@@ -98,7 +98,7 @@ object Calls {
     /** The lock report's `calls`: servers then ring this app by its notification connection while it is closed. */
     fun ringsWhileClosed(context: Context): Boolean = RINGS_WHILE_CLOSED && supported(context)
 
-    private const val RINGS_WHILE_CLOSED = false
+    private const val RINGS_WHILE_CLOSED = true
 
     /** Hands a `call` message to Telecom. Any thread. */
     fun receive(context: Context, origin: String, message: CallMessage, locked: Boolean) {
