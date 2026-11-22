@@ -354,8 +354,8 @@ one exception below), link-local, multicast and reserved addresses, and by defau
 networks and carrier-grade NAT (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16,
 100.64.0.0/10, fc00::/7), which includes the database's network. An
 installation whose people all call from one private network or VPN can set
-`UNIHUB_TURN_ALLOW_PRIVATE_PEERS=true`. That opens all of these ranges,
-fc00::/7 included. Loopback and the container's own addresses
+`UNIHUB_TURN_ALLOW_PRIVATE_PEERS=true`. That opens the IPv4 ranges only:
+the relay always refuses fc00::/7. Loopback and the container's own addresses
 stay refused (but for the exception below), while the UDP services of the
 database's network, of other machines on those networks and of this server itself, through Docker's
 gateway, become reachable through the relay for anyone signed in. The relay

@@ -31,7 +31,8 @@ chats ([Data recovery](DATA_RECOVERY.md#backup-versions-and-restore-behavior)).
 - **The relay for calls is optional.** Without it, calls connect only where
   the two devices reach each other directly: the same network, an office or
   a VPN. For calls between different networks, set `TURN_URLS` and
-  `TURN_SECRET` (or `TURN_SECRET_FILE`), and behind NAT `TURN_EXTERNAL_IP`;
+  `TURN_SECRET` (or `TURN_SECRET_FILE`), and `TURN_EXTERNAL_IP` (Docker's
+  network is behind NAT, also on a server with a public address);
   publish and forward 3478 UDP and TCP and 49160 to 49200 UDP to the
   server. [Calls and the relay](INSTALLATION.md#calls-and-the-relay) has
   the steps. Nothing runs and no port opens until the secret is set.

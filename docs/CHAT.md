@@ -43,8 +43,8 @@ The server does see, and keeps:
   was sent to a device, and when;
 - each chat's retention time and the moment deleting under it starts, and
   how many archive copies each person has;
-- **calls**: who called whom, when, how long and how it ended, and for the
-  seconds of set-up the two devices' network addresses ([Calls](#calls)).
+- **calls**: who called whom, when, how long and how it ended, and until the
+  call ends the two devices' network addresses ([Calls](#calls)).
 
 ## What the encryption protects
 
@@ -651,8 +651,8 @@ and the module gate are `chat`, and a device that has not joined Chat is
 refused every call route and hears nothing of a call.
 
 **What the server sees.** Who calls whom and when, which devices ring and
-which one answered, how long the call lasts and how it ended, and, for the
-seconds of set-up, the connection data the two devices exchange (network
+which one answered, how long the call lasts and how it ended, and, until the
+call ends, the connection data the two devices exchange (network
 addresses and the fingerprints of the media keys). Those signals are rows
 the other device fetches, are logged nowhere and are deleted when the call
 ends. The call's line in the chat stays until retention removes it. With
@@ -742,9 +742,8 @@ refuses are in [Calls and the relay](INSTALLATION.md#calls-and-the-relay).
   video, hold, transfer, adding a person or group calls, and no calls to
   phone numbers (a contact's number opens the phone's dialler). Nothing is
   written to the phone's own call list, and there is no Android Auto.
-- **Two devices that both need the relay** reach each other only over IPv4
-  on the container's own network: with host networking, or over IPv6, such
-  a call does not connect.
+- **Two devices that both need the relay** do not always reach each other
+  ([Calls and the relay](INSTALLATION.md#calls-and-the-relay)).
 - **One large upload holds back later messages.** The outbox sends in order,
   so a message written after a large file waits until that file is through.
 - **Upload progress** shows only in the tab that sends; the device's other
