@@ -263,12 +263,12 @@ class Calls implements ChatCalls {
     } catch (error) {
       // Only the answer may have been lost: while this tab holds the lock, a call of this device is the one it made.
       const made = unreachable(error) && !this.stale(attempt) ? await chatApi.currentCall().catch(() => null) : null;
-      if (made?.this_device) void chatApi.endCall(made.id, true).catch(() => undefined);
+      if (made?.this_device && !this.stale(attempt)) void chatApi.endCall(made.id, true).catch(() => undefined);
       if (!this.stale(attempt)) this.finish(hasCode(error, 'CHAT_CALL_BUSY') ? 'busy' : unreachable(error) ? 'failed' : 'refused', said(error));
       return;
     }
-    // Hung up before the server answered: the call it made ends too.
-    if (this.stale(attempt)) { void chatApi.endCall(answer.call.id).catch(() => undefined); return; }
+    // Hung up before the server answered: the call it made ends too; the other person's own call, found ringing, is theirs.
+    if (this.stale(attempt)) { if (answer.started) void chatApi.endCall(answer.call.id).catch(() => undefined); return; }
     // Both called at once: the other person's call is the one, and this answers it.
     if (!answer.started) {
       this.set({ ...this.viewOf(answer.call, true), state: 'connecting' });
