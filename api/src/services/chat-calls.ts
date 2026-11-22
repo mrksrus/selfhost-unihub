@@ -115,6 +115,16 @@ async function finish(cx: SqlExecutor, row: RowDataPacket, outcome: ChatCallOutc
   }
 }
 
+/** The person as a callee: refused without a joined device or Chat, and where either person's calls policy forbids it. */
+async function callable(userId: string, peerId: string | null) {
+  const peer = await peerState(peerId);
+  if (peer.reason) throw forbidden('CHAT_UNAVAILABLE', peer.reason);
+  const mine = await resolvePolicy(userId, 'chat.calls');
+  if (!mine.allowed) throw policyForbids('chat.calls', mine.reason ?? 'Your administrator turned calls off.');
+  if (!(await resolvePolicy(peer.user_id!, 'chat.calls')).allowed) throw policyForbids('chat.calls', `Calls are off for ${peer.name}.`);
+  return peer;
+}
+
 // --- The routes ----------------------------------------------------------------------------
 
 /** POST /api/chat/calls: the request's device calls the other person of a direct chat. */
@@ -123,19 +133,19 @@ async function startCall(userId: string, token: string | null, input: unknown) {
   if ((body.user_id === undefined) === (body.conversation_id === undefined)) throw badRequest('CHAT_CALL_INVALID', 'Name the person or the chat to call.');
   const own = await deviceOf(userId, token);
   let conversationId: string;
-  if (body.user_id !== undefined) conversationId = (await startConversation(userId, { user_id: body.user_id })).conversation.id;
-  else {
+  let peer: Awaited<ReturnType<typeof callable>> | null = null;
+  if (body.user_id !== undefined) {
+    // Before the chat is made: a refused call leaves no empty chat behind.
+    if (typeof body.user_id === 'string' && UUID.test(body.user_id)) peer = await callable(userId, body.user_id.toLowerCase());
+    conversationId = (await startConversation(userId, { user_id: body.user_id })).conversation.id;
+  } else {
     conversationId = typeof body.conversation_id === 'string' && UUID.test(body.conversation_id) ? body.conversation_id.toLowerCase() : '';
     if (!conversationId || !await can(userId, { kind: 'conversation', id: conversationId }, 'member')) throw notFound('CONVERSATION_NOT_FOUND', 'Conversation not found');
   }
   const [[conversation]] = await db.execute<RowDataPacket[]>('SELECT kind, direct_key FROM chat_conversations WHERE id = ?', [conversationId]);
   if (conversation.kind !== 'direct') throw badRequest('CHAT_NOT_DIRECT', 'Calls are between two people.');
-  const peer = await peerState(otherOf(conversation.direct_key, userId));
-  if (peer.reason) throw forbidden('CHAT_UNAVAILABLE', peer.reason);
+  peer ??= await callable(userId, otherOf(conversation.direct_key, userId));
   const peerId = peer.user_id!;
-  const mine = await resolvePolicy(userId, 'chat.calls');
-  if (!mine.allowed) throw policyForbids('chat.calls', mine.reason ?? 'Your administrator turned calls off.');
-  if (!(await resolvePolicy(peerId, 'chat.calls')).allowed) throw policyForbids('chat.calls', `Calls are off for ${peer.name}.`);
 
   const { id, started } = await withTransaction(async cx => {
     await cx.execute('SELECT id FROM users WHERE id IN (?, ?) ORDER BY id FOR UPDATE', [userId, peerId]);

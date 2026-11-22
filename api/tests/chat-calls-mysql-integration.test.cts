@@ -69,6 +69,8 @@ test('chat calls: ringing, the first answer, signals, endings and entries, busy,
 
   // ── A callee without a joined device is refused; so is a call to oneself and a group chat ──
   assert.deepEqual(await refused(alex, 'POST', '/api/chat/calls', { user_id: ids.stranger }), [403, 'CHAT_UNAVAILABLE']);
+  const directChats = async (client: Client) => (await call(client, 'GET', '/api/chat/conversations')).conversations.filter((item: FixtureValue) => item.kind === 'direct').length;
+  assert.equal(await directChats(alex), 0, 'a refused call leaves no empty chat behind');
   assert.deepEqual(await refused(alex, 'POST', '/api/chat/calls', { user_id: ids.manager }), [400, 'CHAT_SELF']);
   const team = (await call(alex, 'POST', '/api/chat/conversations', { kind: 'group', name: 'Team', user_ids: [ids.member] })).conversation.id;
   assert.deepEqual(await refused(alex, 'POST', '/api/chat/calls', { conversation_id: team }), [400, 'CHAT_NOT_DIRECT']);

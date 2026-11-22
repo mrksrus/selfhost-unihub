@@ -13,6 +13,8 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 - A call that fails before it is answered, for example because the other
   phone could not use its microphone, now says "<name> could not take the
   call." instead of pointing at the relay for calls.
+- A call the server refuses (the other person has no device in Chat, or
+  calls are off for either of you) no longer leaves an empty chat behind.
 
 ## 0.35.0
 
