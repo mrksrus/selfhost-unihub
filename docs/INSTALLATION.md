@@ -377,7 +377,8 @@ are not refused either.
 
 **Check it.** `docker compose logs unihub` shows "Starting the relay for
 calls" and coturn's own lines; a warning names a missing `TURN_URLS` or
-secret, or a value the relay refused. From a computer on another network,
+secret, or a value the relay refused; the relay then stays off and is not
+offered to devices, and the Server page says "Relay for calls: not configured". From a computer on another network,
 `turnutils_stunclient -p 3478 calls.example.org` (from coturn's tools)
 prints the address it sees; then call from a phone on mobile data to a
 device at home. Should the relay stop, the log says so and the rest of
