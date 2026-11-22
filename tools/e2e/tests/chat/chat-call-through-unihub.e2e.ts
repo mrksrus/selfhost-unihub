@@ -48,7 +48,7 @@ test('a call between two browsers that cannot connect directly carries sound bot
     await ringing(b, alex.name).getByRole('button', { name: 'Answer', exact: true }).click();
     const answered = Date.now();
     for (const [page, other] of [[a, blair], [b, alex]] as const) await shows(callScreen(page, other.name).getByRole('timer', { name: 'Call time' }), 60_000);
-    await expect.poll(async () => (await heard(a)).energy, { timeout: 60_000, interval: 0 }).toBeGreaterThan(SOUND);
+    await expect.poll(async () => (await heard(a)).energy, { timeout: 60_000, interval: 1 }).toBeGreaterThan(SOUND);
     const toSound = (Date.now() - answered) / 1000;
     const [alexHears, blairHears] = [await heard(a), await heard(b)];
     console.log(`call through UniHub: sound ${toSound.toFixed(1)} s after the answer; in 3 s Alex received ${alexHears.packets} packets (energy ${alexHears.energy.toFixed(4)}), Blair ${blairHears.packets} packets (energy ${blairHears.energy.toFixed(4)})`);

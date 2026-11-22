@@ -43,6 +43,8 @@ test('a call between two pages that may only use the relay carries sound both wa
 
     await call();
     for (const [page, other] of [[a, blair], [b, alex]] as const) await shows(callScreen(page, other.name).getByRole('timer', { name: 'Call time' }), 60_000);
+    // The call may already run through UniHub before the relay connects.
+    for (const page of [a, b]) await expect.poll(() => page.evaluate(() => (window as Kept).directConnected ?? false), { timeout: 60_000 }).toBe(true);
     const [alexPair, blairPair] = [await selectedPair(a), await selectedPair(b)];
     const [alexHears, blairHears] = [await heard(a), await heard(b)];
     console.log(`relayed call: pairs Alex ${alexPair.local}-${alexPair.remote}, Blair ${blairPair.local}-${blairPair.remote}; in 3 s Alex received ${alexHears.packets} packets (energy ${alexHears.energy.toFixed(4)}), Blair ${blairHears.packets} packets (energy ${blairHears.energy.toFixed(4)})`);
