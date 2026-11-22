@@ -186,6 +186,15 @@ test('chat call media: who may open the socket, frames both ways, the frame read
   assert.ok(caller.got.length >= 100 && caller.got.length <= 160, `${caller.got.length} of 500 frames forwarded`);
   caller.got.length = 0;
 
+  // ── An end that pings without reading gets no pile of pongs ──
+  callee.socket.pause();
+  const pings = Buffer.concat(Array.from({ length: 4000 }, () => frame(crypto.randomBytes(125), { opcode: 0x9 })));
+  for (let index = 0; index < 48; index++) callee.socket.write(pings);
+  await until(async () => callee.socket.writableLength, length => length === 0, 'Blair has sent every ping');
+  await new Promise(resolve => setTimeout(resolve, 300));
+  assert.ok(callMedia.stats().buffered <= 2048, `the API holds ${callMedia.stats().buffered} bytes of pongs`);
+  callee.socket.resume();
+
   // ── A receiver that does not read gets drops, not the API's memory, and is closed after the grace ──
   Object.assign(callMedia.config, { rate: 1e9, burst: 1e9 });
   callee.socket.pause();

@@ -38,6 +38,8 @@ function acceptWebSocket(req: UpgradeRequest, res: ServerResponse, { maxMessage 
   if (!req.upgrade || req.method !== 'GET' || String(req.headers.upgrade).toLowerCase() !== 'websocket'
     || req.headers['sec-websocket-version'] !== '13' || typeof key !== 'string' || !/^[A-Za-z0-9+/]{22}==$/.test(key)) return null;
   const { socket, head } = req.upgrade;
+  // The client left while the boundary checked: nothing to attach.
+  if (socket.destroyed) return null;
   const headers = Object.entries(res.getHeaders()).flatMap(([name, value]) => (Array.isArray(value) ? value : [value]).map(item => `${name}: ${item}\r\n`));
   res.detachSocket(socket);
   socket.setNoDelay(true);
@@ -99,7 +101,8 @@ function acceptWebSocket(req: UpgradeRequest, res: ServerResponse, { maxMessage 
       for (let index = 0; index < payload.length; index++) payload[index] ^= mask[index & 3];
       buffer = buffer.subarray(offset + 4 + length);
       if (opcode === 0x8) return connection.close(1000);
-      if (opcode === 0x9) frame(0xa, payload);
+      // A peer that does not read gets no queue of pongs: only one while nothing waits to be sent.
+      if (opcode === 0x9) { if (socket.writableLength <= maxMessage) frame(0xa, payload); }
       else if (opcode === 0x2) connection.onMessage(payload);
     }
   }
