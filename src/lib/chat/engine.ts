@@ -13,7 +13,7 @@ import { onAppEvent } from '@/lib/app-events';
 import { chatApi, unreachable } from '@/lib/chat-api';
 import { fetchDevices } from '@/lib/devices-api';
 import type {
-  ChatAccount, ChatApproval, ChatConversation, ChatDeviceName, ChatDeviceResponse, ChatDeviceSignedInDetails, ChatMember, ChatMessage, ChatNotify, ChatSender, ChatWelcome,
+  ChatAccount, ChatApproval, ChatCallEntry, ChatConversation, ChatDeviceName, ChatDeviceResponse, ChatDeviceSignedInDetails, ChatMember, ChatMessage, ChatNotify, ChatSender, ChatWelcome,
 } from '../../../api/src/contracts/chat';
 import { concat, fromBase64Url, toBase64Url } from './bytes';
 import { noteDevice, startDevice, type ChatDevice } from './device';
@@ -47,7 +47,7 @@ interface Stored {
   conversation_id: string;
   /** A device or member line sits between two messages (a seq plus one half). */
   seq: number;
-  kind: 'message' | ChatThreadNotice['kind'];
+  kind: 'message' | 'call' | ChatThreadNotice['kind'];
   replaces: string | null;
   sender_user_id: string | null;
   sender_name: string;
@@ -56,6 +56,8 @@ interface Stored {
   /** Absent in what was stored before mentions. */
   mentions?: string[];
   files?: ChatFileRef[];
+  /** A call's entry (kind 'call'), as the server wrote it. */
+  call?: ChatCallEntry;
   deleted: boolean;
   unreadable: boolean;
   created_at: string;
@@ -91,14 +93,19 @@ interface Cursor {
 
 /** Inside the MLS ciphertext; unknown fields are ignored. */
 interface Content { text: string; reply_to: string | null; name: string; mentions?: string[]; files?: ChatFileRef[] }
-/** Inside an archive copy: the ids are checked on restore, so a copy stored under another message is dropped. */
-interface Copy extends Content { message_id: string; conversation_id: string; sender_user_id: string | null; replaces: string | null; created_at: string }
+/** Inside an archive copy: the ids are checked on restore, so a copy stored under another message is dropped. A call's copy has `call` and no text. */
+interface Copy extends Content { message_id: string; conversation_id: string; sender_user_id: string | null; replaces: string | null; created_at: string; call?: ChatCallEntry }
 
 const encode = (text: string) => new TextEncoder().encode(text);
 const decode = (bytes: Uint8Array) => new TextDecoder().decode(bytes);
 const userOf = (memberName: string) => memberName.split('/')[0];
 const nameOfChat = (conversation: ChatConversation) => conversation.kind === 'group' ? conversation.name : conversation.peer.name;
 const ids = (value: unknown) => Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string' && item.length <= 64).slice(0, MAX_MENTIONS) : [];
+const OUTCOMES: readonly string[] = ['answered', 'missed', 'cancelled', 'declined', 'busy', 'failed'];
+const callOf = (value: unknown) => value && typeof value === 'object' && typeof (value as ChatCallEntry).call_id === 'string' && OUTCOMES.includes((value as ChatCallEntry).outcome)
+  ? value as ChatCallEntry : undefined;
+/** What the archive keeps: messages and calls, not device lines. */
+const archivable = (record: Stored) => record.kind === 'call' ? !!record.call : record.kind === 'message' && record.text !== null;
 const reason = (error: unknown) => error instanceof Error && error.message ? error.message : 'Chat could not start.';
 
 function parseContent(bytes: Uint8Array): Content {
@@ -394,7 +401,9 @@ class Engine implements ChatEngine {
       return item;
     };
     for (const record of records) {
-      if (record.kind !== 'message') {
+      if (record.kind === 'call') {
+        if (record.call) items.push({ kind: 'call', id: record.id, seq: record.seq, call: record.call, from_me: record.call.caller_user_id === this.me.id, created_at: record.created_at });
+      } else if (record.kind !== 'message') {
         items.push({ kind: record.kind, id: record.id, user_id: record.sender_user_id, name: record.sender_name, created_at: record.created_at });
       } else if (record.replaces) {
         // An edit counts only from the message's own sender.
@@ -630,6 +639,11 @@ class Engine implements ChatEngine {
       sender_user_id: message.sender_user_id, sender_name: this.nameOf(message.sender_user_id, conversation), text: null, reply_to: null,
       deleted: message.ciphertext === null, unreadable: false, created_at: message.created_at, archived: false,
     };
+    if (message.kind === 'call') {
+      // Written by the server: no group, no ciphertext.
+      await this.keep(null, () => [{ ...record, kind: 'call', deleted: false, call: callOf(message.call) ?? record.call }], next);
+      return;
+    }
     if (message.kind === 'delete') {
       const gone = [...this.messages.values()].filter(item => item.id === message.replaces || item.replaces === message.replaces);
       await this.keep(null, () => gone.map(item => ({ ...item, text: null, deleted: true })), next);
@@ -1003,7 +1017,7 @@ class Engine implements ChatEngine {
     const before = this.account;
     const newKey = !!before && before.history_public !== account?.history_public;
     const dropKey = !!this.historyKey && toBase64Url(this.historyKey.publicKey) !== account?.history_public;
-    const again = newKey ? [...this.messages.values()].filter(record => record.archived && record.kind === 'message').map(record => ({ ...record, archived: false })) : [];
+    const again = newKey ? [...this.messages.values()].filter(record => record.archived && archivable(record)).map(record => ({ ...record, archived: false })) : [];
     await this.keep(null, () => again, undefined).then(() => this.store!.write([], transaction => {
       transaction.objectStore('keys').put(account, 'account');
       if (dropKey) transaction.objectStore('keys').delete('history');
@@ -1030,12 +1044,13 @@ class Engine implements ChatEngine {
   /** Uploads the archive copies of what this device holds and the archive lacks. */
   private async archiveHeld() {
     if (!this.account) return;
-    const pending = [...this.messages.values()].filter(record => !record.archived && record.kind === 'message' && record.text !== null);
+    const pending = [...this.messages.values()].filter(record => !record.archived && archivable(record));
     for (let start = 0; start < pending.length && !this.stopped; start += ARCHIVE_BATCH) {
       const batch = pending.slice(start, start + ARCHIVE_BATCH);
       const copies = await Promise.all(batch.map(async record => ({ message_id: record.id, sealed: await this.sealCopy({
         message_id: record.id, conversation_id: record.conversation_id, sender_user_id: record.sender_user_id, replaces: record.replaces,
-        created_at: record.created_at, text: record.text!, reply_to: record.reply_to, name: record.sender_name, mentions: record.mentions, files: record.files }) })));
+        created_at: record.created_at, text: record.text ?? '', reply_to: record.reply_to, name: record.sender_name, mentions: record.mentions, files: record.files,
+        ...record.call ? { call: record.call } : {} }) })));
       await chatApi.storeArchive(copies);
       await this.keep(null, () => batch.map(record => ({ ...(this.messages.get(record.id) ?? record), archived: true })));
     }
@@ -1054,9 +1069,10 @@ class Engine implements ChatEngine {
           try {
             const copy = JSON.parse(decode(await open(this.historyKey!, fromBase64Url(entry.sealed)))) as Copy;
             if (copy.message_id !== entry.message_id || copy.conversation_id !== entry.conversation_id || typeof copy.text !== 'string') continue;
-            records.push({ id: entry.message_id, conversation_id: entry.conversation_id, seq: entry.seq, kind: 'message', replaces: copy.replaces ?? null,
-              sender_user_id: copy.sender_user_id ?? null, sender_name: String(copy.name ?? ''), text: copy.text, reply_to: copy.reply_to ?? null, mentions: ids(copy.mentions),
-              files: parseFiles(copy.files),
+            const call = callOf(copy.call);
+            records.push({ id: entry.message_id, conversation_id: entry.conversation_id, seq: entry.seq, kind: call ? 'call' : 'message', replaces: copy.replaces ?? null,
+              sender_user_id: copy.sender_user_id ?? null, sender_name: String(copy.name ?? ''), text: call ? null : copy.text, reply_to: copy.reply_to ?? null, mentions: ids(copy.mentions),
+              files: parseFiles(copy.files), call,
               deleted: false, unreadable: false, created_at: String(copy.created_at ?? ''), archived: true });
           } catch {
             // A copy this key cannot open (sealed to an older key, or changed) is skipped.

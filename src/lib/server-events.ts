@@ -166,6 +166,10 @@ export function startServerEvents({
     // Chat's engine fetches by itself (lib/chat/engine.ts); it holds no queries.
     current.addEventListener('chat.changed', live(event => emitAppEvent('unihub:chat-changed', parse<{ conversation_id?: string }>(event)?.conversation_id ?? null)));
     current.addEventListener('chat.device', live(() => emitAppEvent('unihub:chat-device')));
+    current.addEventListener('chat.call', live(event => {
+      const id = parse<{ call_id?: unknown }>(event)?.call_id;
+      if (typeof id === 'string') emitAppEvent('unihub:chat-call', id);
+    }));
     current.addEventListener('chat.presence', live(event => {
       const data = parse<{ user_id?: unknown; online?: unknown }>(event);
       if (typeof data?.user_id === 'string' && typeof data.online === 'boolean') emitAppEvent('unihub:chat-presence', { user_id: data.user_id, online: data.online });

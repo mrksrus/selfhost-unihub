@@ -38,6 +38,8 @@ export interface AppEvents {
   'unihub:chat-changed': string | null;
   /** The live stream said a chat device of this person asked for an approval, was answered or joined. */
   'unihub:chat-device': undefined;
+  /** The live stream said a call of this person started, was answered or ended, or the other end posted a signal (the call's id). */
+  'unihub:chat-call': string;
   /** The live stream said a chat partner came online or left. */
   'unihub:chat-presence': { user_id: string; online: boolean };
   /** The API refused a request with 403 TWO_FACTOR_REQUIRED (lib/api.ts): show the two-factor set-up prompt. */

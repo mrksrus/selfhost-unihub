@@ -3,10 +3,10 @@
 // screens read snapshots and call actions. Snapshots keep their identity
 // until something in them changes, so they can feed useSyncExternalStore.
 import type {
-  ChatCandidatesResponse, ChatDeviceName, ChatFollow, ChatMember, ChatNotify, ChatPeer, ChatRetentionDays, ChatRole,
+  ChatCallEntry, ChatCandidatesResponse, ChatDeviceName, ChatFollow, ChatMember, ChatNotify, ChatPeer, ChatRetentionDays, ChatRole,
 } from '../../../api/src/contracts/chat';
 
-export type { ChatCandidatesResponse, ChatDeviceName, ChatFollow, ChatMember, ChatNotify, ChatPeer, ChatRetentionDays, ChatRole };
+export type { ChatCallEntry, ChatCandidatesResponse, ChatDeviceName, ChatFollow, ChatMember, ChatNotify, ChatPeer, ChatRetentionDays, ChatRole };
 
 /**
  * Whether Chat can be used on this device now:
@@ -156,7 +156,18 @@ export interface ChatThreadNotice {
   created_at: string;
 }
 
-export type ChatThreadItem = ChatThreadMessage | ChatThreadNotice;
+/** A call's line, written by the server when the call ended: who called whom, how it ended, when (`call`). */
+export interface ChatThreadCall {
+  kind: 'call';
+  id: string;
+  seq: number;
+  call: ChatCallEntry;
+  /** This person called. */
+  from_me: boolean;
+  created_at: string;
+}
+
+export type ChatThreadItem = ChatThreadMessage | ChatThreadNotice | ChatThreadCall;
 
 /** A search hit on this device: a chat by its name (`message_id` null), or a message to open the thread at. */
 export interface ChatSearchResult {

@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { fromBase64Url } from '@/lib/chat/bytes';
 import { open as openSealed, type SealKey } from '@/lib/chat/seal';
 import { ChatStore } from '@/lib/chat/store';
-import type { ChatThreadMessage } from '@/lib/chat/types';
+import type { ChatThreadMessage, ChatThreadNotice } from '@/lib/chat/types';
 
 // Group chats in the engine, against the in-memory delivery service.
 
@@ -23,7 +23,7 @@ async function person(userId: string, device: string) {
 }
 
 const syncAll = async (...devices: Tab[]) => { for (const on of devices) await on.as(engine => engine.sync()); };
-const lines = (on: Tab, id: string) => (on.engine.thread(id) ?? []).filter(item => item.kind !== 'message').map(item => `${item.name} ${item.kind}`);
+const lines = (on: Tab, id: string) => (on.engine.thread(id) ?? []).filter((item): item is ChatThreadNotice => item.kind !== 'message' && item.kind !== 'call').map(item => `${item.name} ${item.kind}`);
 const own = (userId: string, device: string) => [...server.devices.values()].find(item => item.device === `${userId}:${device}`)!;
 
 /** Alex's group chat with Blair and Casey. */

@@ -149,6 +149,21 @@ function askApp(bridge: AndroidBridge, message: { type: string; id: string } & R
   });
 }
 
+/** The first bridge level whose app rings for calls and holds them in its own call screen. */
+export const CALL_BRIDGE_LEVEL = 5;
+
+/**
+ * Who takes calls on this page: `page` runs them here with the browser's
+ * WebRTC (a browser, the installed web app, an app without the call module
+ * while it is open, and the app's own call screen at /call); `app` leaves them
+ * to the Android app's call module; null where this page cannot (no WebRTC,
+ * or no microphone outside a secure context).
+ */
+export function callSupport(): 'page' | 'app' | null {
+  if (appBridgeLevel() >= CALL_BRIDGE_LEVEL && window.location.pathname !== '/call') return 'app';
+  return typeof RTCPeerConnection === 'function' && window.isSecureContext && !!navigator.mediaDevices?.getUserMedia ? 'page' : null;
+}
+
 /** The first bridge level whose file hand-over takes a target (`handOverFile`). */
 export const FILE_HAND_OVER_BRIDGE_LEVEL = 4;
 

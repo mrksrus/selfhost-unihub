@@ -6,7 +6,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { afterEach, beforeAll, expect, vi } from 'vitest';
-import type { ChatAccount, ChatConversation, ChatMessage } from '../../api/src/contracts/chat';
+import type { ChatAccount, ChatCall, ChatCallOutcome, ChatConversation, ChatMessage } from '../../api/src/contracts/chat';
 import { startChatEngine } from '@/lib/chat/engine';
 import { loadMls } from '@/lib/chat/mls';
 import { seal } from '@/lib/chat/seal';
@@ -99,16 +99,19 @@ const here = () => {
   return browser;
 };
 
-/** Web Locks of one browser: exclusive, granted in request order. */
+/** Web Locks of one browser: exclusive, granted in request order; `ifAvailable` gets null while it is held or asked for. */
 class Locks {
   private held = new Map<string, Promise<void>>();
-  request(name: string, options: { signal?: AbortSignal }, grant: () => Promise<void>) {
-    const before = this.held.get(name) ?? Promise.resolve();
+  private asked = new Map<string, number>();
+  request(name: string, options: { signal?: AbortSignal; ifAvailable?: boolean }, grant: (lock: { name: string } | null) => Promise<void> | void) {
     const run = AsyncLocalStorage.snapshot();
+    if (options.ifAvailable && this.asked.get(name)) return Promise.resolve(run(grant, null));
+    this.asked.set(name, (this.asked.get(name) ?? 0) + 1);
+    const before = this.held.get(name) ?? Promise.resolve();
     const result = before.then(() => {
       if (options.signal?.aborted) throw new DOMException('aborted', 'AbortError');
-      return run(grant);
-    });
+      return run(grant, { name });
+    }).finally(() => this.asked.set(name, this.asked.get(name)! - 1));
     this.held.set(name, result.catch(() => undefined));
     return result;
   }
@@ -158,6 +161,12 @@ interface Conversation {
   name?: string; managers?: string[]; joined: Map<string, number>; retention: { days: 30 | 90 | 180 | 365; from: string } | null;
 }
 interface Group { conversation: string; welcome: string | null; devices: Map<string, boolean> }
+interface Call {
+  id: string; conversation: string; caller: string; callee: string; callerDevice: string; answered: string | null; state: ChatCall['state'];
+  outcome: ChatCallOutcome | null; created_at: string; answered_at: string | null; signals: { id: number; from: string; payload: string }[];
+}
+// A missed call for the callee, which counts as unread for them.
+const MISSED: (ChatCallOutcome | undefined)[] = ['missed', 'cancelled', 'busy'];
 
 function deliveryService() {
   const names = new Map([[ALEX, 'Alex Example'], [BLAIR, 'Blair Example']]);
@@ -171,7 +180,9 @@ function deliveryService() {
   const posts = new Map<string, { mentions: string[] | undefined; previews: { chat_device_id: string; sealed: string }[]; attachments: string[] | undefined }>();
   /** Uploaded ciphertext by id; `message` once a post names it. */
   const attachments = new Map<string, { conversation: string; uploader: string; blob: Blob; message: string | null }>();
-  const state = { fileLimitMb: 50, uploads: 0, downloads: 0, holdUploads: false, onHold: () => {}, onUpload: (() => {}) as (id: string) => void, ageDays: 0, forbidDelete: false, loseGroupAnswer: false, failArchive: false, refusedOffline: () => {}, groupGate: null as null | { waiting: number; size: number; open: () => void; opened: Promise<void> } };
+  const calls = new Map<string, Call>();
+  let signalIds = 0;
+  const state = { hint: (_users: string[]) => {}, fileLimitMb: 50, uploads: 0, downloads: 0, holdUploads: false, onHold: () => {}, onUpload: (() => {}) as (id: string) => void, ageDays: 0, forbidDelete: false, loseGroupAnswer: false, failArchive: false, refusedOffline: () => {}, groupGate: null as null | { waiting: number; size: number; open: () => void; opened: Promise<void> } };
 
   const ok = (data: unknown) => ({ data });
   const refuse = (status: number, code: string, details?: unknown) => ({ error: code, status, code, details });
@@ -191,7 +202,8 @@ function deliveryService() {
     const base = {
       id: conversation.id, current_group_id: conversation.current, last_seq: conversation.last_seq,
       last_activity_at: entries.at(-1)?.created_at ?? null, read_seq: mine.read, delivered_seq: mine.delivered, joined_seq: joined,
-      unread: entries.filter(item => item.kind === 'message' && !item.replaces && item.ciphertext && item.seq > Math.max(mine.read, joined) && item.sender_user_id !== userId).length,
+      unread: entries.filter(item => (item.kind === 'call' ? MISSED.includes(item.call?.outcome) : item.kind === 'message' && !item.replaces && item.ciphertext)
+        && item.seq > Math.max(mine.read, joined) && item.sender_user_id !== userId).length,
       notify: 'all' as const, retention_days: conversation.retention?.days ?? null, retention_from: conversation.retention?.from ?? null,
     };
     if (conversation.name !== undefined) {
@@ -215,6 +227,91 @@ function deliveryService() {
     for (const [id, copy] of archive) if (copy.user === person && messages.some(item => item.id === copy.message && item.conversation_id === conversation.id)) archive.delete(id);
   };
 
+  const direct = (people: string[]) => {
+    let found = [...conversations.values()].find(item => item.name === undefined && same(item.people, people));
+    if (!found) {
+      found = { id: crypto.randomUUID(), people, current: null, last_seq: 0, marks: new Map(), joined: new Map(), retention: null };
+      conversations.set(found.id, found);
+    }
+    return found;
+  };
+  const isEnd = (call: Call, device: Device | undefined) => !!device && (call.callerDevice === device.id || call.answered === device.id);
+  const callView = (call: Call, device: Device | undefined): ChatCall => ({ id: call.id, conversation_id: call.conversation, caller_user_id: call.caller,
+    callee_user_id: call.callee, caller_name: names.get(call.caller)!, callee_name: names.get(call.callee)!, state: call.state, outcome: call.outcome,
+    this_device: isEnd(call, device), created_at: call.created_at, answered_at: call.answered_at, ended_at: call.state === 'ended' ? new Date().toISOString() : null });
+  // Hints reach the pages after the answer, as the live stream's do.
+  const hint = (call: Call, users = [call.caller, call.callee]) => void Promise.resolve().then(() => state.hint(users));
+  /** A call ends: its signals go and its entry is written after the chat's last one. */
+  function finish(call: Call, outcome: ChatCallOutcome) {
+    const at = conversations.get(call.conversation)!;
+    Object.assign(call, { state: 'ended', outcome, signals: [] });
+    messages.push({ id: crypto.randomUUID(), conversation_id: at.id, seq: ++at.last_seq, group_id: null, sender_user_id: call.caller, sender_chat_device_id: call.callerDevice,
+      kind: 'call', replaces: null, format: 0, ciphertext: null, created_at: new Date().toISOString(),
+      call: { call_id: call.id, outcome, caller_user_id: call.caller, callee_user_id: call.callee, started_at: call.created_at, answered_at: call.answered_at, ended_at: new Date().toISOString() } });
+    hint(call);
+  }
+  /** The calls routes (api/src/services/chat-calls.ts) for the device of `mine`. */
+  function callRoute(key: string, me: string, mine: Device | undefined, target: string, body: Record<string, unknown>, params: URLSearchParams) {
+    const call = calls.get(target);
+    if (key !== 'POST /chat/calls' && key !== 'GET /chat/calls/current' && !(call && (call.caller === me || call.callee === me))) return refuse(404, 'CHAT_CALL_NOT_FOUND');
+    switch (key) {
+      case 'POST /chat/calls': {
+        const peer = (body.user_id as string | undefined) ?? conversations.get(body.conversation_id as string)!.people.find(person => person !== me)!;
+        const live = [...calls.values()].filter(item => item.state !== 'ended');
+        const incoming = live.find(item => item.caller === peer && item.callee === me && item.state === 'ringing');
+        if (incoming) return ok({ call: callView(incoming, mine), started: false, ice_servers: [] });
+        if (live.some(item => item.caller === me || item.callee === me)) return refuse(409, 'CHAT_CALL_IN_PROGRESS');
+        const made: Call = { id: crypto.randomUUID(), conversation: direct([me, peer].sort()).id, caller: me, callee: peer, callerDevice: mine!.id, answered: null,
+          state: 'ringing', outcome: null, created_at: new Date().toISOString(), answered_at: null, signals: [] };
+        calls.set(made.id, made);
+        if (live.some(item => item.caller === peer || item.callee === peer)) { finish(made, 'busy'); return refuse(409, 'CHAT_CALL_BUSY'); }
+        hint(made);
+        return ok({ call: callView(made, mine), started: true, ice_servers: [] });
+      }
+      case 'GET /chat/calls/current': {
+        const found = [...calls.values()].reverse().find(item => item.state !== 'ended' && (item.caller === me || item.callee === me));
+        return ok({ call: found ? callView(found, mine) : null });
+      }
+      case 'POST /chat/calls/:id/answer':
+        if (call!.caller === me) return refuse(403, 'CHAT_CALL_DEVICE');
+        if (call!.answered !== mine!.id) {
+          if (call!.state === 'ended') return refuse(409, 'CHAT_CALL_ENDED');
+          if (call!.state === 'active') return refuse(409, 'CHAT_CALL_ANSWERED');
+          Object.assign(call!, { state: 'active', answered: mine!.id, answered_at: new Date().toISOString() });
+          hint(call!);
+        }
+        return ok({ call: callView(call!, mine), ice_servers: [] });
+      case 'POST /chat/calls/:id/end':
+        if (call!.state !== 'ended') {
+          const caller = call!.caller === me;
+          if (!(call!.state === 'ringing' && !caller) && !isEnd(call!, mine)) return refuse(403, 'CHAT_CALL_DEVICE');
+          finish(call!, body.failed ? 'failed' : call!.state === 'active' ? 'answered' : caller ? 'cancelled' : 'declined');
+        }
+        return ok({ call: callView(call!, mine) });
+      case 'POST /chat/calls/:id/signals':
+        if (call!.state === 'ended') return refuse(409, 'CHAT_CALL_ENDED');
+        if (!isEnd(call!, mine)) return refuse(403, 'CHAT_CALL_DEVICE');
+        call!.signals.push({ id: ++signalIds, from: mine!.id, payload: body.payload as string });
+        hint(call!, [call!.caller === me ? call!.callee : call!.caller]);
+        return ok({ id: signalIds });
+      case 'GET /chat/calls/:id/signals': {
+        if (!isEnd(call!, mine)) return refuse(403, 'CHAT_CALL_DEVICE');
+        const after = Number(params.get('after'));
+        const signals = call!.signals.filter(item => item.id > after && item.from !== mine!.id).slice(0, 100);
+        return ok({ signals: signals.map(({ id, payload }) => ({ id, payload, created_at: '' })), after: signals.at(-1)?.id ?? after });
+      }
+      case 'POST /chat/calls/:id/alive':
+        if (!isEnd(call!, mine)) return refuse(403, 'CHAT_CALL_DEVICE');
+        return ok({ call: callView(call!, mine) });
+      case 'GET /chat/calls/:id/ice':
+        if (call!.state === 'ended') return refuse(409, 'CHAT_CALL_ENDED');
+        return ok({ ice_servers: [] });
+    }
+    throw new Error(`no route ${key}`);
+  }
+  /** The ring time is over for a call nobody answered: the server's sweep. */
+  const ringOver = (callId: string) => { const call = calls.get(callId)!; if (call.state === 'ringing') finish(call, 'missed'); };
+
   async function handle(method: string, url: string, body: Record<string, unknown> = {}) {
     const browser = here();
     if (browser.offline) {
@@ -230,10 +327,11 @@ function deliveryService() {
     const conversation = conversationId ? conversations.get(conversationId) : undefined;
     if (conversationId && !conversation?.people.includes(me)) return refuse(404, 'CONVERSATION_NOT_FOUND');
     const key = `${method} ${conversationId ? `/chat/conversations/:id${rest?.replace(/^\/members\/.+/, '/members/:userId') ?? ''}` : route.replace(/\/chat\/(groups|messages|attachments)\/[^/]+/, '/chat/$1/:id')
-      .replace(/^\/chat\/devices\/(?!current|approvals)[^/]+\//, '/chat/devices/:id/')}`;
+      .replace(/^\/chat\/devices\/(?!current|approvals)[^/]+\//, '/chat/devices/:id/').replace(/^\/chat\/calls\/(?!current)[^/]+/, '/chat/calls/:id')}`;
     const target = route.split('/')[3];
     if (key.includes(' /chat/') && !OPEN_TO_WAITING.includes(key) && !mine?.joined) return refuse(403, 'CHAT_DEVICE_WAITING');
     const asked = devices.get(target);
+    if (key.includes(' /chat/calls')) return callRoute(key, me, mine, target, body, params);
     switch (key) {
       case 'GET /devices':
         return ok({ devices: [...devices.values()].filter(device => device.user_id === me && device.device !== null)
@@ -430,7 +528,7 @@ function deliveryService() {
       }
       case 'POST /chat/archive':
         for (const copy of body.copies as { message_id: string; sealed: string }[]) {
-          if (messages.some(item => item.id === copy.message_id && item.ciphertext) && !archive.has(`${me}:${copy.message_id}`)) {
+          if (messages.some(item => item.id === copy.message_id && (item.ciphertext || item.kind === 'call')) && !archive.has(`${me}:${copy.message_id}`)) {
             archive.set(`${me}:${copy.message_id}`, { user: me, message: copy.message_id, sealed: copy.sealed });
           }
         }
@@ -446,7 +544,7 @@ function deliveryService() {
   }
   /** A day passes: the server deletes the uploads no message names. */
   const sweepUnsent = () => { for (const [id, file] of attachments) if (!file.message) attachments.delete(id); };
-  return { names, devices, conversations, groups, messages, archive, posts, attachments, state, handle, sweepUnsent };
+  return { names, devices, conversations, groups, messages, archive, posts, attachments, calls, state, handle, sweepUnsent, ringOver, finish };
 }
 
 export let server = deliveryService();
@@ -483,7 +581,9 @@ export function tab(browser: Browser): Tab {
   return { browser, engine, as: act => context.run(browser, () => act(engine)) };
 }
 
-export const open = (userId: string, device: string) => tab({ userId, device, idb: new IDBFactory(), locks: new Locks(), offline: false, signedOut: false });
+/** A new browser of a person: its own storage and locks. */
+export const browser = (userId: string, device: string): Browser => ({ userId, device, idb: new IDBFactory(), locks: new Locks(), offline: false, signedOut: false });
+export const open = (userId: string, device: string) => tab(browser(userId, device));
 
 /** Resolves when `check` holds, tested at every change the engine announces. */
 export function until(on: Tab, check: (engine: ChatEngine) => boolean) {

@@ -8,11 +8,13 @@ import type {
   ChatDevicesResponse, ChatGroupCreateRequest, ChatKeyBackup, ChatKeyPackageClaimResponse, ChatMarksRequest, ChatMarksResponse, ChatMessage,
   ChatMessageCreateRequest, ChatMessageDeletedResponse, ChatMessageResponse, ChatMessagesResponse, ChatCandidatesResponse, ChatConversationUpdatedResponse,
   ChatGroupChatCreateRequest, ChatMembersResponse, ChatNotify, ChatNotifyResponse, ChatAttachmentResponse, ChatDeviceResponse, ChatChallengeResponse,
-  ChatApprovalsResponse,
+  ChatApprovalsResponse, ChatCallAnswerResponse, ChatCallResponse, ChatCallSignalsResponse, ChatCallStartRequest, ChatCallStartResponse,
+  ChatCurrentCallResponse, ChatIceServersResponse,
 } from '../../api/src/contracts/chat';
 
 const data = async <T>(response: Promise<ApiResponse<T>>) => unwrap(await response)!;
 const conversation = (id: string) => `/chat/conversations/${encodeURIComponent(id)}`;
+const call = (id: string) => `/chat/calls/${encodeURIComponent(id)}`;
 
 export const chatApi = {
   account: async (): Promise<ChatAccount | null> => (await data(api.get<ChatAccountResponse>('/chat/account'))).account,
@@ -57,6 +59,16 @@ export const chatApi = {
   upload: async (id: string, fileId: string, ciphertext: Blob, onProgress: (sent: number) => void, signal: AbortSignal) =>
     (await data(api.uploadBlob<ChatAttachmentResponse>(`${conversation(id)}/attachments?id=${encodeURIComponent(fileId)}`, ciphertext, 'application/octet-stream', 'POST', { onProgress, signal }))).attachment,
   download: (fileId: string, signal?: AbortSignal) => api.getStream(`/chat/attachments/${encodeURIComponent(fileId)}`, { signal }),
+  // Calls (lib/chat/call.ts).
+  startCall: (body: ChatCallStartRequest) => data(api.post<ChatCallStartResponse>('/chat/calls', body)),
+  currentCall: async () => (await data(api.get<ChatCurrentCallResponse>('/chat/calls/current'))).call,
+  answerCall: (id: string) => data(api.post<ChatCallAnswerResponse>(`${call(id)}/answer`)),
+  /** keepalive: sent while the page closes. */
+  endCall: async (id: string, failed = false, keepalive = false) => (await data(api.post<ChatCallResponse>(`${call(id)}/end`, failed ? { failed } : {}, { keepalive }))).call,
+  callSignal: (id: string, payload: string) => data(api.post(`${call(id)}/signals`, { payload })),
+  callSignals: (id: string, after: number) => data(api.get<ChatCallSignalsResponse>(`${call(id)}/signals?after=${after}`)),
+  callAlive: async (id: string) => (await data(api.post<ChatCallResponse>(`${call(id)}/alive`))).call,
+  callIce: async (id: string) => (await data(api.get<ChatIceServersResponse>(`${call(id)}/ice`))).ice_servers,
   archive: (cursor: string | null) => data(api.get<ChatArchiveResponse>(`/chat/archive?limit=500${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`)),
 };
 
