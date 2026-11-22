@@ -14,7 +14,9 @@ const VOLUME = 0.08;
 export function playCallSound(sound: 'ring' | 'ringback'): () => void {
   const Context = typeof window === 'undefined' ? undefined : window.AudioContext;
   if (!Context) return () => undefined;
-  const context = new Context();
+  let context: AudioContext;
+  // A browser that will open no further audio output: the call goes on without the sound.
+  try { context = new Context(); } catch { return () => undefined; }
   const { every, tones } = SOUNDS[sound];
   const round = () => {
     for (const [frequency, start, length] of tones) {

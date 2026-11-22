@@ -111,36 +111,36 @@
       "bytes": 105512
     },
     "call-active-phone-dark.png": {
-      "sha256": "177201308abcea86be900f76a4fa34c7133f88f13d428f11279101b4767ccfa0",
-      "bytes": 42165
+      "sha256": "fdfda9a35363ab9803fb173cafd607635a6e96d4f41e2fa54b38df4afa83786b",
+      "bytes": 42183
     },
     "call-active-phone-light.png": {
-      "sha256": "a288ff1d849fe50897d9d320ab63acfaa14e45b17670b4523d515bfc46deb2af",
-      "bytes": 44829
+      "sha256": "1c98e04934dd0b60cf2587cbe851ded1000cd05cdbc05fc192f93863ce5cde46",
+      "bytes": 44786
     },
     "call-active-wide-dark.png": {
-      "sha256": "12bc6029db08ec85b90efcbeb209d592a2beeeed8c2e80b5fc3f46ba6249aede",
-      "bytes": 84520
+      "sha256": "e35e5922c5ec762778205e1f47e7f9fb7654063dc5ea87a32a3c02016690b7ce",
+      "bytes": 84499
     },
     "call-active-wide-light.png": {
-      "sha256": "a212cabe79cc9802b8bda9095c7093004b7e97bd3d6ac571fdd23f3e1686f1ac",
-      "bytes": 87886
+      "sha256": "551a37ae0d630fcfbd675a4249fb7bad13c0be19bd3ea15406c5fef5f2d5ce93",
+      "bytes": 87869
     },
     "call-calling-phone-dark.png": {
-      "sha256": "31f52f586b57fd99f29482899976dab1fa59cf176ff9a8849a7d64559db3076d",
-      "bytes": 42924
+      "sha256": "d510ef9e3520be7fdbfce404a91e6558d46751aace399e59ac5659700ff284ff",
+      "bytes": 42920
     },
     "call-calling-phone-light.png": {
-      "sha256": "bd1f1fea5ed31203b8013223e468e396d3a12077de670387317ea005b764a5de",
-      "bytes": 45471
+      "sha256": "1f05adb94b996316fd8f3df4f145bf80b922569223129f68a55821eef7e2b600",
+      "bytes": 45423
     },
     "call-calling-wide-dark.png": {
-      "sha256": "a4571acf3ece642725a4386f8f4f6754f4350e129222a0db75bb8ff185de9536",
-      "bytes": 85183
+      "sha256": "57e342c183c9d172aaef20fab713341a3e136d0c42cf6f914532b0babc278330",
+      "bytes": 85255
     },
     "call-calling-wide-light.png": {
-      "sha256": "c5ef79445da2180cf837eaedbd78404fbe1e17ca18c37c0d9a12c3af63a49d21",
-      "bytes": 88614
+      "sha256": "6ae96e8db42733757ca453d91aaa6e3654710ee3466dae25ab25e23d596117da",
+      "bytes": 88686
     },
     "call-ended-phone-dark.png": {
       "sha256": "e040e94c30d7f62a4ae5e382f7adfa9d2ef5e7d7028cd512b51c508059d4a005",
@@ -167,20 +167,20 @@
       "bytes": 14631
     },
     "call-reconnecting-phone-dark.png": {
-      "sha256": "6629ad58315c23404e62d44f08fb6ab61777c196c5d9c60f55403d3f781e05d3",
-      "bytes": 41411
+      "sha256": "58323c533b4e85d9b346ce4eb43a50a896518ebcba22ef0a5fc32e44064f4ef2",
+      "bytes": 41435
     },
     "call-reconnecting-phone-light.png": {
-      "sha256": "c478dd795f217f18992a4456a05f344a47d5d46fbd427b485b16e2f10408cf5a",
-      "bytes": 43483
+      "sha256": "98d871375d6797a09b5bb3381064ba42596a550797d9b4ee1645d2d979a47470",
+      "bytes": 43496
     },
     "call-reconnecting-wide-dark.png": {
-      "sha256": "42e1dc40452c60fd72c6b0c91bf11b4dc5042ccf57824c1f8e72c351fcc76607",
-      "bytes": 88453
+      "sha256": "7a5e979bd7d5278d047bc7e3f20e57b0b9567503c36230870318e3f6dffe3435",
+      "bytes": 88462
     },
     "call-reconnecting-wide-light.png": {
-      "sha256": "7c940d7ed84541d6c993ec83e259059f933d576c364893543cb79eac51064586",
-      "bytes": 91465
+      "sha256": "9b807e52c8ad646a87cd8f88bdfeb0508e719a81765319e274fc966b5fd13cf4",
+      "bytes": 91477
     },
     "call-ringing-phone-dark.png": {
       "sha256": "6a2d518401a4f49c54102d557c3cafc185f14fd4da38084f90ed570bade8c452",
@@ -2185,6 +2185,56 @@
         "chat-calls-phone-light.png",
         "chat-calls-wide-dark.png",
         "chat-calls-wide-light.png"
+      ],
+      "removed": []
+    },
+    {
+      "date": "2026-11-22T06:53:47.118Z",
+      "reason": "Hang up stands where Decline stood on the call's screen, so a second tap meant for Answer does not end the call",
+      "source": {
+        "commit": "a4eddaa8e4d6783f2a02b0c48ff1c32127673bd8",
+        "branch": "p7-035",
+        "dirty": true,
+        "digest": "b73a6ca4617bcac2d04c4be3831054f6cff9396480fd48d0eef7ff2e92e2bd62"
+      },
+      "render": {
+        "playwright": "1.64.0",
+        "browser": "chromium-headless-shell 156.0.8078.4",
+        "browserArgs": [
+          "--font-render-hinting=none",
+          "--disable-lcd-text",
+          "--force-color-profile=srgb",
+          "--disable-gpu",
+          "--disable-skia-runtime-opts",
+          "--num-raster-threads=1",
+          "--disable-partial-raster"
+        ],
+        "platform": "linux-x64",
+        "fonts": {
+          "@fontsource/inter": "5.3.0",
+          "@fontsource/jetbrains-mono": "5.3.0"
+        },
+        "fontconfig": "isolated",
+        "deviceScaleFactor": 1
+      },
+      "host": {
+        "node": "v26.12.1",
+        "ci": false
+      },
+      "added": [],
+      "changed": [
+        "call-active-phone-dark.png",
+        "call-active-phone-light.png",
+        "call-active-wide-dark.png",
+        "call-active-wide-light.png",
+        "call-calling-phone-dark.png",
+        "call-calling-phone-light.png",
+        "call-calling-wide-dark.png",
+        "call-calling-wide-light.png",
+        "call-reconnecting-phone-dark.png",
+        "call-reconnecting-phone-light.png",
+        "call-reconnecting-wide-dark.png",
+        "call-reconnecting-wide-light.png"
       ],
       "removed": []
     }

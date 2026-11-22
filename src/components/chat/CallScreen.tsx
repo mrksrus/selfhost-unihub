@@ -57,7 +57,9 @@ export function CallBody({ calls, call, name, connected, dialog, onAnswer, onOpe
         </> : ended ? (
           call.ended !== 'other-tab' && <Button variant="outline" className="min-w-28" onClick={() => calls.dismiss()}>Close</Button>
         ) : <>
-          <Button variant={call.muted ? 'secondary' : 'outline'} aria-pressed={call.muted} onClick={() => calls.mute(!call.muted)}>
+          {/* Where "Decline" was: a second tap meant for "Answer" must not land on it. */}
+          <Button variant="destructive" className="min-w-28" onClick={() => void calls.hangUp()}><PhoneOff aria-hidden="true" />Hang up</Button>
+          <Button variant={call.muted ? 'secondary' : 'outline'} className="min-w-28" aria-pressed={call.muted} onClick={() => calls.mute(!call.muted)}>
             {call.muted ? <MicOff aria-hidden="true" /> : <Mic aria-hidden="true" />}Mute
           </Button>
           {routes.length > 0 && (
@@ -70,7 +72,6 @@ export function CallBody({ calls, call, name, connected, dialog, onAnswer, onOpe
               </DropdownMenuContent>
             </DropdownMenu>
           )}
-          <Button variant="destructive" onClick={() => void calls.hangUp()}><PhoneOff aria-hidden="true" />Hang up</Button>
         </>}
       </div>
       {!ringing && (onOpenChat || (onHide && !ended)) && (

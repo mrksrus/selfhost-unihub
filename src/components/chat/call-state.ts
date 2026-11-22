@@ -18,7 +18,9 @@ export interface CallPerson { user_id?: string | null; name: string; can_write?:
 
 // People the server refused a call to under the administrator's rule, with its
 // sentence: the page learns that rule only by asking, and keeps it until it is loaded again.
+// Kept per signed-in person: the next account in this tab has rules of its own.
 const forbidden = new Map<string, string>();
+const refusal = (ownId: string | undefined, userId: string) => `${ownId}:${userId}`;
 
 /**
  * Calling a colleague from here: `start`, and `reason` while a call cannot be
@@ -36,7 +38,7 @@ export function useCallTo(person: CallPerson | undefined): { reason: string | un
   const call = held?.call;
   const reason = rule
     ?? (person.can_write === false ? person.reason ?? `${person.name} cannot be called now.` : undefined)
-    ?? forbidden.get(userId)
+    ?? forbidden.get(refusal(ownId, userId))
     ?? (lock.locked('chat') ? 'Unlock Chat to call.'
       : callSupport() !== 'page' ? 'This browser cannot make calls.'
       : call?.ended === 'other-tab' ? 'You are on a call in another tab.'
@@ -82,6 +84,7 @@ export function useCallScreen(held: { calls: ChatCalls; call: CallView | null } 
   const call = held?.call ?? null;
   const calls = held?.calls;
   const lock = useAppLock();
+  const ownId = useContext(AuthContext)?.user?.id;
   const quiet = useUserSettings().values.chat_notification_detail === 'none';
   const name = call && !lock.locked('chat') ? call.peer.name : null;
   const title = name ? `${name} is calling` : 'Incoming call';
@@ -110,11 +113,11 @@ export function useCallScreen(held: { calls: ChatCalls; call: CallView | null } 
   useEffect(() => {
     if (!call) return;
     if (call.state === 'active') setConnectedId(call.id);
-    if (call.forbidden && call.peer.user_id && call.reason) forbidden.set(call.peer.user_id, call.reason);
+    if (call.forbidden && call.peer.user_id && call.reason) forbidden.set(refusal(ownId, call.peer.user_id), call.reason);
     if (!closesItself(call)) return;
     const timer = setTimeout(() => calls?.dismiss(), CLOSES_AFTER_MS);
     return () => clearTimeout(timer);
-  }, [call, calls]);
+  }, [call, calls, ownId]);
   useEffect(() => {
     if (!active) return;
     const timer = setInterval(tick, 1000);

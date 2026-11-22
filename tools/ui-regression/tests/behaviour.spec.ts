@@ -342,6 +342,12 @@ test.describe('P-11 touch targets are big enough and never overlap', () => {
     await expect(page.getByRole('alertdialog', { name: 'Blair Example is calling' })).toBeVisible();
     await settle();
     expectOnlyKnown(await touchViolations(page, '[role="alertdialog"]'), []);
+    // A second tap meant for "Answer" must not hang up: once answered, "Hang up" is not where "Answer" was.
+    const answer = (await page.getByRole('button', { name: 'Answer' }).boundingBox())!;
+    await withCall(page, { incoming: true, state: 'connecting' });
+    await open('/chat');
+    const hangUp = (await page.getByRole('button', { name: 'Hang up' }).boundingBox())!;
+    expect(hangUp.x + hangUp.width <= answer.x || hangUp.x >= answer.x + answer.width || hangUp.y + hangUp.height <= answer.y || hangUp.y >= answer.y + answer.height).toBe(true);
     await withCall(page, { state: 'active', answered_at: CALL_ANSWERED_AT, silenced: true });
     await open('/chat?c=chat-blair');
     await expect(page.getByRole('dialog', { name: 'Blair Example' })).toBeVisible();
