@@ -16,7 +16,7 @@ export type { ChatCallEntry, ChatCandidatesResponse, ChatDeviceName, ChatFollow,
  *   until then, and choosing the passphrase sets Chat up and joins it;
  * - `waiting`: the account exists and this device has not joined Chat, so it gets nothing of it. It joins with the
  *   passphrase (enterPassphrase) or an approval from one of `approvers`, the person's
- *   devices in Chat (askApproval; `code` is shown while the request is open, ten minutes);
+ *   devices in Chat (askApproval; `code` is shown while the request is open, until `code_expires_at`, ten minutes);
  * - `enter-passphrase`: the device joined (before devices waited) but does not hold the history key;
  * - `ready`;
  * - `failed`: starting failed (`reason`); `restart()` tries again.
@@ -25,7 +25,7 @@ export type ChatReadiness =
   | { state: 'starting' }
   | { state: 'unsupported'; reason: string }
   | { state: 'choose-passphrase' }
-  | { state: 'waiting'; approvers: ChatDeviceName[]; code: string | null }
+  | { state: 'waiting'; approvers: ChatDeviceName[]; code: string | null; code_expires_at: string | null }
   | { state: 'enter-passphrase' }
   | { state: 'ready' }
   | { state: 'failed'; reason: string };
@@ -256,8 +256,8 @@ export interface ChatEngine {
   startNewKey(currentPassword: string, passphrase: string): Promise<void>;
   /** A waiting device asks the person's devices in Chat to approve it; asking again starts a new code and ten minutes. */
   askApproval(): Promise<void>;
-  /** Lets a waiting device of the person in, handing it the history; rejects on a device without the history key. */
-  approve(chatDeviceId: string): Promise<void>;
+  /** Lets a waiting device of the person in, handing it the history, while its request still shows `code`; rejects with "That request has ended…" otherwise, and on a device without the history key. */
+  approve(chatDeviceId: string, code: string): Promise<void>;
   /** "This was not me": the request goes; the device keeps waiting and can be signed out from the device list. */
   dropApproval(chatDeviceId: string): Promise<void>;
 }

@@ -19,7 +19,7 @@ import { concat, fromBase64Url, toBase64Url } from './bytes';
 import { noteDevice, startDevice, type ChatDevice } from './device';
 import { createHistoryKey, unwrapHistoryKey, wrapHistoryKey } from './key-backup';
 import { MlsError, MlsUnavailableError, type MlsDevice } from './mls';
-import { approve, askApproval, openApproval, pairingCode, prove } from './pairing';
+import { APPROVAL_MS, approve, askApproval, openApproval, pairingCode, prove, type PairingKey } from './pairing';
 import { open, seal, type SealKey } from './seal';
 import { MAX_FILES, MAX_FILE_BYTES, PREVIEW_MAX_BYTES, downloadFile, fileRef, outgoingFiles, parseFiles, renewed, uploadExpired, uploadFile, type ChatFileRef, type OutgoingFile } from './files';
 import { searchChats } from './search';
@@ -179,6 +179,7 @@ class Engine implements ChatEngine {
   private requestedAt: string | null = null;
   private approvers: ChatDeviceName[] = [];
   private code: string | null = null;
+  private codeExpiresAt: string | null = null;
   private poll: ReturnType<typeof setTimeout> | undefined;
   /** Requests of the person's waiting devices, with the code made from the key the history is sealed to. */
   private approvals: { approval: ChatApproval; code: string; signed_in_at: string | null }[] = [];
@@ -309,7 +310,7 @@ class Engine implements ChatEngine {
     // Every tab shows what the store holds once a device was enrolled, so a screen is not torn down while the leading tab starts its device.
     if (!this.loaded || this.account === undefined || !this.enrolled) return { state: 'starting' };
     if (!this.account) return { state: 'choose-passphrase' };
-    if (this.waiting) return { state: 'waiting', approvers: this.approvers, code: this.code };
+    if (this.waiting) return { state: 'waiting', approvers: this.approvers, code: this.code, code_expires_at: this.codeExpiresAt };
     return this.historyKey ? { state: 'ready' } : { state: 'enter-passphrase' };
   }
 
@@ -1112,7 +1113,7 @@ class Engine implements ChatEngine {
   /** Takes the history key an approval handed over, and proves a held one while waiting. */
   private async joinChat() {
     const store = this.store!;
-    const sealed = await store.get<string>('keys', 'sealed');
+    const [sealed, pairing] = await Promise.all([store.get<string>('keys', 'sealed'), store.get<PairingKey>('keys', 'pairing')]);
     if (sealed) {
       // One sealed to another one-time key, or of another history key, is not taken; the device joined anyway and can take the passphrase.
       const key = this.account ? await openApproval(store, this.account, sealed).catch(() => null) : null;
@@ -1125,6 +1126,9 @@ class Engine implements ChatEngine {
       if (key) [this.historyKey, this.restorePending] = [key, true];
       this.channel?.postMessage('changed');
       this.changed();
+    } else if (pairing && !this.waiting) {
+      // Joined another way: the one-time key has nothing left to open.
+      await store.write([], transaction => { transaction.objectStore('keys').delete('pairing'); });
     }
     if (this.waiting && this.historyKey) await this.note(await prove(this.historyKey));
   }
@@ -1133,10 +1137,16 @@ class Engine implements ChatEngine {
   private async waitForAnswer() {
     this.approvers = (await fetchDevices()).filter(device => device.chat && !device.chat_waiting && !device.current)
       .map(({ id, kind, app_version, user_agent }) => ({ id, kind, app_version, user_agent }));
-    const pairing = this.requestedAt ? await this.store!.get<SealKey>('keys', 'pairing') : undefined;
-    this.code = pairing ? await pairingCode(pairing.publicKey) : null;
+    const stored = await this.store!.get<PairingKey>('keys', 'pairing');
+    // A minute after the server stopped taking an approval for it, no key sealed to it can still be on its way.
+    const over = !!stored && !(Date.now() - stored.asked_at < APPROVAL_MS + 60_000);
+    if (over) await this.store!.write([], transaction => { transaction.objectStore('keys').delete('pairing'); });
+    const asked = this.requestedAt && !over ? stored : undefined;
+    this.code = asked ? await pairingCode(asked.publicKey) : null;
+    this.codeExpiresAt = asked ? new Date(asked.asked_at + APPROVAL_MS).toISOString() : null;
     clearTimeout(this.poll);
-    if (this.code && !this.stopped) this.poll = setTimeout(() => void this.sync().catch(() => undefined), ANSWER_POLL_MS);
+    // Looked at again until the request is answered, and then until its key is gone.
+    if (stored && !over && !this.stopped) this.poll = setTimeout(() => void this.sync().catch(() => undefined), ANSWER_POLL_MS);
     this.changed(null);
   }
 
@@ -1150,17 +1160,25 @@ class Engine implements ChatEngine {
   }
 
   async askApproval() {
-    await this.note(await askApproval(this.store!));
-    await this.waitForAnswer();
+    const answer = await askApproval(this.store!);
+    // Approved a moment ago: the history handed over waits at the server, and the sync collects and opens it.
+    await this.note(answer.state === 'joined' ? await chatApi.device() : answer);
+    await (this.waiting ? this.waitForAnswer() : this.sync());
   }
 
-  async approve(chatDeviceId: string) {
+  async approve(chatDeviceId: string, code: string) {
     if (!this.historyKey) throw new Error('This device does not hold your chat history key. Approve on a device that shows your earlier messages.');
-    // The key whose code the person compared, never one fetched since.
-    const found = this.approvals.find(item => item.approval.chat_device_id === chatDeviceId);
-    if (!found) throw new Error('This request is no longer open. Ask again on the new device.');
-    await approve(this.historyKey, found.approval);
-    await this.loadApprovals();
+    const ended = () => new Error('That request has ended. Ask again on the other device.');
+    // Only the request whose code the person compared: one asked again since has another key and another code.
+    const found = this.approvals.find(item => item.approval.chat_device_id === chatDeviceId && item.code === code);
+    if (!found) throw ended();
+    try {
+      await approve(this.historyKey, found.approval);
+    } catch (error) {
+      throw hasCode(error, 'CHAT_APPROVAL_NOT_FOUND') ? ended() : error;
+    } finally {
+      await this.loadApprovals().catch(() => undefined);
+    }
   }
 
   async dropApproval(chatDeviceId: string) {
@@ -1177,7 +1195,10 @@ class Engine implements ChatEngine {
   async choosePassphrase(passphrase: string) {
     const key = await createHistoryKey();
     try {
-      await this.keepKey(key, await chatApi.createAccount(toBase64Url(key.publicKey), await wrapHistoryKey(key, passphrase)));
+      const account = await chatApi.createAccount(toBase64Url(key.publicKey), await wrapHistoryKey(key, passphrase));
+      // Setting Chat up let this device in: learnt before the account shows, so no screen asks to let it in.
+      if (this.waiting) await chatApi.device().then(answer => this.note(answer)).catch(() => undefined);
+      await this.keepKey(key, account);
     } catch (error) {
       // Chosen on another device meanwhile: this one asks for that passphrase instead.
       if (hasCode(error, 'CHAT_ACCOUNT_EXISTS')) await this.currentAccount();

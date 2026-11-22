@@ -15,6 +15,10 @@ afterEach(() => { vi.useRealTimers(); });
 const own = (userId: string, device: string) => [...server.devices.values()].find(item => item.device === `${userId}:${device}`)!;
 const state = (on: Tab) => on.engine.snapshot().readiness.state;
 const named = (device: string) => ({ id: device, kind: 'web', app_version: null, user_agent: null });
+const waits = (on: Tab) => until(on, engine => engine.snapshot().readiness.state === 'waiting');
+const codeOf = (on: Tab) => (on.engine.snapshot().readiness as { code: string | null }).code!;
+/** The one-time key the browser's store keeps for its request. */
+const pairingKey = (on: Tab) => on.as(engine => (engine as unknown as { store: { get(store: string, key: string): Promise<unknown> } }).store.get('keys', 'pairing'));
 
 describe('joining Chat on a device', { timeout: 60_000 }, () => {
   it('a person\'s first device waits until the passphrase sets Chat up, and can be written to from then on', async () => {
@@ -29,7 +33,12 @@ describe('joining Chat on a device', { timeout: 60_000 }, () => {
     await alex.as(engine => engine.sync());
     expect(alex.engine.snapshot().conversations[0].peer.can_write).toBe(false);
 
+    // From choosing to ready, with no moment in which the screen would ask to let the device in.
+    const seen: string[] = [];
+    const stop = blair.engine.subscribe(() => seen.push(state(blair)));
     await blair.as(engine => engine.choosePassphrase(PASSPHRASES[BLAIR]));
+    stop();
+    expect(seen).not.toContain('waiting');
     expect(blair.engine.snapshot().readiness).toEqual({ state: 'ready' });
     expect(own(BLAIR, 'b1').joined).toBe(true);
     await alex.as(engine => engine.sync());
@@ -46,7 +55,7 @@ describe('joining Chat on a device', { timeout: 60_000 }, () => {
     const otherTab = tab(blair2.browser);
     await until(blair2, engine => engine.snapshot().readiness.state === 'waiting');
     await blair2.as(engine => engine.sync());
-    expect(blair2.engine.snapshot().readiness).toEqual({ state: 'waiting', approvers: [named(`${BLAIR}:b1`)], code: null });
+    expect(blair2.engine.snapshot().readiness).toEqual({ state: 'waiting', approvers: [named(`${BLAIR}:b1`)], code: null, code_expires_at: null });
 
     await send(alex, conversation, 'while it waits');
     expect([...[...server.groups.values()].at(-1)!.devices.keys()]).not.toContain(own(BLAIR, 'b2').id);
@@ -57,11 +66,11 @@ describe('joining Chat on a device', { timeout: 60_000 }, () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     await blair2.as(engine => engine.askApproval());
     const asked = blair2.engine.snapshot().readiness;
-    expect(asked).toMatchObject({ state: 'waiting', code: expect.stringMatching(/^\d{6}$/) });
+    expect(asked).toMatchObject({ state: 'waiting', code: expect.stringMatching(/^\d{6}$/), code_expires_at: expect.any(String) });
     await blair.as(engine => engine.sync());
     expect(blair.engine.snapshot().approvals).toEqual([{ chat_device_id: own(BLAIR, 'b2').id, device: named(`${BLAIR}:b2`), requested_at: expect.any(String),
       code: (asked as { code: string }).code, signed_in_at: '2026-01-02T03:04:05.000Z' }]);
-    await blair.as(engine => engine.approve(own(BLAIR, 'b2').id));
+    await blair.as(engine => engine.approve(own(BLAIR, 'b2').id, codeOf(blair2)));
     expect(blair.engine.snapshot().approvals).toEqual([]);
 
     // No hint reaches this service: the waiting device finds the answer at its interval (run as that browser, which fake timers do not carry).
@@ -83,9 +92,65 @@ describe('joining Chat on a device', { timeout: 60_000 }, () => {
     own(BLAIR, 'b2').pair!.public_key = toBase64Url((await createSealKey(false)).publicKey);
     await blair.as(engine => engine.sync());
     expect(blair.engine.snapshot().approvals[0].code).not.toBe(shown);
-    await blair.as(engine => engine.approve(own(BLAIR, 'b2').id));
+    await blair.as(engine => engine.approve(own(BLAIR, 'b2').id, blair.engine.snapshot().approvals[0].code));
     await blair2.as(engine => engine.sync());
     expect(blair2.engine.snapshot()).toMatchObject({ readiness: { state: 'enter-passphrase' }, holds_history_key: false });
+  });
+
+  it('an approval is for the code the person compared: a request asked again since has ended', async () => {
+    const { blair } = await pair();
+    const blair2 = open(BLAIR, 'b2');
+    await waits(blair2);
+    const id = own(BLAIR, 'b2').id;
+    await blair2.as(engine => engine.askApproval());
+    const first = codeOf(blair2);
+    await blair.as(engine => engine.sync());
+    await blair2.as(engine => engine.askApproval());
+    expect(codeOf(blair2)).not.toBe(first);
+    // The first browser still lists the first request, which the server no longer holds; then it lists the second.
+    await expect(blair.as(engine => engine.approve(id, first))).rejects.toThrow('That request has ended. Ask again on the other device.');
+    expect(blair.engine.snapshot().approvals.map(item => item.code)).toEqual([codeOf(blair2)]);
+    await expect(blair.as(engine => engine.approve(id, first))).rejects.toThrow('That request has ended. Ask again on the other device.');
+    expect(own(BLAIR, 'b2').joined).toBe(false);
+    await blair.as(engine => engine.approve(id, codeOf(blair2)));
+    expect(own(BLAIR, 'b2').joined).toBe(true);
+  });
+
+  it('asking again between an approval and collecting it keeps the history that was handed over', async () => {
+    const { alex, blair, conversation } = await pair();
+    await send(alex, conversation, 'earlier');
+    await blair.as(engine => engine.sync());
+    const blair2 = open(BLAIR, 'b2');
+    await waits(blair2);
+    // The waiting browser does not look for its answer by itself here.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    await blair2.as(engine => engine.askApproval());
+    await blair.as(engine => engine.sync());
+    await blair.as(engine => engine.approve(own(BLAIR, 'b2').id, codeOf(blair2)));
+    await blair2.as(engine => engine.askApproval());
+    await until(blair2, engine => engine.snapshot().readiness.state === 'ready' && engine.snapshot().holds_history_key && !engine.snapshot().restore);
+    expect(texts(blair2, conversation)).toEqual(['earlier']);
+    expect(await pairingKey(blair2)).toBeUndefined();
+  });
+
+  it('the one-time key of a request goes once the request is over, and when the device joins another way', async () => {
+    await pair();
+    const blair2 = open(BLAIR, 'b2');
+    await waits(blair2);
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    await blair2.as(engine => engine.askApproval());
+    expect(await pairingKey(blair2)).toBeDefined();
+    vi.setSystemTime(Date.now() + 11 * 60_000 + 1000);
+    await blair2.as(engine => engine.sync());
+    expect(blair2.engine.snapshot().readiness).toMatchObject({ state: 'waiting', code: null, code_expires_at: null });
+    expect(await pairingKey(blair2)).toBeUndefined();
+
+    await blair2.as(engine => engine.askApproval());
+    expect(await pairingKey(blair2)).toBeDefined();
+    await blair2.as(engine => engine.enterPassphrase(PASSPHRASES[BLAIR]));
+    await blair2.as(engine => engine.sync());
+    expect(state(blair2)).toBe('ready');
+    expect(await pairingKey(blair2)).toBeUndefined();
   });
 
   it('a wrong passphrase proves nothing; the right one joins and brings the history', async () => {
@@ -134,7 +199,7 @@ describe('joining Chat on a device', { timeout: 60_000 }, () => {
     await blair3.as(engine => engine.askApproval());
     await before.as(engine => engine.sync());
     expect(before.engine.snapshot().approvals).toEqual([]);
-    await expect(before.as(engine => engine.approve(own(BLAIR, 'b3').id))).rejects.toThrow(/history key/);
+    await expect(before.as(engine => engine.approve(own(BLAIR, 'b3').id, codeOf(blair3)))).rejects.toThrow(/history key/);
     expect(own(BLAIR, 'b3').joined).toBe(false);
 
     await expect(blair3.as(engine => engine.startNewKey('account password', 'a new chat passphrase'))).rejects.toMatchObject({ code: 'CHAT_DEVICE_SIGNED_IN' });

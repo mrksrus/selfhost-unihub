@@ -24,11 +24,18 @@ export async function prove(key: SealKey) {
   return chatApi.prove(toBase64Url(await open(key, fromBase64Url(sealed))));
 }
 
+/** How long a request for an approval stays open, as the server counts it. */
+export const APPROVAL_MS = 10 * 60_000;
+/** The one-time key of a request, with when this device made it by its own clock. */
+export type PairingKey = SealKey & { asked_at: number };
+
 /** Asks the person's joined devices for an approval with a new one-time key, kept in the store until the answer. */
 export async function askApproval(store: ChatStore) {
   const key = await createSealKey(false, AUTH);
-  await store.write([], transaction => { transaction.objectStore('keys').put(key, 'pairing'); });
-  return chatApi.askApproval(toBase64Url(key.publicKey));
+  const answer = await chatApi.askApproval(toBase64Url(key.publicKey));
+  // A device approved a moment ago keeps the key its history was sealed to.
+  if (answer.state === 'waiting') await store.write([], transaction => { transaction.objectStore('keys').put({ ...key, asked_at: Date.now() }, 'pairing'); });
+  return answer;
 }
 
 /** The history key an approval handed over; throws for one sealed to another one-time key or of another history key. */
