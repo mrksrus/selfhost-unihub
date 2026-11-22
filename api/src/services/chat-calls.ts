@@ -14,11 +14,13 @@ import { policyForbids, resolvePolicy } from './settings';
 import { publishChatChanged, realtime } from './realtime';
 import { enqueueFromSource, processNotificationJobs } from './notifications';
 import { iceServers } from './turn';
+import { callMedia } from './call-media';
 
 // Voice calls between the two people of a direct chat (contracts/chat.ts).
 // The server rings, carries the signals between the two ends as rows the
 // other end fetches after a hint, and writes the call's entry in the chat
-// when it ends; the sound never passes through it. One call per person at a
+// when it ends; the sound goes directly, or encrypted through the call's
+// media sockets (call-media.ts). One call per person at a
 // time: starting one locks both people's rows, so two starts never both see
 // a person free. Nothing of a signal is logged, and signals go when the call ends.
 
@@ -78,7 +80,8 @@ function deliverNow(tries = 40) {
 function announce(row: RowDataPacket, entry = false) {
   const people = [row.caller_user_id, row.callee_user_id].filter(Boolean);
   realtime.publishToUsers(people, 'chat.call', { call_id: String(row.id) }, { module: 'chat' });
-  if (entry) publishChatChanged(people, String(row.conversation_id));
+  // Every caller announces an entry once the call ended.
+  if (entry) { publishChatChanged(people, String(row.conversation_id)); callMedia.closeCall(String(row.id)); }
   deliverNow();
 }
 
@@ -264,6 +267,16 @@ async function callIceServers(userId: string, token: string | null, callId: stri
   return { ice_servers: iceServers(callId) };
 }
 
+/** GET /api/chat/calls/:id/media: the request's chat device when it is an end of the active call; refused otherwise. */
+async function mediaEnd(userId: string, token: string | null, callId: string) {
+  const own = await deviceOf(userId, token);
+  const row = await loadCall(userId, callId);
+  if (row.state === 'ended') throw ended();
+  if (!isEnd(row, own)) throw notAnEnd();
+  if (row.state !== 'active') throw conflict('CHAT_CALL_NOT_ACTIVE', 'The call has not been answered.');
+  return own;
+}
+
 // --- Sweeps, entries and notifications -------------------------------------------------------
 
 /**
@@ -310,4 +323,4 @@ async function callNotice(userId: string, callId: string, executor: SqlExecutor,
 }
 
 export type { CallNotice };
-export { startCall, currentCall, answerCall, endCall, postSignal, fetchSignals, callAlive, callIceServers, sweepCalls, callNotice };
+export { startCall, currentCall, answerCall, endCall, postSignal, fetchSignals, callAlive, callIceServers, mediaEnd, sweepCalls, callNotice };

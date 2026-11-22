@@ -77,6 +77,9 @@ test('every route under /api/admin/ answers 403 to a signed-in user without the 
 test('the two live streams and the vCard export are the only routes that own their response', () => {
   const streaming = Object.keys(routes).filter(key => routes[key].response === 'stream').sort();
   assert.deepEqual(streaming, ['GET /api/contacts/export', 'GET /api/events', 'GET /api/notifications/android/stream', 'POST /api/contacts/export']);
+  // A WebSocket reaches only these, and only a GET may take one.
+  assert.deepEqual(Object.keys(routes).filter(key => routes[key].response === 'upgrade').sort(), ['GET /api/chat/calls/:id/media', 'GET /api/chat/calls/check']);
+  assert.throws(() => defineRoutes({ 'POST /api/chat/x': { auth: 'user', module: 'chat', restoreSection: null, response: 'upgrade', handler: async () => ({}) } }), /only a GET route takes a WebSocket/);
 });
 
 test('the public routes are exactly the ones a client needs before signing in, and the download ticket', () => {
@@ -258,7 +261,7 @@ test('every chat route refuses a device that has not joined Chat before its hand
   assert.ok(chatRoutes.length > 30, `${chatRoutes.length} chat routes`);
   // The request carries no session token, so the guard finds no device in Chat; an open route's handler then fails on the database.
   for (const key of chatRoutes) if ((await run(key)).body?.code !== 'CHAT_DEVICE_WAITING') open.push(key);
-  assert.deepEqual(open.sort(), ['GET /api/chat/account', 'GET /api/chat/devices/current', 'POST /api/chat/account', 'POST /api/chat/account/new-key', 'POST /api/chat/devices',
+  assert.deepEqual(open.sort(), ['GET /api/chat/account', 'GET /api/chat/calls/check', 'GET /api/chat/devices/current', 'POST /api/chat/account', 'POST /api/chat/account/new-key', 'POST /api/chat/devices',
     'POST /api/chat/devices/current/approval', 'POST /api/chat/devices/current/challenge', 'POST /api/chat/devices/current/key-packages', 'POST /api/chat/devices/current/proof']);
 });
 

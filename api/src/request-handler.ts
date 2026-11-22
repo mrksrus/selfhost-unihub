@@ -1,10 +1,13 @@
-import type { OutgoingHttpHeaders, ServerResponse } from 'node:http';
+import type { OutgoingHttpHeaders } from 'node:http';
+import type { Socket } from 'node:net';
 import type { RouteRequest } from './types';
+import type { UpgradeRequest } from './http/websocket';
 import type { RouteSpec, RouteTable, UploadBody } from './http/route';
 
 import { BACKUP_DISABLED_MESSAGE, DISABLED_BACKUP_ROUTES } from './services/backup-availability';
 import crypto from 'crypto';
 import fs from 'fs';
+import { ServerResponse } from 'node:http';
 import path from 'path';
 import routes = require('./routes');
 import { verifyToken, validateCsrfToken, refreshSessionCookies, hasPermission } from './auth';
@@ -83,6 +86,19 @@ async function handleRequest(req: RouteRequest, res: ServerResponse) {
       res.end(JSON.stringify(response.status >= 500 ? { ...response, requestId } : response));
     }
   });
+}
+
+// The server's 'upgrade' event: a WebSocket handshake goes through the same
+// dispatch as every request, its answer written on the socket. Only a route
+// with response 'upgrade' accepts it; any refusal closes the connection.
+function handleUpgrade(req: UpgradeRequest, socket: Socket, head: Buffer) {
+  socket.on('error', () => socket.destroy());
+  const res = new ServerResponse(req);
+  res.shouldKeepAlive = false;
+  res.assignSocket(socket);
+  res.once('finish', () => socket.destroySoon());
+  req.upgrade = { socket, head };
+  handleRequest(req, res).catch(() => socket.destroy());
 }
 
 interface Refusal { status: number; body: Record<string, unknown> }
@@ -235,6 +251,12 @@ async function dispatchRequest(req: RouteRequest, res: ServerResponse) {
     return;
   }
 
+  if ((req as UpgradeRequest).upgrade && spec.response !== 'upgrade') {
+    res.writeHead(400, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'This address does not take a WebSocket' }));
+    return;
+  }
+
   let temporaryUploadPath: string | null = null;
   try {
     // Sign-in, CSRF, permission and the gates, with the person's rules read
@@ -295,8 +317,9 @@ async function dispatchRequest(req: RouteRequest, res: ServerResponse) {
       : await spec.handler(req, userId!, body, res);
 
     // A streaming route (GET /api/events, the Android notification stream) has
-    // written and owns the response; only a refusal before that is serialized.
-    if (spec.response === 'stream' && (result === undefined || res.headersSent)) return;
+    // written and owns the response, an upgrade route the socket; only a
+    // refusal before that is serialized.
+    if ((spec.response === 'stream' || spec.response === 'upgrade') && (result === undefined || res.headersSent)) return;
     if (!result) throw new Error('Route returned no response');
 
     if (result.__redirect) {
@@ -413,4 +436,5 @@ async function dispatchRequest(req: RouteRequest, res: ServerResponse) {
 
 export {
   handleRequest,
+  handleUpgrade,
 };

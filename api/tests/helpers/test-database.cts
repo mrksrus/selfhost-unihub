@@ -63,8 +63,9 @@ interface ApiReply { status: number; body: Record<string, unknown> & { error?: s
 // A Buffer body is sent raw (an upload; pass its content-type header); any
 // other body as JSON. A JSON reply is parsed into body; bytes holds any reply.
 async function startTestApi(t: TestContext) {
-  const { handleRequest } = require('../../dist/src/request-handler') as typeof import('../../src/request-handler');
+  const { handleRequest, handleUpgrade } = require('../../dist/src/request-handler') as typeof import('../../src/request-handler');
   const server = http.createServer((req, res) => { handleRequest(req, res).catch(() => res.destroy()); });
+  server.on('upgrade', handleUpgrade);
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
   t.after(() => new Promise<void>(resolve => { server.closeAllConnections(); server.close(() => resolve()); }));
   const origin = `http://127.0.0.1:${(server.address() as import('node:net').AddressInfo).port}`;

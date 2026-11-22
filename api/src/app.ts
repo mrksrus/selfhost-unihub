@@ -8,7 +8,8 @@ import { suspendPendingBackupJobs, DISABLED_BACKUP_ROUTES } from './services/bac
 import { resumePendingDataExportJobs } from './services/export-jobs';
 import { resumePendingRestoreJobs } from './services/backup-restore-jobs';
 import { verifyDatabaseInventory } from './services/data-inventory';
-import { handleRequest } from './request-handler';
+import { handleRequest, handleUpgrade } from './request-handler';
+import { callMedia } from './services/call-media';
 import { installShutdownHandler } from './services/server-events';
 import { startBackgroundWork } from './services/background-work';
 import type { BackgroundWorkHandle } from './services/background-work';
@@ -57,13 +58,16 @@ async function start() {
   // Previously retained restore uploads stay available until explicitly deleted.
   // Re-enabling backup must not suddenly expire archives retained during suspension.
 
-  const server = http.createServer((req, res) => {
+  // Any other Upgrade (h2c through a proxy that passes the header) stays an ordinary request.
+  const server = http.createServer({ shouldUpgradeCallback: req => String(req.headers.upgrade).toLowerCase() === 'websocket' }, (req, res) => {
     // Last-resort boundary, including failures while writing an error response.
     handleRequest(req, res).catch(error => {
       log.error('HTTP', 'Response failed', error);
       res.destroy();
     });
   });
+
+  server.on('upgrade', handleUpgrade);
 
   // The timers start after the server listens; a stop signal before that has
   // nothing to stop. Stopping them (and the IDLE sessions they own) comes
@@ -72,7 +76,7 @@ async function start() {
   let ownership: Awaited<ReturnType<typeof startWorkerOwnership>> | null = null;
   let stopping = false;
   const serverClosed = new Promise(resolve => server.once('close', resolve));
-  installShutdownHandler({ server, onShutdown: [() => { stopping = true; work?.stop(); }, closeAndroidStreams], drainMs: 8000,
+  installShutdownHandler({ server, onShutdown: [() => { stopping = true; work?.stop(); }, closeAndroidStreams, callMedia.closeAll], drainMs: 8000,
     drain: () => drainProcess({ serverClosed, scheduler: durableScheduler, expireWorkerLeases,
       // Releasing the worker role first frees its lock session on the control
       // pool; the side pools then end with the main pool.
