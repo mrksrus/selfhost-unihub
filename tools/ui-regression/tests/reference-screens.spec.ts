@@ -28,8 +28,8 @@
 // the dialog that approves such a device (Wide and Phone), each in Dark
 // Default and Light Default.
 // One hundred and fifty-eight pictures; see docs/UI_BASELINES.md.
-import { chatPicturesDrawn, customRepeat, expect, expectBaseline, sharedCalendars, silentMicrophone, test, THEMES, VIEWPORTS, withChat, type Page } from '../support/test.ts';
-import { CHAT_APPROVAL, CHAT_DEVICES_IN_CHAT, CURRENT_DEVICE_LOCKED, POLICIES_ADMIN_APP_LOCK, POLICIES_ADMIN_RETENTION, POLICIES_EFFECTIVE_APP_LOCK, POLICIES_EFFECTIVE_TWO_FACTOR, RETENTION_WAITING, USER } from '../support/fixtures.ts';
+import { chatPicturesDrawn, customRepeat, expect, expectBaseline, sharedCalendars, silentMicrophone, test, THEMES, VIEWPORTS, withCall, withChat, type Page } from '../support/test.ts';
+import { CALL_ANSWERED_AT, CHAT_APPROVAL, CHAT_CALL_THREAD, CHAT_DEVICES_IN_CHAT, CURRENT_DEVICE_LOCKED, POLICIES_ADMIN_APP_LOCK, POLICIES_ADMIN_RETENTION, POLICIES_EFFECTIVE_APP_LOCK, POLICIES_EFFECTIVE_TWO_FACTOR, RETENTION_WAITING, USER } from '../support/fixtures.ts';
 
 // The app lock's state is this browser's (a PIN record in IndexedDB
 // `unihub-lock-v1`, as src/lib/app-lock/pin.ts keeps it) plus the server's
@@ -141,6 +141,48 @@ function chatPassphraseAndSettings(viewport: 'wide' | 'phone', theme: string) {
   });
 }
 
+// A call over the page: the dialog while someone calls, the call's screen in four of its states, and the calls' entries in the chat.
+function calls(viewport: 'wide' | 'phone', theme: string) {
+  test.describe(`calls (${viewport}, ${theme})`, () => {
+    test.use(VIEWPORTS[viewport]);
+
+    for (const [name, call, shows] of [
+      ['call-ringing', { incoming: true, state: 'ringing', here: false }, 'Answer'],
+      ['call-calling', { state: 'calling' }, 'Hang up'],
+      ['call-active', { state: 'active', answered_at: CALL_ANSWERED_AT }, 'Hang up'],
+      ['call-reconnecting', { state: 'reconnecting', answered_at: CALL_ANSWERED_AT, muted: true }, 'Hang up'],
+      ['call-ended', { state: 'ended', ended: 'failed' }, 'Close'],
+    ] as const) {
+      test(`${name} (${viewport}, ${theme})`, async ({ page, open, settle }) => {
+        await withChat(page);
+        await withCall(page, call);
+        await open('/chat');
+        await expect(page.getByRole('button', { name: shows, exact: true })).toBeVisible();
+        await settle();
+        await expectBaseline(page, `${name}-${viewport}-${theme}.png`);
+      });
+    }
+
+    // The call alone, as a notification of a call opens it and as the Android app's call screen loads it.
+    if (viewport === 'phone') test(`call page (${viewport}, ${theme})`, async ({ page, open, settle }) => {
+      await withChat(page);
+      await withCall(page, { incoming: true, state: 'ringing', here: false });
+      await open('/call?id=call-1');
+      await expect(page.getByRole('button', { name: 'Answer', exact: true })).toBeVisible();
+      await settle();
+      await expectBaseline(page, `call-page-${viewport}-${theme}.png`);
+    });
+
+    test(`calls in a chat (${viewport}, ${theme})`, async ({ page, open, settle }) => {
+      await withChat(page, { threads: CHAT_CALL_THREAD });
+      await open('/chat?c=chat-blair');
+      await expect(page.getByText('Voice call, 5 min')).toBeVisible();
+      await settle();
+      await expectBaseline(page, `chat-calls-${viewport}-${theme}.png`);
+    });
+  });
+}
+
 // Chat retention on Server -> Policies as the owner: the save dialog of a
 // shorter time with the server's count, and the change that waits its 24 hours.
 function chatRetention(viewport: 'wide' | 'phone', theme: string) {
@@ -175,6 +217,7 @@ for (const theme of THEMES) {
   test.describe(`${theme} default`, () => {
     test.use({ theme, colorScheme: theme });
     for (const viewport of ['wide', 'phone'] as const) chatPassphraseAndSettings(viewport, theme);
+    for (const viewport of ['wide', 'phone'] as const) calls(viewport, theme);
     for (const viewport of ['wide', 'phone'] as const) chatRetention(viewport, theme);
 
     test.describe('wide', () => {

@@ -110,6 +110,94 @@
       "sha256": "5887397363dd63835e27bca6971b0eebe249704fa30166e16fc0f2e0ce5426d3",
       "bytes": 105512
     },
+    "call-active-phone-dark.png": {
+      "sha256": "177201308abcea86be900f76a4fa34c7133f88f13d428f11279101b4767ccfa0",
+      "bytes": 42165
+    },
+    "call-active-phone-light.png": {
+      "sha256": "a288ff1d849fe50897d9d320ab63acfaa14e45b17670b4523d515bfc46deb2af",
+      "bytes": 44829
+    },
+    "call-active-wide-dark.png": {
+      "sha256": "12bc6029db08ec85b90efcbeb209d592a2beeeed8c2e80b5fc3f46ba6249aede",
+      "bytes": 84520
+    },
+    "call-active-wide-light.png": {
+      "sha256": "a212cabe79cc9802b8bda9095c7093004b7e97bd3d6ac571fdd23f3e1686f1ac",
+      "bytes": 87886
+    },
+    "call-calling-phone-dark.png": {
+      "sha256": "31f52f586b57fd99f29482899976dab1fa59cf176ff9a8849a7d64559db3076d",
+      "bytes": 42924
+    },
+    "call-calling-phone-light.png": {
+      "sha256": "bd1f1fea5ed31203b8013223e468e396d3a12077de670387317ea005b764a5de",
+      "bytes": 45471
+    },
+    "call-calling-wide-dark.png": {
+      "sha256": "a4571acf3ece642725a4386f8f4f6754f4350e129222a0db75bb8ff185de9536",
+      "bytes": 85183
+    },
+    "call-calling-wide-light.png": {
+      "sha256": "c5ef79445da2180cf837eaedbd78404fbe1e17ca18c37c0d9a12c3af63a49d21",
+      "bytes": 88614
+    },
+    "call-ended-phone-dark.png": {
+      "sha256": "e040e94c30d7f62a4ae5e382f7adfa9d2ef5e7d7028cd512b51c508059d4a005",
+      "bytes": 42809
+    },
+    "call-ended-phone-light.png": {
+      "sha256": "86b1c0b31babc1c04ae577887a5f3d0220f43c88f95f24762dd92dda6c2e7c07",
+      "bytes": 46550
+    },
+    "call-ended-wide-dark.png": {
+      "sha256": "ff0dd25bcedae0e1e2cbda7e7e3fbc4a94b21c794a9cc9efc2dc512a720fdaa1",
+      "bytes": 85730
+    },
+    "call-ended-wide-light.png": {
+      "sha256": "3e42ba755ec126514f91506b9dfe30f7182dfd79519df711a91d1a7e5acc2c9b",
+      "bytes": 89862
+    },
+    "call-page-phone-dark.png": {
+      "sha256": "a988e8f5a9da13ad5890e20358d167f935167964091ba6afb66f5bf3040d10ce",
+      "bytes": 14129
+    },
+    "call-page-phone-light.png": {
+      "sha256": "9173ddee5c521e3611df51c6c12a79e4f26b71bcb240100573cf913d339c666f",
+      "bytes": 14631
+    },
+    "call-reconnecting-phone-dark.png": {
+      "sha256": "6629ad58315c23404e62d44f08fb6ab61777c196c5d9c60f55403d3f781e05d3",
+      "bytes": 41411
+    },
+    "call-reconnecting-phone-light.png": {
+      "sha256": "c478dd795f217f18992a4456a05f344a47d5d46fbd427b485b16e2f10408cf5a",
+      "bytes": 43483
+    },
+    "call-reconnecting-wide-dark.png": {
+      "sha256": "42e1dc40452c60fd72c6b0c91bf11b4dc5042ccf57824c1f8e72c351fcc76607",
+      "bytes": 88453
+    },
+    "call-reconnecting-wide-light.png": {
+      "sha256": "7c940d7ed84541d6c993ec83e259059f933d576c364893543cb79eac51064586",
+      "bytes": 91465
+    },
+    "call-ringing-phone-dark.png": {
+      "sha256": "6a2d518401a4f49c54102d557c3cafc185f14fd4da38084f90ed570bade8c452",
+      "bytes": 45513
+    },
+    "call-ringing-phone-light.png": {
+      "sha256": "97cafbcf1312d0999b279ed37b070e08e62be00c56338e6e65a64fac3c6625eb",
+      "bytes": 48517
+    },
+    "call-ringing-wide-dark.png": {
+      "sha256": "09738d0b2706dddc85bcbe40fb8c7006bc078700ea7949d4cb91840fd923b89a",
+      "bytes": 85207
+    },
+    "call-ringing-wide-light.png": {
+      "sha256": "32cce718ea51a94c53a992e832e61a78a75e8f9a406c24ba238581a08e14d096",
+      "bytes": 88766
+    },
     "chat-approval-phone-dark.png": {
       "sha256": "75ea3de2b6929b70ccf7e5f59465c6fc0b2706f6d38bf788e2567aa62e8b7062",
       "bytes": 56138
@@ -126,29 +214,45 @@
       "sha256": "31dbd955bd67e82995af37ddcfbd72dff60e0b80649dcd7f34f29668af49dfc6",
       "bytes": 114896
     },
+    "chat-calls-phone-dark.png": {
+      "sha256": "1740873062f43ff678d5617b74e2922b69b152ac853dfec932b1b4021d28335c",
+      "bytes": 47998
+    },
+    "chat-calls-phone-light.png": {
+      "sha256": "85fc4b275a0c25e903812725fe221c483ffb4e7a8c3a31297bee52bcdc4679d1",
+      "bytes": 48830
+    },
+    "chat-calls-wide-dark.png": {
+      "sha256": "f7db931360d82f4cde15bea24caabb6e16728f06c0caa1a270c244679a95fd3f",
+      "bytes": 128149
+    },
+    "chat-calls-wide-light.png": {
+      "sha256": "a536aef061b060712f7376748f21a0005ee3bb1d83620b065b96215a4f55922b",
+      "bytes": 129564
+    },
     "chat-earlier-wide-dark.png": {
-      "sha256": "9c8b810f86a2959795691885a33318ef56f53298321b0afbb5a86bce33e18d36",
-      "bytes": 144865
+      "sha256": "a7896e6e3cc0ce731122f8899cc13a8e55258a2d6a7fb54346f83a65cddb04e9",
+      "bytes": 145383
     },
     "chat-earlier-wide-light.png": {
-      "sha256": "049fc06937714c4935814b6076df3e6af69f1cc8e015fd70939fb8571f78c00b",
-      "bytes": 146093
+      "sha256": "72665f45d72a5ae0e9e40f25271a8c23e4f093961167bfff2818691b2d0a9b08",
+      "bytes": 146633
     },
     "chat-files-phone-dark.png": {
-      "sha256": "390aac045bf146a37ef7cef675eb0d5545bc68880899744f3c7152213d10fe93",
-      "bytes": 46426
+      "sha256": "81a777810be6f3ca5ae4490381526f53a128fd8d4ad67f0f5948c6efbef3c4ca",
+      "bytes": 46836
     },
     "chat-files-phone-light.png": {
-      "sha256": "7b43dec50ee8458d27b6fe20ba57a4c8ae4de98026e6a66ca3e1686ba3cc7a8f",
-      "bytes": 46485
+      "sha256": "baa4ca13485b35001505aec2b145665da9d481be4f2156092baf63c14df18050",
+      "bytes": 47029
     },
     "chat-files-wide-dark.png": {
-      "sha256": "eb6faca915e3ddb1d70e5332833be0ee5ed2301e89cc0a573112211207d10a5d",
-      "bytes": 126580
+      "sha256": "94a55792357b77f05a84fc4e25d7c240bd75f8c9aaee0c352bca5ddff509874b",
+      "bytes": 127029
     },
     "chat-files-wide-light.png": {
-      "sha256": "14989fc9869ced488667ab9dc7034e314f39c38218f050df415551b73de0b2f7",
-      "bytes": 127533
+      "sha256": "956d19e722719f72be63a4400086c0b3825a4291828f2d4b4bec095d90b9dcde",
+      "bytes": 128020
     },
     "chat-group-phone-dark.png": {
       "sha256": "4a7583055696d9b12d94767dec95700320be28e7180cefd769d0836935c9c01e",
@@ -223,52 +327,52 @@
       "bytes": 160574
     },
     "chat-recorder-phone-dark.png": {
-      "sha256": "00710d1c3399fecfbb20f8b1ca2b50ad85e3252e13b4c8af1fdd2a37b7831a1e",
-      "bytes": 46044
+      "sha256": "567b182e73a39aeee5ae3aa82f41535154054d2d19bf7634c477fe0fe60cdd88",
+      "bytes": 46460
     },
     "chat-recorder-phone-light.png": {
-      "sha256": "afe0db04ec80cf54dafb1d1057adf5ec2a46619c6739264193b8563686ae21e2",
-      "bytes": 46105
+      "sha256": "0c80a63aaed28e59b7a69b3759352fafb01a9cecd6f745153f447ee8c3410f10",
+      "bytes": 46656
     },
     "chat-recorder-wide-dark.png": {
-      "sha256": "1cf9a466aa5fa65c5b7131daea3bf41878881aa49d1a68c5b176e8ce8b8cd60a",
-      "bytes": 126130
+      "sha256": "d43b54f390c80003ab657fb8f204596cb93d6e80e759b00c2d19968b807d1d16",
+      "bytes": 126584
     },
     "chat-recorder-wide-light.png": {
-      "sha256": "c464b381525efcf1523df6ca384663f36500ea4458dcc8c51cb0e71219c6988b",
-      "bytes": 127035
+      "sha256": "a338b9331affbecb88c01488e80fb29935caed85127d54c6627bf17e1426f9ec",
+      "bytes": 127537
     },
     "chat-retention-dialog-phone-dark.png": {
-      "sha256": "2a2eda81913e299fdd0c9e2d0756cdf61eab4e7dbe1211d89a91dbc65953096d",
-      "bytes": 60667
+      "sha256": "a91ca69a6af7b0c188c913fd84a2384958f3791bba98bd1ee77aa74d77abe4b7",
+      "bytes": 63322
     },
     "chat-retention-dialog-phone-light.png": {
-      "sha256": "f792b653c086fd1892f9a5f138721404588dd604108004a6e6954c396c87daae",
-      "bytes": 64442
+      "sha256": "950f388dab4c588d689e9c0bac9693e8505a5a009f746ab24556a0ac7fa11d34",
+      "bytes": 67172
     },
     "chat-retention-dialog-wide-dark.png": {
-      "sha256": "1920dd6ea9c95b5afc262c86775e29e8a3f25839c2066b67734905e657956856",
-      "bytes": 156552
+      "sha256": "60a3fbdf97b3304ce6474b0294a44eedd35feca411d4bd545ef572b2548abc39",
+      "bytes": 148711
     },
     "chat-retention-dialog-wide-light.png": {
-      "sha256": "07915ed5cdfbec1984d605c76ea0eb5a662128ba4a6bc6d2b995a87533579e11",
-      "bytes": 162082
+      "sha256": "0f226f6d876a729ec0e02a43a855d241845e128ad029ffc3531faf607fbf7506",
+      "bytes": 153309
     },
     "chat-retention-pending-phone-dark.png": {
-      "sha256": "6b302e665e567919c83a7d975b3240d506032dd426e18bacbaab7c5f3885ecbc",
-      "bytes": 75596
+      "sha256": "4a515bc7a9ed539fcfb927be88b64ec95f1d8d788d537981050f4261fb09c28d",
+      "bytes": 76051
     },
     "chat-retention-pending-phone-light.png": {
-      "sha256": "819be395e0bc896ba99716b4f7839ec3e8527c2e9dc4c8befae95b431bb4c5ba",
-      "bytes": 81385
+      "sha256": "98f51e8416f32bd78e0e34d854ed0e857758b7a46f99b9f0e9a774e55783116a",
+      "bytes": 81428
     },
     "chat-retention-pending-wide-dark.png": {
-      "sha256": "da3d09d77adbb3e61b7c5c28224a4e34fe42330ee8ee17d4cb5e1f442d4197a8",
-      "bytes": 168303
+      "sha256": "b48d8f537d34d254dba2e88c3ef54d4eb23f37c94e86ca10b91138fd9266e569",
+      "bytes": 162295
     },
     "chat-retention-pending-wide-light.png": {
-      "sha256": "da4d7ecca56d046f80ef1d5bac03e1759354bd2acf7a4c162dd0afe13056ef9a",
-      "bytes": 172260
+      "sha256": "112551935d81d9664ca387c8f67e32fc3f551880fcd6f32df28b38fd76918457",
+      "bytes": 166058
     },
     "chat-search-phone-dark.png": {
       "sha256": "fea7ce67e4778516787022b129acd07be39a1d7921838e875e693d9371b37f60",
@@ -287,12 +391,12 @@
       "bytes": 136787
     },
     "chat-thread-phone-dark.png": {
-      "sha256": "feb02961753ef61f360df83104d901475cedfec2cffcdb35ca0d1a86621b57c0",
-      "bytes": 61233
+      "sha256": "c04a833b7e72a64460b21ec7ca4afbda38e8443fce8a763e9fd27270dd6fef95",
+      "bytes": 61715
     },
     "chat-thread-phone-light.png": {
-      "sha256": "491282797e136eb80799b158718b6296c4eadcc37ae7099ca141e380ad18e33e",
-      "bytes": 63170
+      "sha256": "784180b1ae15ee191b7f49246bea06ee9e0035a540b1a6ca96cb606bb2da8bcd",
+      "bytes": 63719
     },
     "chat-waiting-alone-phone-dark.png": {
       "sha256": "0ff5228d137c392ae2998307ba294b8700104edc99ced4443edd6b90a0ace1ab",
@@ -343,12 +447,12 @@
       "bytes": 99430
     },
     "chat-wide-dark.png": {
-      "sha256": "56f68f319d29a4751caea21ab523068f4163c54e2c8986d2f0e1d1dc9abb0d4c",
-      "bytes": 138371
+      "sha256": "94041a19472a76febe264d6800cb82745b638b9c213b8eab4c36c272822224a6",
+      "bytes": 138880
     },
     "chat-wide-light.png": {
-      "sha256": "eec7eb0d651fa7484e0b4cd80da4229738458da2e16b394a189896cdac844c23",
-      "bytes": 140295
+      "sha256": "d5a265b43eba9b252b2b359565062cce4b53d233c1c3b0b632297c503c36b654",
+      "bytes": 140807
     },
     "company-entry-phone-dark.png": {
       "sha256": "e26268da61f4eb330ca87e8006e99db1f5acd00919148f5809fdc68e2e544785",
@@ -583,20 +687,20 @@
       "bytes": 160642
     },
     "settings-chat-phone-dark.png": {
-      "sha256": "35a388f4b1ea12b95128906f6ff971eb24bd51c570fedf3430a85b457a96083f",
-      "bytes": 66432
+      "sha256": "8711a5a04e4fd12db78bf1f6c8d9a6cf4c5abb4a707751dc6ab4c51926023cf1",
+      "bytes": 66271
     },
     "settings-chat-phone-light.png": {
-      "sha256": "65bcb011e52361d67f2fdc6fa30904998c915242b20175c79ad3e7f55ec32a16",
-      "bytes": 70627
+      "sha256": "37da95c8a463d1035afee196548bee4f1dc1c49d9aae736bc5283cd678870c42",
+      "bytes": 70306
     },
     "settings-chat-wide-dark.png": {
-      "sha256": "552bdc639432c6f3196f09eda5bdde4b9c458841ac04e475ff97801481cc735c",
-      "bytes": 133032
+      "sha256": "1715652a913a9f70a6aa52de7ca8a531ca04400be664ef1da8b5f3a260d4234f",
+      "bytes": 127729
     },
     "settings-chat-wide-light.png": {
-      "sha256": "52fa77c854e1ba1238906c0425856c7266d979509ab39211a4b26cca11f2adab",
-      "bytes": 136642
+      "sha256": "9528f5f9ffad23ba146233c0c0149adff9e35e63a98b8374a43de446b7295c84",
+      "bytes": 130821
     },
     "settings-pages-wide-dark.png": {
       "sha256": "037a9e0fa8fc03f7875540db3e7cda27f2ce7f7108c9412e6024219096acdbac",
@@ -1947,6 +2051,140 @@
         "devices-wide-light.png",
         "settings-chat-wide-dark.png",
         "settings-chat-wide-light.png"
+      ],
+      "removed": []
+    },
+    {
+      "date": "2026-11-22T04:39:38.157Z",
+      "reason": "Voice calls: Call in a 1:1 chat's header, the dialog while someone calls, the call screen, the calls in a chat, and Calls under Server > Policies",
+      "source": {
+        "commit": "22f8cfdb42ad49e8e207ebee6d50280691cac67e",
+        "branch": "feat/0.35.0-p7-call-screens",
+        "dirty": true,
+        "digest": "b9baacebf0ad3eb1f0a4207d561f2817144aee0d3351da6d91e460c7a1616141"
+      },
+      "render": {
+        "playwright": "1.64.0",
+        "browser": "chromium-headless-shell 156.0.8078.4",
+        "browserArgs": [
+          "--font-render-hinting=none",
+          "--disable-lcd-text",
+          "--force-color-profile=srgb",
+          "--disable-gpu",
+          "--disable-skia-runtime-opts",
+          "--num-raster-threads=1",
+          "--disable-partial-raster"
+        ],
+        "platform": "linux-x64",
+        "fonts": {
+          "@fontsource/inter": "5.3.0",
+          "@fontsource/jetbrains-mono": "5.3.0"
+        },
+        "fontconfig": "isolated",
+        "deviceScaleFactor": 1
+      },
+      "host": {
+        "node": "v26.12.1",
+        "ci": false
+      },
+      "added": [
+        "call-active-phone-dark.png",
+        "call-active-phone-light.png",
+        "call-active-wide-dark.png",
+        "call-active-wide-light.png",
+        "call-calling-phone-dark.png",
+        "call-calling-phone-light.png",
+        "call-calling-wide-dark.png",
+        "call-calling-wide-light.png",
+        "call-ended-phone-dark.png",
+        "call-ended-phone-light.png",
+        "call-ended-wide-dark.png",
+        "call-ended-wide-light.png",
+        "call-reconnecting-phone-dark.png",
+        "call-reconnecting-phone-light.png",
+        "call-reconnecting-wide-dark.png",
+        "call-reconnecting-wide-light.png",
+        "call-ringing-phone-dark.png",
+        "call-ringing-phone-light.png",
+        "call-ringing-wide-dark.png",
+        "call-ringing-wide-light.png",
+        "chat-calls-phone-dark.png",
+        "chat-calls-phone-light.png",
+        "chat-calls-wide-dark.png",
+        "chat-calls-wide-light.png"
+      ],
+      "changed": [
+        "chat-earlier-wide-dark.png",
+        "chat-earlier-wide-light.png",
+        "chat-files-phone-dark.png",
+        "chat-files-phone-light.png",
+        "chat-files-wide-dark.png",
+        "chat-files-wide-light.png",
+        "chat-recorder-phone-dark.png",
+        "chat-recorder-phone-light.png",
+        "chat-recorder-wide-dark.png",
+        "chat-recorder-wide-light.png",
+        "chat-retention-dialog-phone-dark.png",
+        "chat-retention-dialog-phone-light.png",
+        "chat-retention-dialog-wide-dark.png",
+        "chat-retention-dialog-wide-light.png",
+        "chat-retention-pending-phone-dark.png",
+        "chat-retention-pending-phone-light.png",
+        "chat-retention-pending-wide-dark.png",
+        "chat-retention-pending-wide-light.png",
+        "chat-thread-phone-dark.png",
+        "chat-thread-phone-light.png",
+        "chat-wide-dark.png",
+        "chat-wide-light.png",
+        "settings-chat-phone-dark.png",
+        "settings-chat-phone-light.png",
+        "settings-chat-wide-dark.png",
+        "settings-chat-wide-light.png"
+      ],
+      "removed": []
+    },
+    {
+      "date": "2026-11-22T04:50:39.217Z",
+      "reason": "Voice calls: Call in a 1:1 chat's header, the dialog while someone calls, the call screen and the call's own page, the calls in a chat, Calls under Settings > Chat and under Server > Policies",
+      "source": {
+        "commit": "22f8cfdb42ad49e8e207ebee6d50280691cac67e",
+        "branch": "feat/0.35.0-p7-call-screens",
+        "dirty": true,
+        "digest": "a4769d519440f0ae6d56558ee788e246d5b971101e58ac84a2c68d8f874b1083"
+      },
+      "render": {
+        "playwright": "1.64.0",
+        "browser": "chromium-headless-shell 156.0.8078.4",
+        "browserArgs": [
+          "--font-render-hinting=none",
+          "--disable-lcd-text",
+          "--force-color-profile=srgb",
+          "--disable-gpu",
+          "--disable-skia-runtime-opts",
+          "--num-raster-threads=1",
+          "--disable-partial-raster"
+        ],
+        "platform": "linux-x64",
+        "fonts": {
+          "@fontsource/inter": "5.3.0",
+          "@fontsource/jetbrains-mono": "5.3.0"
+        },
+        "fontconfig": "isolated",
+        "deviceScaleFactor": 1
+      },
+      "host": {
+        "node": "v26.12.1",
+        "ci": false
+      },
+      "added": [
+        "call-page-phone-dark.png",
+        "call-page-phone-light.png"
+      ],
+      "changed": [
+        "chat-calls-phone-dark.png",
+        "chat-calls-phone-light.png",
+        "chat-calls-wide-dark.png",
+        "chat-calls-wide-light.png"
       ],
       "removed": []
     }

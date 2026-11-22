@@ -251,7 +251,7 @@ const POLICY_DEFAULTS: Record<string, unknown> = {
   'modules.mail': 'allowed', 'modules.calendar': 'allowed', 'modules.contacts': 'allowed', 'modules.recordings': 'allowed', 'pages.music': 'allowed',
   'notifications.detail': 'full', 'contacts.phone_sync': 'allowed', 'offline.copies': 'allowed',
   'modules.chat': 'allowed', 'chat.presence': 'user_choice', 'chat.read_receipts': 'user_choice',
-  'chat.retention_days': null, 'chat.attachment_max_mb': 50, 'chat.reach': 'own_groups',
+  'chat.retention_days': null, 'chat.attachment_max_mb': 50, 'chat.reach': 'own_groups', 'chat.calls': 'allowed',
 };
 const POLICY_VALUES: Record<string, unknown[]> = {
   'mail.mode.new_accounts': ['user_choice', 'download', 'download_delete', 'sync'], 'mail.provider_delete': ['user_choice', 'forbidden', 'required'],
@@ -368,6 +368,24 @@ export const DEVICES = [
 export const CHAT_DEVICES_IN_CHAT = DEVICES.slice(0, 2).map(({ id, kind, app_version, user_agent }) => ({ id, kind, app_version, user_agent }));
 export const CHAT_APPROVAL = { chat_device_id: 'chat-dev-new', device: { id: 'dev-new', kind: 'web', app_version: null, user_agent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36' },
   requested_at: at('06-15T09:29:40.000Z'), code: '481516', signed_in_at: at('06-15T09:27:00.000Z') };
+
+// The chat with Blair Example as a morning of calls: every kind of entry, the newest a missed one.
+const callEntry = (id: string, time: string, outcome: string, from_me: boolean, minutes = 0) => ({
+  kind: 'call', id, seq: 1, from_me, created_at: at(`06-15T${time}:00.000Z`),
+  call: { call_id: id, outcome, caller_user_id: from_me ? 'user-ada' : 'user-blair', callee_user_id: from_me ? 'user-blair' : 'user-ada', started_at: at(`06-15T${time}:00.000Z`),
+    answered_at: minutes ? at(`06-15T${time}:10.000Z`) : null, ended_at: at(`06-15T${time.slice(0, 3)}${String(Number(time.slice(3)) + minutes).padStart(2, '0')}:10.000Z`) },
+});
+export const CHAT_CALL_THREAD = { 'chat-blair': [
+  { kind: 'message', id: 'cb1', seq: 1, sender_user_id: 'user-blair', sender_name: 'Blair Example', from_me: false, text: 'Can you talk for a minute?', former_colleague: false, mentions: [], mentions_me: false,
+    read_by: null, files: [], reply_to: null, edited: false, deleted: false, unreadable: false, created_at: at('06-15T08:10:00.000Z'), delivery: null, edit_state: null, error: null },
+  callEntry('call-a', '08:12', 'answered', true, 5),
+  callEntry('call-b', '08:40', 'declined', true),
+  callEntry('call-c', '08:52', 'missed', true),
+  callEntry('call-d', '09:05', 'failed', false),
+  callEntry('call-e', '09:21', 'missed', false),
+] };
+/** A call that was answered three minutes and seven seconds before the fixed time. */
+export const CALL_ANSWERED_AT = at('06-15T09:26:53.000Z');
 
 const DEVICE_SETTINGS_OFF = {
   app_lock_scope: { value: [], source: 'default', locked: false },

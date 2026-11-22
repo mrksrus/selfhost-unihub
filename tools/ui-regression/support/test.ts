@@ -133,6 +133,11 @@ export async function withChat(page: Page, engine: Record<string, unknown> = {})
   await page.route(url => url.pathname === '/api/modules', route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(MODULES_WITH_CHAT) }));
 }
 
+/** Shows a call over the page (src/test/chat-calls-fixture-hook.ts); `call` are the fields that differ from a running call with Blair Example. Chat must be on (withChat). */
+export async function withCall(page: Page, call: Record<string, unknown>) {
+  await page.addInitScript(view => { (window as { uiRegressionCall?: unknown }).uiRegressionCall = view; }, call);
+}
+
 /** Puts two files above the field of the open chat, a picture and a document, and waits for the pictures to be drawn. */
 export async function attachChatFiles(page: Page) {
   // The smallest PNG there is: one grey pixel.

@@ -4,10 +4,10 @@
 // (P-12), the theme is painted before the app runs and follows the choice
 // (P-02), and touch targets are big enough and never overlap (P-11).
 import type { Page } from '@playwright/test';
-import { CHAT_APPROVAL, CHAT_DEVICES_IN_CHAT, POLICIES_EFFECTIVE_TWO_FACTOR, RETENTION_WAITING, RICH_TASK, TASKS } from '../support/fixtures.ts';
+import { CALL_ANSWERED_AT, CHAT_APPROVAL, CHAT_CALL_THREAD, CHAT_DEVICES_IN_CHAT, POLICIES_EFFECTIVE_TWO_FACTOR, RETENTION_WAITING, RICH_TASK, TASKS } from '../support/fixtures.ts';
 import { touchViolations } from '../support/geometry.ts';
 import { expectOnlyKnown, KNOWN_DEFECTS } from '../support/known-defects.ts';
-import { attachChatFiles, customRepeat, expect, pointerIsCoarse, sharedCalendars, silentMicrophone, test, THEMES, VIEWPORTS, withChat } from '../support/test.ts';
+import { attachChatFiles, customRepeat, expect, pointerIsCoarse, sharedCalendars, silentMicrophone, test, THEMES, VIEWPORTS, withCall, withChat } from '../support/test.ts';
 
 // Synthetic files for the composer's attachments.
 const SYNTHETIC_PDF = { name: 'quarterly-report.pdf', mimeType: 'application/pdf', buffer: Buffer.from('%PDF-1.4 synthetic') };
@@ -333,6 +333,24 @@ test.describe('P-11 touch targets are big enough and never overlap', () => {
     // The dialog has grown to its size: a button measured while it opens is a hair under 40 px.
     await settle();
     expectOnlyKnown(await touchViolations(page, '[role="dialog"]'), []);
+  });
+
+  test('Calls: the dialog while someone calls, the call\'s screen and the calls in a chat', async ({ page, open, settle }) => {
+    await withChat(page, { threads: CHAT_CALL_THREAD });
+    await withCall(page, { incoming: true, state: 'ringing', here: false });
+    await open('/chat');
+    await expect(page.getByRole('alertdialog', { name: 'Blair Example is calling' })).toBeVisible();
+    await settle();
+    expectOnlyKnown(await touchViolations(page, '[role="alertdialog"]'), []);
+    await withCall(page, { state: 'active', answered_at: CALL_ANSWERED_AT, silenced: true });
+    await open('/chat?c=chat-blair');
+    await expect(page.getByRole('dialog', { name: 'Blair Example' })).toBeVisible();
+    await settle();
+    expectOnlyKnown(await touchViolations(page, '[role="dialog"]'), []);
+    // Put aside, the call leaves the chat and its entries to be measured, each with "Call back".
+    await page.getByRole('button', { name: 'Hide' }).click();
+    await expect(page.getByRole('button', { name: 'Back to the call with Blair Example' })).toBeVisible();
+    expectOnlyKnown(await touchViolations(page, 'section[aria-label="Chat with Blair Example"]'), []);
   });
 
   test('Chat: files in a chat with two waiting to be sent, the recorder and search results', async ({ page, open, settle }) => {
