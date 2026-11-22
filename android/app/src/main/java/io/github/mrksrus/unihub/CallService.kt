@@ -110,6 +110,8 @@ class CallService : Service() {
         var endpoints: List<CallEndpointCompat> = emptyList()
         var endpoint: CallEndpointCompat? = null
         var telecomMuted = false
+        /** Android refused the call screen the microphone: the page ends the call without telling the server. */
+        var microphoneRefused = false
 
         fun routes(): JSONArray = JSONArray().apply {
             for (each in endpoints) {
@@ -296,8 +298,8 @@ class CallService : Service() {
                         if (call.outgoing) call.control?.let { control -> control.launch { control.setActive() } }
                     }
                 }
-                // The page told the server; the native call ends with it.
-                "ended" -> return ended(id, DisconnectCause.REMOTE)
+                // The page told the server, unless Android refused it the microphone; the native call ends with it.
+                "ended" -> return ended(id, DisconnectCause.REMOTE, server = call.microphoneRefused, failed = true)
             }
             // The page unmuted while Telecom had the microphone muted.
             if (!report.muted && call.telecomMuted) call.context.getSystemService(AudioManager::class.java).isMicrophoneMute = false

@@ -126,11 +126,12 @@ class CallActivity : Activity() {
         web.webChromeClient = object : WebChromeClient() {
             // Only the microphone, only for the server; Android cannot ask for it over the lock screen.
             override fun onPermissionRequest(request: PermissionRequest) {
-                if (request.resources.toList() == listOf(PermissionRequest.RESOURCE_AUDIO_CAPTURE) &&
-                    ServerAddress.sameOrigin(origin, request.origin.toString()) &&
-                    checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                if (request.resources.toList() != listOf(PermissionRequest.RESOURCE_AUDIO_CAPTURE) || !ServerAddress.sameOrigin(origin, request.origin.toString())) {
+                    request.deny()
+                } else if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
                     request.grant(arrayOf(PermissionRequest.RESOURCE_AUDIO_CAPTURE))
                 } else {
+                    CallService.of(id)?.microphoneRefused = true
                     request.deny()
                 }
             }

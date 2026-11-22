@@ -39,7 +39,10 @@ forwarded (see [Upgrading](docs/UPGRADING.md#0350-calls)).
   screen goes dark at the ear. "Open chat" on the call screen asks for the
   phone's unlock and the call goes on. Calls ring on a phone while UniHub's
   notifications are on there, or while the app is open. On Android 10 the
-  app takes no calls. An app from before this version rings only while it
+  app takes no calls. On Android 13 or later, turning on the app's
+  notifications also asks for the microphone, where Android still has to ask
+  about notifications; a call answered without the microphone ends at once,
+  and the caller reads that it failed. An app from before this version rings only while it
   is open; Settings › Chat then says "Update the UniHub app to get calls while it is closed."
 - **Settings › Chat › "Calls on this phone"** in the Android app: the
   microphone, full-screen call screens, notifications and "Allow in
