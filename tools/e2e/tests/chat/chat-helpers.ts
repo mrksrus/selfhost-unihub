@@ -164,3 +164,26 @@ export async function keepScreen(page: Page, name: string) {
 }
 
 export const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/** What the page's `callConnection` received so far: sound packets, and the energy of the sound in them (silence adds none). */
+export const received = (page: Page) => page.evaluate(async () => {
+  const connection = (window as unknown as { callConnection?: RTCPeerConnection }).callConnection;
+  let packets = 0;
+  let energy = 0;
+  (await connection?.getStats())?.forEach((report: { type: string; kind?: string; packetsReceived?: number; totalAudioEnergy?: number }) => {
+    if (report.type === 'inbound-rtp' && report.kind === 'audio') { packets = report.packetsReceived ?? 0; energy = report.totalAudioEnergy ?? 0; }
+  });
+  return { packets, energy };
+});
+
+/** The sound a page receives in three seconds. */
+export async function heard(page: Page) {
+  const before = await received(page);
+  await page.waitForTimeout(3000);
+  const after = await received(page);
+  return { packets: after.packets - before.packets, energy: after.energy - before.energy };
+}
+
+export const callScreen = (page: Page, name: string) => page.getByRole('dialog', { name, exact: true });
+export const ringing = (page: Page, caller: string) => page.getByRole('alertdialog', { name: `${caller} is calling`, exact: true });
+export const gone = (page: Page) => expect.poll(() => page.getByRole('dialog').count().then(async dialogs => dialogs + await page.getByRole('alertdialog').count()), { timeout: 30_000 }).toBe(0);

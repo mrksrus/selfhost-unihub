@@ -50,7 +50,7 @@ if [ -n "$IMAGE" ]; then
   [ "$INSTANCE" = 1 ] || { echo "e2e-stack: UNIHUB_E2E_IMAGE runs instance 1 only (the image's ports are fixed)" >&2; exit 1; }
   API_PORT=4000 WEB_PORT=80
 fi
-APP_CONTAINER=unihub-e2e-app DB_CONTAINER=unihub-e2e-db
+APP_CONTAINER=unihub-e2e-app DB_CONTAINER=unihub-e2e-db RELAY_CONTAINER=unihub-e2e-relay
 # Implicit TLS on the standard ports (the API uses implicit TLS for SMTP only
 # on 465), so each instance's providers get their own loopback address.
 PROVIDER_HOST=127.0.0.$INSTANCE IMAPS_PORT=993 SMTPS_PORT=465 CALDAV_PORT=5232
@@ -225,10 +225,13 @@ image_database() {
 
 # Image mode: the image as docker-compose.yml runs it (production settings,
 # Secure cookies; 127.0.0.1 is a secure context for the browser), with the
-# stack's keys, providers and test CA.
+# stack's keys, providers and test CA, and the relay for calls.
 image_app() {
   app_env
-  docker rm -f "$APP_CONTAINER" >/dev/null 2>&1 || true
+  # A fresh relay secret per start, shared by the API and the relay, never printed.
+  TURN_SECRET=$(openssl rand -base64 48 | tr -d '\n') RELAY_GATEWAY=$(docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}')
+  export TURN_SECRET TURN_URLS=turn:$RELAY_GATEWAY:3479
+  docker rm -f "$APP_CONTAINER" "$RELAY_CONTAINER" >/dev/null 2>&1 || true
   docker run -d --name "$APP_CONTAINER" --network host --init --stop-timeout 15 \
     --cap-drop ALL --security-opt no-new-privileges --cap-add CHOWN --cap-add DAC_OVERRIDE \
     --cap-add NET_BIND_SERVICE --cap-add SETGID --cap-add SETUID \
@@ -237,8 +240,23 @@ image_app() {
     -e NODE_ENV=production -e MYSQL_HOST -e MYSQL_PORT -e MYSQL_USER -e MYSQL_PASSWORD -e MYSQL_DATABASE \
     -e JWT_SECRET -e ENCRYPTION_KEY -e BACKUP_MASTER_KEY -e BOOTSTRAP_ADMIN_EMAIL -e BOOTSTRAP_ADMIN_PASSWORD \
     -e ALLOWED_ORIGINS -e TRUST_PROXY_HEADERS -e TRUSTED_MAIL_HOSTS -e NODE_EXTRA_CA_CERTS=/etc/unihub-e2e-ca.pem \
+    -e TURN_SECRET -e TURN_URLS \
     -e MYSQL_STARTUP_MAX_WAIT_SECONDS=60 -e MYSQL_STARTUP_CHECK_INTERVAL_SECONDS=2 "$IMAGE" >/dev/null
   wait_healthy
+  # On the host's network every address is the relay's own, which it always
+  # refuses as a peer, so the relay that carries calls runs as docker-compose.yml
+  # runs it: on Docker's bridge, its ports published, telling devices the
+  # gateway's address, which only TURN_ALLOW_PRIVATE_PEERS lets it send to.
+  # Port 3479 because the app container's own relay holds 3478; only the
+  # relay part of the image's start.sh runs, without the API.
+  docker run -d --name "$RELAY_CONTAINER" --init --cap-drop ALL --security-opt no-new-privileges \
+    --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add SETGID --cap-add SETUID \
+    -p "$RELAY_GATEWAY:3479:3478/udp" -p "$RELAY_GATEWAY:49160-49200:49160-49200/udp" \
+    -e TURN_SECRET -e TURN_URLS -e "TURN_EXTERNAL_IP=$RELAY_GATEWAY" -e TURN_ALLOW_PRIVATE_PEERS=true -e MYSQL_STARTUP_MAX_WAIT_SECONDS=0 \
+    --entrypoint sh "$IMAGE" -c 'sed "s|^exec node /app/api/src/service-supervisor.js\$|wait|" /app/start.sh > /tmp/relay.sh && grep -qx wait /tmp/relay.sh && exec sh /tmp/relay.sh' >/dev/null
+  for _ in $(seq 1 30); do [[ "$(docker logs "$RELAY_CONTAINER" 2>&1)" == *'Starting the relay for calls'* ]] && return 0; sleep 1; done
+  docker logs --tail 40 "$RELAY_CONTAINER" >&2 || true
+  die "the relay for calls did not start"
 }
 wait_healthy() {
   for _ in $(seq 1 120); do
@@ -329,7 +347,7 @@ status() {
   local name
   for name in greenmail radicale; do printf '%-10s %s\n' "$name" "$(alive $name && echo running || echo stopped)"; done
   if [ -n "$IMAGE" ]; then
-    for name in "$APP_CONTAINER" "$DB_CONTAINER"; do printf '%-10s %s\n' "${name#unihub-e2e-}" "$(docker inspect --format '{{.State.Status}}' "$name" 2>/dev/null || echo stopped)"; done
+    for name in "$APP_CONTAINER" "$RELAY_CONTAINER" "$DB_CONTAINER"; do printf '%-10s %s\n' "${name#unihub-e2e-}" "$(docker inspect --format '{{.State.Status}}' "$name" 2>/dev/null || echo stopped)"; done
   else
     for name in api nginx; do printf '%-10s %s\n' "$name" "$(alive $name && echo running || echo stopped)"; done
     printf '%-10s %s\n' mariadb "$("$REPO/scripts/local-db.sh" status 2>/dev/null | tail -1)"
@@ -344,7 +362,7 @@ EOF
 }
 
 down() {
-  if [ -n "$IMAGE" ]; then docker rm -f "$APP_CONTAINER" "$DB_CONTAINER" >/dev/null 2>&1 || true; fi
+  if [ -n "$IMAGE" ]; then docker rm -f "$APP_CONTAINER" "$RELAY_CONTAINER" "$DB_CONTAINER" >/dev/null 2>&1 || true; fi
   stop_one nginx; stop_one api; stop_one radicale; stop_one greenmail
   [ -d "$STATE/mariadb" ] && "$REPO/scripts/local-db.sh" stop
   return 0

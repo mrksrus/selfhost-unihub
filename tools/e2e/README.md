@@ -110,6 +110,17 @@ from the checkout only seeds the database. `restart-api` restarts the image's
 container. This mode runs instance 1 only. Real-provider tests and the
 Android app tests below stay local.
 
+The image mode also runs the relay for calls with a secret made at each
+start: the app container's API hands out its credentials, and a second
+container of the image, `unihub-e2e-relay`, runs only the relay part of
+`docker/start.sh` on Docker's bridge (on the host network every address is
+the relay's own, which it refuses as a peer), its ports published on the
+gateway's address, with `TURN_EXTERNAL_IP` set to that address and
+`TURN_ALLOW_PRIVATE_PEERS=true` so that it may send to it.
+`tests/chat/chat-call-relay.e2e.ts` proves a call that may use only relay
+candidates carries sound both ways through it, and fails with a wrong relay
+password; it skips without `UNIHUB_E2E_IMAGE`, so only CI runs it.
+
 ## Android app tests
 
 ```bash

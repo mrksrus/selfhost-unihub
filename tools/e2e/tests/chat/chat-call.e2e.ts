@@ -3,7 +3,7 @@ import { expect } from 'e2e';
 import type { Page } from 'playwright-core';
 import { stack } from '../support/env.ts';
 import { onlyOn } from '../support/ui.ts';
-import { chatBrowser, chatRow, FAKE_MICROPHONE, leave, messagesOf, shows, startChat, twoPeople } from './chat-helpers.ts';
+import { callScreen, chatBrowser, chatRow, FAKE_MICROPHONE, gone, heard, leave, messagesOf, ringing, shows, startChat, twoPeople } from './chat-helpers.ts';
 
 // A voice call end to end: two people in two browsers, the real screens, the
 // server's ring and signals, and a real connection between the two Chromiums.
@@ -17,29 +17,6 @@ const keepConnection = (page: Page) => page.context().addInitScript(() => {
     constructor(configuration?: RTCConfiguration) { super(configuration); (window as unknown as { callConnection: RTCPeerConnection }).callConnection = this; }
   };
 });
-
-/** What the page received so far: sound packets, and the energy of the sound in them (silence adds none). */
-const received = (page: Page) => page.evaluate(async () => {
-  const connection = (window as unknown as { callConnection?: RTCPeerConnection }).callConnection;
-  let packets = 0;
-  let energy = 0;
-  (await connection?.getStats())?.forEach((report: { type: string; kind?: string; packetsReceived?: number; totalAudioEnergy?: number }) => {
-    if (report.type === 'inbound-rtp' && report.kind === 'audio') { packets = report.packetsReceived ?? 0; energy = report.totalAudioEnergy ?? 0; }
-  });
-  return { packets, energy };
-});
-
-/** The sound a page receives in three seconds. */
-async function heard(page: Page) {
-  const before = await received(page);
-  await page.waitForTimeout(3000);
-  const after = await received(page);
-  return { packets: after.packets - before.packets, energy: after.energy - before.energy };
-}
-
-const callScreen = (page: Page, name: string) => page.getByRole('dialog', { name, exact: true });
-const ringing = (page: Page, caller: string) => page.getByRole('alertdialog', { name: `${caller} is calling`, exact: true });
-const gone = (page: Page) => expect.poll(() => page.getByRole('dialog').count().then(async dialogs => dialogs + await page.getByRole('alertdialog').count()), { timeout: 30_000 }).toBe(0);
 
 test('a call between two browsers carries sound both ways, muting stops it one way, and every call leaves its entry in both chats', { timeout: 900_000 }, async ({ browser }) => {
   await onlyOn(browser, 'desktop');
