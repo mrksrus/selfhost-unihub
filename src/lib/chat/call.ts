@@ -514,6 +514,7 @@ class Calls implements ChatCalls {
     // The page's own origin: the socket goes through the request boundary as every request.
     media.start(new URL(`/api/chat/calls/${id}/media`, location.href).href, keys, {
       heard: () => { if (media !== this.media) return; this.heardAt = Date.now(); this.refresh(); },
+      opened: () => { if (media === this.media) this.refusal = null; },
       refused: (code, error) => { if (media === this.media) this.refusal = code === 'CHAT_CALL_MEDIA_UPGRADE' ? PROXY : code === 'CHAT_CALL_MEDIA_BUSY' ? error : null; },
       track: () => { if (media === this.media) this.play(); },
     });

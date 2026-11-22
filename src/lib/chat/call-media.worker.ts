@@ -15,8 +15,8 @@ export const CALL_DECODER: AudioDecoderConfig = { codec: 'opus', sampleRate: 48_
 export type CallMediaCommand =
   | { t: 'start'; url: string; rate: number; keys: CallMediaKeys; capture: MessagePort; play: MessagePort }
   | { t: 'send'; on: boolean };
-/** `heard`: frames arrived (at most twice a second); `refused`: the socket did not open and a plain GET said why. */
-export type CallMediaEvent = { t: 'heard' } | { t: 'refused'; code: string | null; error: string | null };
+/** `heard`: frames arrived (at most twice a second); `open`: the socket opened; `refused`: it did not open and a plain GET said why. */
+export type CallMediaEvent = { t: 'heard' } | { t: 'open' } | { t: 'refused'; code: string | null; error: string | null };
 
 const HEADER = 7;
 const AUDIO = 1;
@@ -132,7 +132,13 @@ function start({ url, rate, keys, capture, play }: Extract<CallMediaCommand, { t
     const ws = socket = new WebSocket(url.replace(/^http/, 'ws'));
     ws.binaryType = 'arraybuffer';
     let opened = false;
-    ws.onopen = () => { opened = true; tries = 0; };
+    ws.onopen = () => {
+      opened = true;
+      tries = 0;
+      // A later failure, on another network perhaps, is asked about again.
+      probed = false;
+      postMessage({ t: 'open' } satisfies CallMediaEvent);
+    };
     ws.onmessage = ({ data }) => { if (data instanceof ArrayBuffer) received = received.then(() => receive(new Uint8Array(data))).catch(() => undefined); };
     ws.onclose = () => {
       if (socket !== ws) return;
