@@ -518,6 +518,11 @@ and Gradle (`android/scripts/build-apk.sh`) and copies it to
 an image without the app with `--build-arg UNIHUB_ANDROID=0`; the page then
 offers only the web app.
 
+The app's libraries are AndroidX's `webkit`, `core` and `core-telecom` (calls
+through Android's call handling) with the Kotlin libraries they need; none
+talks to the network or needs Google Play services
+([THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md#android-app)).
+
 Android's build tools run only on x86-64 Linux, so this stage always builds as
 `linux/amd64`. On an ARM machine (Apple silicon, a Raspberry Pi) Docker needs
 x86-64 emulation: Docker Desktop has it; on Linux install it once with

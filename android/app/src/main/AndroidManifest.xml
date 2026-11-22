@@ -25,9 +25,10 @@
     <!-- The app lock (AppLock, BiometricAuth): the phone's fingerprint, face or
          screen lock through Android's own prompt. Granted at install, no question. -->
     <uses-permission android:name="android.permission.USE_BIOMETRIC" />
-    <!-- Voice calls (Calls, CallService): the app is its own call provider in
-         Android's call handling, rings full screen over the lock screen and
-         keeps an answered call running. None of these asks the person. -->
+    <!-- Voice calls (Calls, CallService): the app's calls go through Android's
+         call handling, ring full screen over the lock screen and keep running
+         once answered. None of these asks the person. Core-Telecom also
+         declares BLUETOOTH_CONNECT, which the app never asks for. -->
     <uses-permission android:name="android.permission.MANAGE_OWN_CALLS" />
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_PHONE_CALL" />
@@ -85,16 +86,11 @@
             android:taskAffinity="io.github.mrksrus.unihub.call"
             android:turnScreenOn="true" />
 
-        <!-- Only Telecom binds the call provider (its signature permission). -->
+        <!-- The answered call. Core-Telecom adds its own call provider for Android 13 and older. -->
         <service
             android:name=".CallService"
-            android:exported="true"
-            android:foregroundServiceType="phoneCall|microphone"
-            android:permission="android.permission.BIND_TELECOM_CONNECTION_SERVICE">
-            <intent-filter>
-                <action android:name="android.telecom.ConnectionService" />
-            </intent-filter>
-        </service>
+            android:exported="false"
+            android:foregroundServiceType="phoneCall|microphone" />
 
         <!-- "Open with…" and "Share" (FileActions): the chosen app may read
              the copy it was given, nothing else. -->

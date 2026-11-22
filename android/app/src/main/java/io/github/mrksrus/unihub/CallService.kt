@@ -1,12 +1,12 @@
 package io.github.mrksrus.unihub
 
 import android.Manifest
-import android.annotation.TargetApi
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Person
+import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -16,60 +16,61 @@ import android.media.RingtoneManager
 import android.net.Uri
 import android.os.Build
 import android.os.Handler
+import android.os.IBinder
 import android.os.Looper
-import android.os.OutcomeReceiver
-import android.telecom.CallAudioState
-import android.telecom.CallEndpoint
-import android.telecom.CallEndpointException
-import android.telecom.Connection
-import android.telecom.ConnectionRequest
-import android.telecom.ConnectionService
 import android.telecom.DisconnectCause
-import android.telecom.PhoneAccountHandle
-import android.telecom.TelecomManager
 import android.util.Log
+import androidx.core.telecom.CallAttributesCompat
+import androidx.core.telecom.CallControlResult
+import androidx.core.telecom.CallControlScope
+import androidx.core.telecom.CallEndpointCompat
+import androidx.core.telecom.CallsManager
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineExceptionHandler
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.asCoroutineDispatcher
+import kotlinx.coroutines.launch
+import java.util.concurrent.Executor
 
 /**
- * The app's call provider for Telecom (Calls) and, while a call is answered,
- * the foreground service that keeps the call's sound running with the screen
- * off. Telecom shows nothing for a self-managed call: the ring is this
+ * The call, as Telecom holds it (through Core-Telecom), and, while a call is
+ * answered, the foreground service that keeps its sound running with the
+ * screen off. Telecom shows nothing for the app's calls: the ring is this
  * service's notification, full screen over the lock screen, with the
  * ringtone. One call at a time; everything runs on the main thread.
  */
-class CallService : ConnectionService() {
+class CallService : Service() {
 
-    override fun onCreateIncomingConnection(account: PhoneAccountHandle?, request: ConnectionRequest): Connection {
-        // What Calls handed to addNewIncomingCall comes nested.
-        val extras = request.extras?.getBundle(TelecomManager.EXTRA_INCOMING_CALL_EXTRAS)
-        val id = extras?.getString(Calls.EXTRA_ID)
-        val origin = extras?.getString(Calls.EXTRA_ORIGIN)
-        expected = null
-        if (id == null || origin == null || current != null) return Connection.createFailedConnection(DisconnectCause(DisconnectCause.BUSY))
-        return Call(applicationContext, id, extras.getString(Calls.EXTRA_NAME).orEmpty(), origin).also { current = it }
-    }
-
-    override fun onCreateIncomingConnectionFailed(account: PhoneAccountHandle?, request: ConnectionRequest?) {
-        // Another call that cannot be held (a mobile call), or Telecom refused it.
-        Log.i(TAG, "Telecom did not take the call")
-        expected = null
-    }
+    override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val id = intent?.getStringExtra(Calls.EXTRA_ID)
         when (intent?.action) {
             ACTION_ONGOING -> {
                 // Android requires startForeground after startForegroundService, even for a call that just ended.
-                val call = current?.takeIf { it.id == id && it.state == Connection.STATE_ACTIVE }
+                val call = current?.takeIf { it.id == id && it.active }
+                val notification = ongoing(this, call?.name ?: getString(R.string.call_ongoing), id.orEmpty())
                 try {
-                    startForeground(CALL_ID, ongoing(this, call?.name.orEmpty(), id.orEmpty()), types(this))
+                    startForeground(CALL_ID, notification, types(this, call != null))
                 } catch (error: RuntimeException) {
-                    Log.w(TAG, "No foreground service for the call: ${error.javaClass.simpleName}")
+                    // Answered with nothing of the app on screen (a headset): no microphone type until the call screen asks again.
+                    Log.w(TAG, "No microphone for the call's service: ${error.javaClass.simpleName}")
+                    try {
+                        startForeground(CALL_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL)
+                    } catch (again: RuntimeException) {
+                        Log.w(TAG, "No foreground service for the call: ${again.javaClass.simpleName}")
+                        getSystemService(NotificationManager::class.java).cancel(CALL_ID)
+                    }
                 }
                 if (call == null) stop(this) else service = this
             }
-            ACTION_DECLINE -> id?.let { ended(it, DisconnectCause.REJECTED) }
-            ACTION_HANG_UP -> id?.let { ended(it, DisconnectCause.LOCAL) }
+            ACTION_DECLINE -> id?.let { ended(it, DisconnectCause.REJECTED); dismissStale(this) }
+            ACTION_HANG_UP -> id?.let { ended(it, DisconnectCause.LOCAL); dismissStale(this) }
         }
+        // Started only for a button: nothing to keep running.
+        if (service !== this) stopSelf(startId)
         return START_NOT_STICKY
     }
 
@@ -78,56 +79,22 @@ class CallService : ConnectionService() {
         super.onDestroy()
     }
 
-    /** One call, as Telecom sees it. */
-    class Call(val context: Context, val id: String, val name: String, val origin: String) : Connection() {
-        private var endpoints: List<CallEndpoint> = emptyList()
-
-        init {
-            connectionProperties = PROPERTY_SELF_MANAGED
-            connectionCapabilities = CAPABILITY_MUTE
-            audioModeIsVoip = true
-            setAddress(Uri.fromParts("unihub", id, null), TelecomManager.PRESENTATION_ALLOWED)
-            setCallerDisplayName(name, TelecomManager.PRESENTATION_ALLOWED)
-            setRinging()
-            main.postDelayed({ if (current === this && state == STATE_RINGING) ended(id, DisconnectCause.MISSED) }, RING_MS)
-        }
-
-        override fun onShowIncomingCallUi() = ring(context, this)
-
-        // A headset, a car or a watch answered.
-        override fun onAnswer() {
-            answer(context, id)
-            try {
-                context.startActivity(CallActivity.intent(context, id, answer = false).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-            } catch (error: RuntimeException) {
-                Log.w(TAG, "Could not show the call: ${error.javaClass.simpleName}")
-            }
-        }
-
-        override fun onReject() = ended(id, DisconnectCause.REJECTED)
-        override fun onDisconnect() = ended(id, DisconnectCause.LOCAL)
-        override fun onAbort() = ended(id, DisconnectCause.LOCAL)
-
-        // Android 14 and later only call it.
-        @TargetApi(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
-        override fun onAvailableCallEndpointsChanged(available: List<CallEndpoint>) {
-            endpoints = available
-            Log.i(TAG, "Routes: ${available.map { it.endpointType }}")
-        }
+    /** One call. `control` is Telecom's side of it, once Telecom has taken it. */
+    class Call(val context: Context, val id: String, val name: String, val origin: String) {
+        var answered = false
+        var active = false
+        var control: CallControlScope? = null
+        var job: Job? = null
+        var endpoints: List<CallEndpointCompat> = emptyList()
 
         /** Speaker or earpiece (a headset when there is one), through Telecom. */
         fun route(speaker: Boolean) {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                val wanted = if (speaker) listOf(CallEndpoint.TYPE_SPEAKER)
-                    else listOf(CallEndpoint.TYPE_WIRED_HEADSET, CallEndpoint.TYPE_BLUETOOTH, CallEndpoint.TYPE_EARPIECE)
-                val endpoint = wanted.firstNotNullOfOrNull { type -> endpoints.firstOrNull { it.endpointType == type } } ?: return
-                requestCallEndpointChange(endpoint, context.mainExecutor, object : OutcomeReceiver<Void, CallEndpointException> {
-                    override fun onResult(result: Void?) {}
-                    override fun onError(error: CallEndpointException) { Log.w(TAG, "Route refused: ${error.code}") }
-                })
-            } else {
-                @Suppress("DEPRECATION")
-                setAudioRoute(if (speaker) CallAudioState.ROUTE_SPEAKER else CallAudioState.ROUTE_WIRED_OR_EARPIECE)
+            val control = control ?: return
+            val wanted = if (speaker) listOf(CallEndpointCompat.TYPE_SPEAKER)
+                else listOf(CallEndpointCompat.TYPE_WIRED_HEADSET, CallEndpointCompat.TYPE_BLUETOOTH, CallEndpointCompat.TYPE_EARPIECE)
+            val endpoint = wanted.firstNotNullOfOrNull { type -> endpoints.firstOrNull { it.type == type } } ?: return
+            control.launch {
+                Log.i(TAG, "Route ${endpoint.type}: ${control.requestEndpointChange(endpoint)}")
             }
         }
     }
@@ -136,59 +103,129 @@ class CallService : ConnectionService() {
         private const val TAG = "UniHubCalls"
         private const val CHANNEL_RING = "call-ring"
         private const val CHANNEL_CALL = "call"
-        private const val RING_ID = 2
-        private const val CALL_ID = 3
+        // One notification for the ring and the call: the answer updates it in place.
+        private const val CALL_ID = 2
         private const val RING_MS = 45_000L
         private const val ACTION_ONGOING = "io.github.mrksrus.unihub.CALL_ONGOING"
         private const val ACTION_DECLINE = "io.github.mrksrus.unihub.CALL_DECLINE"
         private const val ACTION_HANG_UP = "io.github.mrksrus.unihub.CALL_HANG_UP"
 
         private val main = Handler(Looper.getMainLooper())
+        // A failed call is logged; it must not take the notification connection down with it.
+        private val scope = CoroutineScope(SupervisorJob() + Executor { main.post(it) }.asCoroutineDispatcher() +
+            CoroutineExceptionHandler { _, error -> Log.w(TAG, "Call failed: ${error.javaClass.simpleName}") })
         var current: Call? = null
             private set
-        private var expected: String? = null
         private var service: CallService? = null
         private val recent = ArrayDeque<String>()
 
         /** The call screen, told "ringing", "active" or "ended". */
         var onState: ((id: String, state: String) -> Unit)? = null
 
-        fun expect(id: String) { expected = id }
-
         /** A call this phone rings for, holds, or ended a while ago: a repeated message is ignored. */
-        fun known(id: String) = current?.id == id || expected == id || id in recent
+        fun known(id: String) = current?.id == id || id in recent
 
-        fun state(id: String) = when (current?.takeIf { it.id == id }?.state) {
-            Connection.STATE_RINGING -> "ringing"
-            Connection.STATE_ACTIVE -> "active"
-            else -> "ended"
+        fun state(id: String) = when (current?.takeIf { it.id == id }?.active) {
+            false -> "ringing"
+            true -> "active"
+            null -> "ended"
         }
 
-        /** Answers the ringing call and keeps it running in a foreground service. */
-        fun answer(context: Context, id: String) {
-            val call = current?.takeIf { it.id == id && it.state == Connection.STATE_RINGING } ?: return
-            call.setActive()
-            context.getSystemService(NotificationManager::class.java).cancel(RING_ID)
+        /** Hands an incoming call to Telecom and rings once Telecom has it. */
+        fun ring(context: Context, origin: String, id: String, name: String) {
+            if (known(id) || current != null) return
+            val call = Call(context, id, name, origin).also { current = it }
+            call.job = scope.launch {
+                try {
+                    val telecom = CallsManager(context)
+                    telecom.registerAppWithTelecom(CallsManager.CAPABILITY_BASELINE)
+                    // No hold: answering another call ends this one.
+                    telecom.addCall(
+                        CallAttributesCompat(name, Uri.fromParts("unihub", id, null), CallAttributesCompat.DIRECTION_INCOMING,
+                            CallAttributesCompat.CALL_TYPE_AUDIO_CALL, callCapabilities = 0),
+                        // Telecom answered: a headset, a car or a watch.
+                        onAnswer = { call.answered = true; started(call, show = true) },
+                        onDisconnect = { cause -> ended(id, cause.code, tellTelecom = false) },
+                        onSetActive = {},
+                        onSetInactive = {},
+                    ) {
+                        call.control = this
+                        launch { availableEndpoints.collect { call.endpoints = it; Log.i(TAG, "Routes: ${it.map { e -> e.type }}") } }
+                        // An `end` that came while Telecom was taking the call.
+                        if (current === call) showRing(context, call) else hangUp(call, DisconnectCause.REMOTE)
+                    }
+                } catch (error: CancellationException) {
+                    throw error
+                } catch (error: Exception) {
+                    Log.w(TAG, "The call failed: ${error.javaClass.simpleName}")
+                    ended(id, DisconnectCause.ERROR)
+                }
+            }
+            main.postDelayed({ if (current === call && !call.answered) ended(id, DisconnectCause.MISSED) }, RING_MS)
+        }
+
+        /** Answers the ringing call from the app (its notification or its call screen). */
+        fun answer(id: String) {
+            val call = current?.takeIf { it.id == id && !it.answered } ?: return
+            val control = call.control ?: return
+            call.answered = true
+            control.launch {
+                if (control.answer(CallAttributesCompat.CALL_TYPE_AUDIO_CALL) is CallControlResult.Success) started(call, show = false)
+                else ended(id, DisconnectCause.ERROR)
+            }
+        }
+
+        /** The call is answered: it runs in a foreground service, whose notification replaces the ring. */
+        private fun started(call: Call, show: Boolean) {
+            if (current !== call || call.active) return
+            call.active = true
+            val context = call.context
+            foreground(context, call.id)
+            if (show) {
+                try {
+                    context.startActivity(CallActivity.intent(context, call.id, answer = false))
+                } catch (error: RuntimeException) {
+                    Log.w(TAG, "Could not show the call: ${error.javaClass.simpleName}")
+                }
+            }
+            onState?.invoke(call.id, "active")
+        }
+
+        /** Runs the answered call in the foreground service; again from the call screen, which may give it the microphone. */
+        fun foreground(context: Context, id: String) {
             try {
                 context.startForegroundService(Intent(context, CallService::class.java).setAction(ACTION_ONGOING).putExtra(Calls.EXTRA_ID, id))
             } catch (error: RuntimeException) {
-                // Started from the background (an answer from a headset alone): the call goes on without it.
                 Log.w(TAG, "Could not start the call's service: ${error.javaClass.simpleName}")
+                // Android posts a call-style notification only for a foreground service: at least the ring stops.
+                context.getSystemService(NotificationManager::class.java).cancel(CALL_ID)
             }
-            onState?.invoke(id, "active")
         }
 
         /** Ends the call, whoever ended it: Telecom, the notification, the call page or the server. */
-        fun ended(id: String, cause: Int) {
+        fun ended(id: String, cause: Int, tellTelecom: Boolean = true) {
             val call = current?.takeIf { it.id == id } ?: return
             current = null
             recent.addLast(id)
             if (recent.size > 20) recent.removeFirst()
-            call.setDisconnected(DisconnectCause(cause))
-            call.destroy()
+            if (tellTelecom) hangUp(call, cause) else main.post { call.job?.cancel() }
             service?.let(::stop)
-            call.context.getSystemService(NotificationManager::class.java).run { cancel(RING_ID); cancel(CALL_ID) }
+            call.context.getSystemService(NotificationManager::class.java).cancel(CALL_ID)
             onState?.invoke(id, "ended")
+        }
+
+        /** A ring or call notification left behind for a call this process no longer holds (it died meanwhile). */
+        fun dismissStale(context: Context) {
+            if (current == null) context.getSystemService(NotificationManager::class.java).cancel(CALL_ID)
+        }
+
+        // Before Telecom has the call, `ring` hangs up once it does. Not in the call's own scope, which a failure cancels.
+        private fun hangUp(call: Call, cause: Int) {
+            val control = call.control ?: return
+            scope.launch {
+                control.disconnect(DisconnectCause(cause))
+                call.job?.cancel()
+            }
         }
 
         private fun stop(service: CallService) {
@@ -197,9 +234,8 @@ class CallService : ConnectionService() {
             if (CallService.service === service) CallService.service = null
         }
 
-        private fun types(context: Context): Int {
-            val microphone = Build.VERSION.SDK_INT >= Build.VERSION_CODES.R &&
-                context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+        private fun types(context: Context, call: Boolean): Int {
+            val microphone = call && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
             return ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL or (if (microphone) ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE else 0)
         }
 
@@ -224,7 +260,7 @@ class CallService : ConnectionService() {
             PendingIntent.getService(context, request, Intent(context, CallService::class.java).setAction(action).putExtra(Calls.EXTRA_ID, id),
                 PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
 
-        private fun ring(context: Context, call: Call) {
+        private fun showRing(context: Context, call: Call) {
             val manager = channels(context)
             val answer = screen(context, call.id, answer = true, request = 1)
             val decline = action(context, ACTION_DECLINE, call.id, 2)
@@ -234,6 +270,8 @@ class CallService : ConnectionService() {
                 .setContentText(context.getString(R.string.call_incoming))
                 .setCategory(Notification.CATEGORY_CALL)
                 .setOngoing(true)
+                // Even if this process dies while it rings.
+                .setTimeoutAfter(RING_MS)
                 .setFullScreenIntent(screen(context, call.id, answer = false, request = 3), true)
                 .apply {
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -250,7 +288,7 @@ class CallService : ConnectionService() {
             // The ringtone repeats until the call is answered or ends.
             notification.flags = notification.flags or Notification.FLAG_INSISTENT
             try {
-                manager.notify(RING_ID, notification)
+                manager.notify(CALL_ID, notification)
             } catch (_: SecurityException) {
                 // Notifications are not allowed: nothing rings.
             }

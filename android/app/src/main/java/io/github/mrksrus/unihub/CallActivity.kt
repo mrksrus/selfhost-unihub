@@ -35,6 +35,7 @@ class CallActivity : Activity() {
     private var webView: WebView? = null
     private var id: String? = null
     private var page: JavaScriptReplyProxy? = null
+    private val listener: (String, String) -> Unit = { callId, state -> if (callId == id) stateChanged(state) }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -42,19 +43,21 @@ class CallActivity : Activity() {
         window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
         val call = intent.getStringExtra(Calls.EXTRA_ID)?.let { id -> CallService.current?.takeIf { it.id == id } }
         if (call == null || ServerAddress.saved(this) != call.origin || !WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) {
+            CallService.dismissStale(this)
             finish()
             return
         }
         id = call.id
-        CallService.onState = { callId, state -> if (callId == id) stateChanged(state) }
-        if (intent.getBooleanExtra(EXTRA_ANSWER, false)) CallService.answer(this, call.id)
+        CallService.onState = listener
+        if (CallService.state(call.id) == "active") CallService.foreground(this, call.id)
+        if (intent.getBooleanExtra(EXTRA_ANSWER, false)) CallService.answer(call.id)
         showCall(call.origin, call.id)
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         val callId = intent.getStringExtra(Calls.EXTRA_ID)
-        if (callId != null && callId == id && intent.getBooleanExtra(EXTRA_ANSWER, false)) CallService.answer(this, callId)
+        if (callId != null && callId == id && intent.getBooleanExtra(EXTRA_ANSWER, false)) CallService.answer(callId)
     }
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -82,7 +85,7 @@ class CallActivity : Activity() {
             if (data.optString("type") != "call") return@addWebMessageListener
             page = reply
             when (data.optString("action")) {
-                "answer" -> CallService.answer(this, callId)
+                "answer" -> CallService.answer(callId)
                 "hangUp" -> CallService.ended(callId, if (CallService.state(callId) == "ringing") DisconnectCause.REJECTED else DisconnectCause.LOCAL)
                 "speaker" -> CallService.current?.takeIf { it.id == callId }?.route(speaker = true)
                 "earpiece" -> CallService.current?.takeIf { it.id == callId }?.route(speaker = false)
@@ -135,7 +138,8 @@ class CallActivity : Activity() {
     }
 
     override fun onDestroy() {
-        if (id != null) CallService.onState = null
+        // A second call's screen may have taken it already.
+        if (CallService.onState === listener) CallService.onState = null
         webView?.destroy()
         webView = null
         // The screen went away (back, or the page left /call): the call does not go on without its sound.

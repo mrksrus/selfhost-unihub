@@ -59,6 +59,19 @@ build instructions:
 
 The LGPL-3.0 and GPL-3.0 texts are in `licenses/third-party`.
 
+## Android app
+
+The Android app (`android/`) contains, unmodified, AndroidX libraries from the
+Android Open Source Project and JetBrains' Kotlin libraries, all under
+Apache-2.0 (licence text in `licenses/third-party/Apache-2.0.txt`):
+`androidx.webkit:webkit`, `androidx.core:core` and `androidx.core:core-telecom`
+(calls), the AndroidX libraries these pull in (annotation, collection,
+concurrent-futures, interpolator, lifecycle, arch core, profileinstaller,
+startup, tracing, versionedparcelable), Guava's `listenablefuture`, the Kotlin
+standard library and `kotlinx-coroutines`. `android/app/build.gradle.kts`
+names the versions; Gradle's dependency report of the `:app` project lists
+every library in the APK.
+
 ## Container programs
 
 The image includes Node.js, Nginx, MySQL/MariaDB client tools, FFmpeg and other
