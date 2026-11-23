@@ -15,9 +15,6 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
   call." instead of pointing at the relay for calls.
 - A call the server refuses (the other person has no device in Chat, or
   calls are off for either of you) no longer leaves an empty chat behind.
-- The Android app no longer asks for the microphone when you turn on its
-  notifications, which it also did where Chat is off. It asks before the
-  first call, at "Call" or from Settings › Chat › "Calls on this phone".
 - When you call someone from the Android app at the moment they call you,
   the app now answers their call instead of ending it as failed.
 - A device that joins Chat gets chat updates at once, also when the server
