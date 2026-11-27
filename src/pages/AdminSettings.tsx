@@ -17,8 +17,8 @@ const CALLS_RELAY_DOCS_URL = 'https://github.com/mrksrus/selfhost-unihub/blob/ma
 const CALLS_PROXY_DOCS_URL = 'https://github.com/mrksrus/selfhost-unihub/blob/main/docs/UPGRADING.md#0351-calls-between-networks';
 const CALLS_CHECK = {
   working: ['working', 'Calls that cannot connect directly go through UniHub\'s own web connection, encrypted on the two devices.'],
-  blocked: ['blocked by the reverse proxy', 'The reverse proxy in front of UniHub does not pass WebSockets, so calls connect only where the two devices reach each other. Switch on WebSocket support in the reverse proxy.'],
-  unknown: ['could not be checked', 'This browser could not reach UniHub\'s check. Load the page again to check once more.'],
+  blocked: ['blocked by the reverse proxy', 'The reverse proxy in front of UniHub does not pass WebSockets, so calls between networks connect only directly or through a configured relay. Switch on WebSocket support in the reverse proxy.'],
+  unknown: ['could not be checked', 'This browser could not complete UniHub\'s check. Load the page again to check once more; if it stays so, check that Chat is on for you.'],
   pending: ['checking…', 'This browser is checking whether the reverse proxy passes WebSockets.'],
 } as const;
 

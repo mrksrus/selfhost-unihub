@@ -655,20 +655,20 @@
       "bytes": 151441
     },
     "server-settings-phone-dark.png": {
-      "sha256": "71e3cb9b83b2dd138ea100773ad9c9818343f155dc803dab3e69247a4066b2e2",
-      "bytes": 68084
+      "sha256": "cdd519afe8e657eaca7073519e4f48f9c4692c1ae17566191cbea4cfdfaff6f7",
+      "bytes": 69475
     },
     "server-settings-phone-light.png": {
-      "sha256": "e2cef603807ac22f456e7cc9491929f895df1d5403e125d802e44c0f6bc5ecf5",
-      "bytes": 72511
+      "sha256": "58dad9d856787b2dd0f828126698ec84540a88e0ca9bb31872045eb292824994",
+      "bytes": 73914
     },
     "server-settings-wide-dark.png": {
-      "sha256": "466595b72f86c62f7d4c4117ee932064574f8e6331fe5aeef19df59ae77a6e02",
-      "bytes": 136735
+      "sha256": "2019b3a81bd26bb97e4f669cc2f7f32240893e326df85ded5eb949ead89ca544",
+      "bytes": 138607
     },
     "server-settings-wide-light.png": {
-      "sha256": "a13773ce7a6f943a176d940d134939ad2035d81f7a5be36da6dc73f1b8c04f9d",
-      "bytes": 139906
+      "sha256": "4987ed79f1ffaf43e577622d0545cd29adad40380e0044c366346f2c3795dbb2",
+      "bytes": 141756
     },
     "settings-app-lock-phone-dark.png": {
       "sha256": "bb4541e80707badd4bb3b434512d21718006a99a8e78a84d2de284130cec89ca",
@@ -2302,6 +2302,48 @@
         "call-ended-phone-light.png",
         "call-ended-wide-dark.png",
         "call-ended-wide-light.png"
+      ],
+      "removed": []
+    },
+    {
+      "date": "2026-11-23T01:40:44.155Z",
+      "reason": "Server settings: the blocked line names the relay as the other way between networks",
+      "source": {
+        "commit": "44cbf76deb187d95b55721801b416c9769fb48f8",
+        "branch": "rel-0351",
+        "dirty": true,
+        "digest": "596d7416f4b740864a39c819b45381913c16aa0abc782d96b3327fd5333cf630"
+      },
+      "render": {
+        "playwright": "1.64.0",
+        "browser": "chromium-headless-shell 156.0.8078.4",
+        "browserArgs": [
+          "--font-render-hinting=none",
+          "--disable-lcd-text",
+          "--force-color-profile=srgb",
+          "--disable-gpu",
+          "--disable-skia-runtime-opts",
+          "--num-raster-threads=1",
+          "--disable-partial-raster"
+        ],
+        "platform": "linux-x64",
+        "fonts": {
+          "@fontsource/inter": "5.3.0",
+          "@fontsource/jetbrains-mono": "5.3.0"
+        },
+        "fontconfig": "isolated",
+        "deviceScaleFactor": 1
+      },
+      "host": {
+        "node": "v26.12.1",
+        "ci": false
+      },
+      "added": [],
+      "changed": [
+        "server-settings-phone-dark.png",
+        "server-settings-phone-light.png",
+        "server-settings-wide-dark.png",
+        "server-settings-wide-light.png"
       ],
       "removed": []
     }

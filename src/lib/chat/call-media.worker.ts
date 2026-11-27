@@ -123,6 +123,8 @@ function start({ url, rate, keys, capture, play }: Extract<CallMediaCommand, { t
     if (!answer || answer.ok) return;
     probed = true;
     const body = await answer.json().catch(() => null) as { code?: string; error?: string } | null;
+    // A socket that opened meanwhile has answered the question.
+    if (socket?.readyState === WebSocket.OPEN) return;
     postMessage({ t: 'refused', code: body?.code ?? null, error: body?.error ?? null } satisfies CallMediaEvent);
   };
 
