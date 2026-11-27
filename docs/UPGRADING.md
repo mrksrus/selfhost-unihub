@@ -5,6 +5,52 @@
 For a new installation, use [Installation](INSTALLATION.md). This page includes
 version-specific upgrade guidance. Preserve existing data and keys when upgrading.
 
+## 0.35.1 Calls between networks
+
+No database upgrade runs, and there is no new port or variable. Going back
+to 0.35.0 needs no restore.
+
+- **The reverse proxy must pass WebSockets** for `/api/`. When two devices
+  cannot connect directly, each opens a WebSocket to UniHub
+  (`/api/chat/calls/<id>/media`) and the call's sound goes through it,
+  encrypted on the devices. A proxy that does not pass WebSockets leaves
+  such calls to connect directly or through a configured relay, or to end
+  with "The call could not go through UniHub: the reverse proxy in front of
+  it does not pass WebSockets."
+  - **Nginx Proxy Manager:** switch on "Websockets Support" on UniHub's
+    proxy host. It is off by default.
+  - **Nginx:** in the `location` that proxies to UniHub:
+
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+
+  - **Caddy, Traefik and Cloudflare** pass WebSockets without a setting.
+
+  The server pings each socket every 25 seconds, so a proxy's usual idle
+  timeout of a minute or more keeps it open. UniHub's own Nginx inside the
+  image already passes them.
+- **Check it.** Server settings › Calls says "Calls between networks:
+  working" once the proxy passes WebSockets. Until then it says "blocked by
+  the reverse proxy": "The reverse proxy in front of UniHub does not pass
+  WebSockets, so calls between networks connect only directly or through a
+  configured relay." The check runs in your own browser, through the same
+  proxy; load the page again after changing the proxy. "could not be
+  checked" says "This browser could not complete UniHub's check. Load the
+  page again to check once more; if it stays so, check that Chat is on for
+  you."
+- **The relay for calls stays optional.** An installation that set it up
+  keeps it, and a call that connects through it uses it; one without it
+  needs nothing for calls between networks
+  ([Calls and the relay](INSTALLATION.md#calls-and-the-relay)).
+- **Android app.** Calls through UniHub need no new app: the app's call
+  screen runs the server's page. The 0.35.1 app (offered under Settings →
+  General → App) adds only the fix for calling someone at the moment they
+  call you.
+- **Browsers.** A browser without WebCodecs audio (Firefox on Android,
+  Safari before 26) still calls directly only; the call says so when it
+  cannot connect.
+
 ## 0.35.0 Calls
 
 **Make a database backup first**, as before every upgrade. Two automatic

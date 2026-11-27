@@ -43,8 +43,9 @@ The server does see, and keeps:
   was sent to a device, and when;
 - each chat's retention time and the moment deleting under it starts, and
   how many archive copies each person has;
-- **calls**: who called whom, when, how long and how it ended, and until the
-  call ends the two devices' network addresses ([Calls](#calls)).
+- **calls**: who called whom, when, how long and how it ended, until the
+  call ends the two devices' network addresses, and for a call through
+  UniHub when and how much encrypted sound passes ([Calls](#calls)).
 
 ## What the encryption protects
 
@@ -644,11 +645,52 @@ Delivery details are in [PWA](PWA.md#enable-notifications) and
 
 ## Calls
 
-Voice calls between the two people of a direct chat. The sound goes from
-device to device, encrypted by WebRTC (DTLS-SRTP); it never passes through
-the server. Calls belong to Chat: no module of their own, the app lock area
+Voice calls between the two people of a direct chat, encrypted between the
+two devices. Calls belong to Chat: no module of their own, the app lock area
 and the module gate are `chat`, and a device that has not joined Chat is
 refused every call route and hears nothing of a call.
+
+**How a call connects.** Once a call is answered, its sound goes one of
+three ways, the first two preferred, and changes way while the call goes
+on:
+
+1. **Directly**, from device to device, encrypted by WebRTC (DTLS-SRTP):
+   the same network, an office, a VPN, or two networks that let the
+   devices reach each other.
+2. **Through the relay**, where one is configured (**The relay** below):
+   the same WebRTC connection, its encrypted packets passed on by
+   coturn in UniHub's container.
+3. **Through UniHub**, while neither of those is connected: each end opens a
+   WebSocket to `GET /api/chat/calls/:id/media` through the reverse proxy,
+   and the server passes the devices' encrypted frames from one end to the
+   other. The call's screen says "Through UniHub" under the time.
+
+Both ends open their socket as soon as the call is answered and keep it for
+the whole call, but send through it only while their direct or relayed
+connection is not connected; when that connection comes up, the sound moves
+to it, and back to UniHub when it drops. The call is active while either
+way carries sound (frames from UniHub within the last two seconds), says
+"Reconnecting…" while neither does, and fails after 30 seconds of neither.
+A browser without WebCodecs audio (Firefox on Android, Safari before 26)
+cannot go through UniHub and tells the other end so at the answer; neither
+end then tries it, and the call connects directly or through the relay
+only.
+
+**The encryption through UniHub.** At the answer each end makes a P-256 key
+pair for this call only and sends its public half to the other end as a
+call signal. Both derive, with HKDF-SHA-256 over the call's id and the two
+public halves, one AES-128-GCM key and nonce prefix for each direction;
+the private halves cannot leave the browser and are dropped with the call.
+A frame is a 7-byte header in clear (version, sender, key, a sequence
+number), authenticated as additional data, then the encrypted Opus packet
+(24 kbit/s, 20 ms, mono). A receiver drops a frame it has already had or
+one more than 50 behind the newest. The server never holds a private half,
+so it cannot compute the key, and it keeps no frame; but the two public
+halves reach the other end through the server, as a direct call's media
+fingerprints do, and nothing checks them between the two people. The same
+limit as for messages applies: a server changed to attack its users could
+hand each end a key of its own and listen
+([What the encryption protects](#what-the-encryption-protects)).
 
 **What the server sees.** Who calls whom and when, which devices ring and
 which one answered, how long the call lasts and how it ended, and, until the
@@ -657,7 +699,37 @@ addresses and the fingerprints of the media keys). Those signals are rows
 the other device fetches, are logged nowhere and are deleted when the call
 ends. The call's line in the chat stays until retention removes it. With
 the relay (TURN), the relay carries the encrypted sound and sees addresses
-and amounts. The two people see each other's network address.
+and amounts. Through UniHub, the server sees each end's socket, as any
+request, and when and how many frames of what size pass each way, with
+their clear headers; it logs none of it. The two people see each other's
+network address.
+
+**Limits through UniHub.** Per end: one socket per device (a second one
+replaces the first), messages of at most 1,024 bytes, at most 60 a second
+in bursts of 120 (more are dropped). A receiver that does not keep up loses
+frames while more than 8 KiB wait for it and is closed after 15 seconds of
+that; an end that sends nothing for 60 seconds is closed. Every 25 seconds
+the server pings each socket and checks the session and that the device is
+still an end of the call; signing out, a revoked session and a deactivated
+person close it at once, and the call's end closes both. Per server: 200
+sockets, 100 calls through UniHub at once; a socket asked for beyond that is refused
+(a reconnect of an end already there is not). The sockets live in the one
+API process, like the live update stream.
+
+**When it fails.** A call that ends without connecting says why where it
+is known: "The call could not go through UniHub: the reverse proxy in front
+of it does not pass WebSockets. An administrator can switch on WebSocket
+support there."; "This browser cannot carry calls between networks. Call
+from the UniHub app or another browser."; "<name> is on a browser that
+cannot carry calls between networks." ("The other person" while Chat is
+locked); "UniHub is carrying too many calls right now. Try again in a few
+minutes." Otherwise the caller of a call that failed before it was
+answered reads "<name> could not take the call."; an answered call that
+never connected says "Could not connect. Check the connection and try
+again.", and one that was connected and broke for good "The connection was
+lost and did not come back." A page tells the reverse proxy's refusal from
+a socket that failed to open by one plain GET of the same address: only
+UniHub answers it `426 CHAT_CALL_MEDIA_UPGRADE`.
 
 **The flow.** The calling device starts the call (`POST /api/chat/calls`,
 naming the person or the direct chat) and posts its offer as the first
@@ -709,8 +781,8 @@ a `turn:` address without `?transport=` is told for UDP and for TCP) with `TURN_
 `GET …/ice` hands the two ends credentials made for the call, valid twelve
 hours (the user name is the expiry and the call's id, the password the
 base64 HMAC-SHA1 of it under the secret), never stored. Without both, no
-servers are handed out and calls connect only where the two devices reach
-each other directly. `GET /api/admin/settings/signup-mode` answers
+servers are handed out and calls connect directly or through UniHub.
+The relay is optional. `GET /api/admin/settings/signup-mode` answers
 `calls_relay` for the Server page. Running it, its ports and what it
 refuses are in [Calls and the relay](INSTALLATION.md#calls-and-the-relay).
 
@@ -743,7 +815,8 @@ refuses are in [Calls and the relay](INSTALLATION.md#calls-and-the-relay).
   phone numbers (a contact's number opens the phone's dialler). Nothing is
   written to the phone's own call list, and there is no Android Auto.
 - **Two devices that both need the relay** do not always reach each other
-  ([Calls and the relay](INSTALLATION.md#calls-and-the-relay)).
+  through it ([Calls and the relay](INSTALLATION.md#calls-and-the-relay));
+  such a call goes through UniHub instead.
 - **One large upload holds back later messages.** The outbox sends in order,
   so a message written after a large file waits until that file is through.
 - **Upload progress** shows only in the tab that sends; the device's other
@@ -816,6 +889,8 @@ included).
 | `POST /api/chat/calls/:id/end` | Decline, cancel, hang up, or report a failed connection |
 | `POST /api/chat/calls/:id/signals`, `GET …/signals?after=` | Signals between the two ends, at most 16,384 characters each |
 | `POST /api/chat/calls/:id/alive`, `GET /api/chat/calls/:id/ice` | A sign of life; fresh relay credentials |
+| `GET /api/chat/calls/:id/media` | The call's sound through UniHub, a WebSocket of an end of the answered call; refused before the handshake with `409 CHAT_CALL_ENDED`, `409 CHAT_CALL_NOT_ACTIVE` (still ringing), `503 CHAT_CALL_MEDIA_BUSY`, `400 CHAT_CALL_MEDIA_INVALID`, and `426 CHAT_CALL_MEDIA_UPGRADE` without the upgrade; the close codes are `ChatCallMediaClose` |
+| `GET /api/chat/calls/check` | A WebSocket accepted and closed at once, for the Server page's check; open to a device that has not joined Chat; a plain GET answers `426 CHAT_CALL_MEDIA_UPGRADE` |
 
 Two administrator routes need `server.settings` and no module:
 
@@ -834,8 +909,9 @@ chat `409 CHAT_FOLLOWS_GROUP` to add, remove and leave.
 Events on the existing live update stream (`GET /api/events`), withheld
 from a page whose person has Chat off, and, but for `chat.device`, from a
 page of a device that has not joined. They carry ids only; the page fetches
-through the routes above. There is no WebSocket: messages and files travel
-only in ordinary requests ([Architecture](ARCHITECTURE.md#live-status-events)).
+through the routes above. Messages, files and a call's signals travel only
+in ordinary requests ([Architecture](ARCHITECTURE.md#live-status-events));
+the one WebSocket is a call's sound through UniHub ([Calls](#calls)).
 
 - `chat.changed` (`conversation_id`): a chat has a new group, message,
   deletion, mark, name or people. A mark that only records reading, with

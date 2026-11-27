@@ -22,7 +22,8 @@ the page opened as `http://NAS-IP:port` loads but cannot keep you signed in.
 Put an HTTPS reverse proxy in front of the app's port (Nginx Proxy Manager,
 Caddy, Traefik, a tunnel) with a certificate your devices trust. A public
 domain or Internet access is not required; private DNS works. The proxy
-must let chat uploads of 101 MB through. See
+must let chat uploads of 101 MB through, and pass WebSockets for calls
+between networks ([what each proxy needs](UPGRADING.md#0351-calls-between-networks)). See
 [Prepare your server and browser address](INSTALLATION.md#1-prepare-your-server-and-browser-address).
 
 ## The form
@@ -52,9 +53,8 @@ Everything else goes into **Additional Environment Variables**, described in the
 - `INSTANCE_BACKUP_DIR` and `INSTANCE_BACKUP_KEY`, with an Additional Storage
   mounted at that folder: the [instance backup](DATA_RECOVERY.md#instance-backup).
 
-The form has no fields or ports for the relay for calls yet; an update of the
-catalog app adds them. Until then calls connect only where the two devices
-reach each other directly
+The form has no fields or ports for the relay for calls. Calls between
+networks go through UniHub instead, through the reverse proxy
 ([Calls and the relay](INSTALLATION.md#calls-and-the-relay)).
 
 ## Keep your data recoverable

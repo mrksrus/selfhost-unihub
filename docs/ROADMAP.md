@@ -12,7 +12,7 @@ still open are decided when that version starts.
 
 **UniHub 1.0 is a self-hosted workplace and communication system for one
 organisation.** It covers mail, contacts, calendar, ToDo and recordings, plus
-end-to-end encrypted chats and internal voice and video calls, on the web and
+end-to-end encrypted chats and internal voice calls, on the web and
 Android. The organisation's administrators run it, it is secure enough for
 company data, and it can be recovered after a failure. It works just as well
 for one person or a family.
@@ -31,7 +31,8 @@ for one person or a family.
 - **A documented security baseline and threat model**, with no "ALPHA" label
   left on anything an organisation relies on.
 
-**Not in 1.0:** iOS, calls to ordinary phone numbers, communication between
+**Not in 1.0:** iOS, calls to ordinary phone numbers, video calls and screen
+sharing, communication between
 UniHub servers, AI features and new Music features.
 
 ## Scope rules
@@ -83,7 +84,7 @@ UniHub servers, AI features and new Music features.
 | 0.33.0 | Messaging I | A Chat module with 1:1 chats on the web, PWA and Android that are always end-to-end encrypted (MLS through OpenMLS in the page); delivery and read state; presence; a passphrase-protected key backup so a new phone or browser gets the history. Nobody but the two people can read a chat: there is no organisation recovery key. Messages travel over ordinary requests with hints on the existing live stream; there is no WebSocket. |
 | 0.34.0 | Messaging II | Group chats of up to 100 people, chosen or following an organisation group; files, pictures and voice messages encrypted on the device; mentions and a notification choice per chat; search through the chats a device holds; an administrator's retention rule that deletes chat messages after 30 to 365 days, starting 24 hours after it gets shorter and with warnings; people who leave keep their name on their messages. The server sees who is in a chat, a group chat's name and who was mentioned, never the content. |
 | 0.35.0 | Calls I | Encrypted 1:1 voice calls between UniHub users in the browser, the installed web app and the Android app. On Android they ring like phone calls through Android's call handling, with the app's own call screen: with the app closed, over the lock screen, answered from a headset. A call can be answered while UniHub is locked. An optional relay (TURN) built into the image. A newly signed-in device joins no chat until the chat passphrase is entered on it or another of the person's devices approves it. Android Auto later ([parking lot](#parking-lot)). |
-| 0.36.0 | Calls II | Video, screen sharing in the browser, and group calls through an optional self-hosted media server. |
+| 0.36.0 | Calls II | Group voice calls. |
 | 0.37.0 | Reserve | Only for the second half of a theme that grew too big, and the move to TypeScript 7. |
 | 1.0.0-rc.N | Stabilisation | No features. The full release contract on every candidate; a security review; a size test; real phones; a week of real chat and call use; administrator and user guides and the threat model; frozen formats; then 14 days of daily use without a serious bug. |
 | 1.0.0 | Release | Tag, image, Android app, release notes and the upgrade guide. |
@@ -103,7 +104,7 @@ condensed rules are in [Building toward 1.0](agents/building-toward-1.0.md).
 | F4 | Ownership and grants: one access service decides who may read, edit or manage a shared resource. | 0.30.0, first used in 0.31.0 |
 | F5 | Devices as records that can be listed, locked and removed. | 0.29.0 |
 | F6 | One notification pipeline that applies the privacy level before anything leaves the server. | 0.24.0 |
-| F7 | Realtime: change hints to clients over the live stream; chat needs no WebSocket, and calls decide whether they need one. | 0.33.0 |
+| F7 | Realtime: change hints to clients over the live stream; chat needs no WebSocket, and a call's sound uses one when the devices cannot connect directly. | 0.33.0, 0.35.1 |
 | F8 | Platform boundary between the web app and the Android shell (keyboard, files, biometrics, calls). | 0.25.0, 0.29.0 |
 | F9 | Short-lived tickets for file downloads, so a session cookie is never handed to another app. | 0.25.0 |
 | F10 | Keys: secrets from files, versioned encryption, a separate key for instance backups. | step by step |
@@ -111,7 +112,7 @@ condensed rules are in [Building toward 1.0](agents/building-toward-1.0.md).
 | F12 | Contacts with any number of values. | 0.26.0 |
 | F13 | Destructive actions under policy: the server refuses what a policy forbids, with a clear reason. | 0.28.0 |
 | F14 | End-to-end encrypted messaging with MLS; the server stores ciphertext only. | 0.33.0 |
-| F15 | Calls: WebRTC signalling and media, an optional relay and media server, native Android call handling. | 0.35.0 |
+| F15 | Calls: WebRTC signalling and media, an optional relay, the sound through UniHub when the devices cannot connect directly, native Android call handling. | 0.35.0, 0.35.1 |
 
 ## After 1.0
 
@@ -145,6 +146,7 @@ These items are not planned. Each one can come after 1.0, or never.
 - A recovery key with which the organisation can read a person's chats
 - Collaborative documents and notes
 - Calls to and from ordinary phone numbers
+- Video calls and screen sharing
 - UniHub calls in Android Auto
 - Automated CI tests against self-hosted mail and calendar servers in
   containers

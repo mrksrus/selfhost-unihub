@@ -34,7 +34,7 @@ names, kernels and paths are not recorded.
 config and runs these checks against it in Chromium.
 
 **Reference screens.** Each screen is captured in Dark Default and Light Default,
-one hundred and eighty-four pictures in all, compared with zero tolerance:
+one hundred and eighty-eight pictures in all, compared with zero tolerance:
 
 | Picture | Viewport | Steps |
 | --- | --- | --- |
@@ -86,11 +86,12 @@ one hundred and eighty-four pictures in all, compared with zero tolerance:
 | `chat-approval-wide-*`, `chat-approval-phone-*` | Wide, Phone | "A device asks to join your chats" over the chat list: the device's name, "Signed in 3 minutes ago. Asked just now.", the warning that the name comes from that device, the code, "This was not me" and "Approve". Since 0.35.0. |
 | `call-ringing-wide-*`, `call-ringing-phone-*` | Wide, Phone | "Blair Example is calling" over the chat list, with a fixed call in place of a real one: the initials in their ring, "Voice call", "Decline" and "Answer". Since 0.35.0. |
 | `call-calling-wide-*`, `call-calling-phone-*` | Wide, Phone | The call's screen while it rings on the other side: "Calling…", "Mute", "Hang up", "Open chat" and "Hide". Since 0.35.0. |
-| `call-active-wide-*`, `call-active-phone-*` | Wide, Phone | The same screen three minutes into the call: the time "3:07". Since 0.35.0. |
+| `call-active-wide-*`, `call-active-phone-*` | Wide, Phone | The same screen three minutes into the call: the time "3:07". Since 0.35.0; "Through UniHub" under the time since 0.35.1. |
 | `call-reconnecting-wide-*`, `call-reconnecting-phone-*` | Wide, Phone | The same screen with the connection broken and the microphone off: "Reconnecting…", the greyed time, "Your microphone is off." and "Mute" pressed. Since 0.35.0. |
-| `call-ended-wide-*`, `call-ended-phone-*` | Wide, Phone | A call that was answered and never connected: "Could not connect. Your administrator may need to set up the relay for calls.", "Close" and "Open chat". Since 0.35.0. |
+| `call-ended-wide-*`, `call-ended-phone-*` | Wide, Phone | A call that was answered and could not go through UniHub either: "The call could not go through UniHub: the reverse proxy in front of it does not pass WebSockets. An administrator can switch on WebSocket support there.", "Close" and "Open chat". Since 0.35.0; the reverse proxy's words since 0.35.1. |
 | `call-page-phone-*` | Phone | `/call` with a call ringing: the call alone on the page, without the shell. Since 0.35.0. |
 | `chat-calls-wide-*`, `chat-calls-phone-*` | Wide, Phone | A chat with one message and five calls: "Voice call, 5 min", "Call declined" and "No answer" on the caller's own side, "Call failed" and a red "Missed call" on the other, each with who called, the time and "Call back"; the handset in the chat's header. Since 0.35.0. |
+| `server-settings-wide-*`, `server-settings-phone-*` | Wide, Phone | Server settings as the owner, with a reverse proxy that does not pass WebSockets: sign-up "Anyone, with approval", then Calls with "Calls between networks: blocked by the reverse proxy", its sentence and "What the reverse proxy needs", and "Relay for calls: not configured" with "Optional." Since 0.35.1. |
 | `chat-retention-dialog-wide-*`, `chat-retention-dialog-phone-*` | Wide, Phone | Server → Policies as the owner: "Delete chat messages after" changed from Never to 30 days and "Save changes…" pressed: the server's count, what follows, "Type DELETE to confirm" with the focus, the password, and "Save changes" in red, greyed out. Since 0.34.0. Since 0.35.0 the Chat group has the row "Calls". |
 | `chat-retention-pending-wide-*`, `chat-retention-pending-phone-*` | Wide, Phone | The Chat group of Server → Policies with 30 days set and three chats in their 24 hours: the note under the rule with the server's date and "Apply now…", then "Largest file in a chat" and "Who members may add to a group chat". Since 0.34.0. Since 0.35.0 the Chat group has the row "Calls". |
 

@@ -208,7 +208,7 @@ treatment.
 | `restoreSection` | The recovery section whose running restore makes the route read-only (409 `RESTORE_IN_PROGRESS`); `'*'` refuses during any restore. Required on `POST`/`PUT`/`DELETE` outside `/api/backup/` and `/api/auth/`; an explicit `null` states that the route writes nothing a restore replaces. Every section with tables must have at least one write route. |
 | `body` | `limit` in bytes (default 16 KiB, `DEFAULT_BODY_LIMIT`) and `kind`: `'json'` (default), `'backup-upload'` (spooled to a file when the content type is an archive), `'upload'` (the raw body of any type, spooled to a private file under `UPLOAD_SPOOL_ROOT`, default `/app/uploads/spool`; the handler receives `{ path, size, contentType, mediaType }`, an empty body is refused with `UPLOAD_EMPTY`, and the file is removed when the handler returns, throws or the client disconnects) or `'none'` (not read). |
 | `csrf` | `'token'` (default: cookie/header pair), `'background-header'` (the service worker's `X-Background-Sync: 1` also passes) or `'none'` (sign-in and sign-up, which issue the token). The bearer-without-cookie rule is global. |
-| `response` | `'json'` (default) or `'stream'`: the handler writes and owns the response and returns nothing; a refusal before that is an ordinary JSON error. `GET /api/events` and `GET /api/notifications/android/stream`. |
+| `response` | `'json'` (default), `'stream'`: the handler writes and owns the response and returns nothing; a refusal before that is an ordinary JSON error. `GET /api/events` and `GET /api/notifications/android/stream`. Or `'upgrade'`, GET only: the only routes a WebSocket handshake reaches ([Call media sockets](#call-media-sockets)). |
 | `destructive` | F13: the data-safety policies (the `policy` entries of `settings-registry.ts`) of what the route removes or resets, each for every request or only when named query parameters have given values (`destructivePolicies()` resolves them for a request). Removing a mail account names `accounts.remove`, plus `accounts.reset` with `purge=true`; a calendar account `accounts.remove`; Settings → Delete data `data.clear` (clearing calendar or mail also `accounts.remove`, mail also `accounts.reset`); deleting one's own account `account.delete`; deleting backups `backup.delete`; deleting a mail folder at the provider as well (`server=1` or `true`, the values the route reads, from one constant) `mail.provider_delete`; deleting contacts, a contact's photo, events, tasks, a local calendar or a recording for good, and messages in a Download account's Trash (`permanent=true`), `bin.delete`. Only on `POST`/`PUT`/`DELETE` of `'user'` routes: an administrator acts on a person's data through the admin path, which a person's policy never stops. |
 | `appLock` | 0.29.0: `'exempt'` keeps a signed-in route open to a device that falls short of the app lock the person's policies require; `'background-sync'` does so only for requests with `X-Background-Sync: 1` (the Android app's contacts sync). Every other signed-in route is refused with 403 `APP_LOCK_REQUIRED` while the device is short: a module's route while its module or the whole app is required, a route of no module while anything is. The exempt routes are pinned with their reasons in `routes-policy.test.cts` ([App lock](APP_LOCK.md#required-by-the-administrator)). |
 | `appLockModules` | 0.29.0: further modules whose data the route shows or changes, locked like its own (`GET`/`PUT /api/mail/accounts/:id/calendar` count as Calendar). |
@@ -331,9 +331,10 @@ user and one session.
   (`{conversation_id}`), `chat.presence` (`{user_id, online}`), `chat.call`
   (`{call_id}`) and `chat.device` (`{chat_device_id}`)
   ([Chat](CHAT.md#live-hints)).
-- **No WebSocket.** Everything the server pushes is a hint on this stream;
-  everything a client sends, chat messages and a call's signals included, is
-  an ordinary request: a device posts a signal and the other end fetches it
+- **No WebSocket for hints.** Everything the server pushes is a hint on this
+  stream; everything a client sends, chat messages and a call's signals
+  included, is an ordinary request (the one WebSocket carries a call's sound,
+  below): a device posts a signal and the other end fetches it
   after the hint `chat.call`. Chat's presence is the browser stream itself: a
   person is online while a page of theirs on a device that joined Chat holds
   one (`realtime.isPresent`); the Android app's notification stream does not
@@ -372,6 +373,43 @@ with the session) opens the stream for an authenticated online session only,
 never for an offline profile. It turns events into coalesced TanStack Query
 invalidations and defers them while the tab is hidden. See
 [Mail sync](MAIL_SYNC.md#status-updates) for the polling fallback.
+
+### Call media sockets
+
+A call's sound through UniHub, when its two devices cannot connect directly,
+is one WebSocket per end, `GET /api/chat/calls/:id/media`
+([Chat](CHAT.md#calls)); `GET /api/chat/calls/check` is the Server page's
+probe of the same handshake.
+
+- **Through the request boundary.** The server takes only `Upgrade:
+  websocket` as an upgrade (`shouldUpgradeCallback`; any other stays an
+  ordinary request). Its `upgrade` event (`handleUpgrade`) builds a
+  `ServerResponse` on the socket and runs the same `handleRequest`: route
+  matching, origin, session, module `chat`, the app lock gate and, for the
+  media route, the joined-device guard. A refusal is an ordinary JSON answer on
+  the socket, which then closes; a handshake to a route whose `response` is
+  not `'upgrade'` answers 400. Only after its own checks (an end of the
+  answered call, capacity) does the handler answer `101`, with the
+  boundary's headers, the renewed session cookie included. The same route
+  reached without the upgrade answers `426 CHAT_CALL_MEDIA_UPGRADE`, which is
+  how a page tells that a reverse proxy dropped it.
+- **Frames.** `api/src/http/websocket.ts` is a small RFC 6455 subset:
+  masked, unfragmented binary messages of at most 1,024 bytes, ping, pong
+  and close; a declared length over the limit is refused before any payload
+  is buffered.
+- **Passing on.** `api/src/services/call-media.ts` keeps each call's sockets
+  per chat device in this process and sends every message from one end to
+  the other end unchanged, never reading, storing or logging it. It drops
+  above 60 messages a second (bursts of 120) and while more than 8 KiB wait
+  for a receiver, and closes a socket that sent nothing for 60 seconds or
+  did not read for 15. At most 200 sockets (`503 CHAT_CALL_MEDIA_BUSY`).
+- **Lifetime.** Every 25 seconds a ping and a check of the session and the
+  call. `realtime.ts` closes a session's sockets with its streams (sign-out,
+  a revoked session, deactivation); the call's end closes them after its
+  transaction; shutdown closes all with 1001.
+- **Proxy.** UniHub's Nginx passes `Upgrade` and `Connection` on `/api/`;
+  the reverse proxy in front must pass them too
+  ([Upgrading](UPGRADING.md#0351-calls-between-networks)).
 
 ## Authentication and CSRF
 
@@ -694,9 +732,12 @@ As built:
   [Chat](CHAT.md#what-the-server-sees).
 - **Calls** are WebRTC between the two devices, the sound encrypted by
   DTLS-SRTP. The server stores a call's row and, while it is set up, the
-  signals the two ends exchange, deleted when it ends; the relay (coturn in
-  the same container) carries the encrypted sound when the two devices
-  cannot reach each other. In the Android app the page's WebRTC runs in the
+  signals the two ends exchange, deleted when it ends; the optional relay
+  (coturn in the same container) carries the encrypted sound when the two
+  devices cannot reach each other. Without a direct or relayed connection,
+  the page encrypts the sound itself (a per-call P-256 key agreement,
+  AES-128-GCM, WebCodecs Opus in a Worker) and sends it over the call's
+  media socket ([Call media sockets](#call-media-sockets)). In the Android app the page's WebRTC runs in the
   WebView, and Android's call handling (Core-Telecom) rings and holds the
   call ([Android](ANDROID.md#calls)).
 - **What it protects** is the same for every client: the Android app loads
@@ -756,7 +797,8 @@ Important boundaries in the current code:
   for multiple app containers. Backup/restore job state itself is durable.
 - Live status events (`/api/events`) use an in-process bus: one API process
   serves every stream. Behind several API processes, browsers would miss events
-  and fall back to slow polling.
+  and fall back to slow polling. A call's two media sockets must reach the
+  same process too.
 - Use external backups for MariaDB and the uploads volume.
 - Download important application backups off-server. A generated backup retained
   in the uploads volume is not protection against loss of that volume.

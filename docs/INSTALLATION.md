@@ -183,6 +183,8 @@ copying this example. The outer proxy must preserve the browser Host and set or
 append `X-Forwarded-For` using the actual client connection. Without the correct
 trusted outer address, multiple visitors can share the proxy's IP rate limit.
 Malformed proxy addresses prevent startup. See [proxy details](AUTH_ADMIN_SETTINGS.md#trusted-proxies).
+For calls between networks the outer proxy must also pass WebSockets for
+`/api/` ([Calls and the relay](#calls-and-the-relay)).
 
 Restrict the published app port to the intended proxy/network with your host
 firewall or network configuration. `ALLOWED_ORIGINS` does not block non-browser
@@ -310,10 +312,21 @@ object per line instead, for a log collector.
 ## Calls and the relay
 
 Two devices on the same network, an office or a VPN, call each other
-directly. A call between different networks, a phone on mobile data and a
-computer at home, usually needs a relay for its sound: the relay for calls,
-coturn, built into the UniHub image. It is off until it has a secret, and
-then UniHub runs it beside the API in the same container.
+directly. When two devices cannot connect directly, a phone on mobile data
+and a computer at home for example, the call's sound goes through UniHub's
+own web connection, encrypted on the two devices: no port to forward and
+nothing to configure in UniHub, but **the reverse proxy in front of UniHub
+must pass WebSockets** for `/api/`. What each proxy needs is in
+[Upgrading](UPGRADING.md#0351-calls-between-networks); Server settings ›
+Calls says "Calls between networks: working" once it does. Browsers without
+WebCodecs audio (Firefox on Android, Safari before 26) call directly only
+([Chat](CHAT.md#calls)).
+
+The relay for calls, coturn, built into the UniHub image, is optional. It
+carries a call over UDP, which can hold up better than a web connection on
+a poor mobile network, and a call that connects through it uses it in place
+of UniHub's path. It needs forwarded ports. It is off until it has a secret,
+and then UniHub runs it beside the API in the same container.
 
 **Switch it on.** In `.env`, with a secret from `openssl rand -base64 48`
 and the public IP address explained below:
@@ -384,18 +397,21 @@ prints the address it sees; then call from a phone on mobile data to a
 device at home. Should the relay stop, the log says so and the rest of
 UniHub keeps running; relayed calls work again after a restart.
 
-**What it costs.** Only calls without a direct path use the relay. Their
-sound passes through the server, encrypted end to end so the relay cannot
-hear it: about 100 kbit/s in each direction per call. Each relayed
+**What it costs.** Only calls without a direct path use the relay or
+UniHub's path. Their sound passes through the server, encrypted end to end
+so neither can hear it. Through the relay that is about 100 kbit/s in each
+direction per call; through UniHub, 24 kbit/s of sound in each direction
+plus the frames' and the connection's overhead, at most 100 such calls at
+once. Each relayed
 connection is limited to 512 kbit/s in each direction. The port range allows
 40 relayed connections at once, at least 20 calls.
 
-**TrueNAS.** The catalogue app's form has no fields for the relay's ports
-yet and no host networking, so the relay cannot be reached from outside
-there; a later update of the catalogue app adds them. Until then, run
-UniHub as a custom app from the Compose file to use it. The variables could
-be set in Additional Environment Variables, but without the ports the relay
-only answers inside the NAS.
+**TrueNAS.** Calls between networks go through UniHub there as anywhere,
+through the reverse proxy in front of the app. The catalogue app's form has
+no fields for the relay's ports and no host networking, so the relay cannot
+be reached from outside there; to use it, run UniHub as a custom app from
+the Compose file. The variables could be set in Additional Environment
+Variables, but without the ports the relay only answers inside the NAS.
 
 ## Common problems
 

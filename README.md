@@ -30,9 +30,9 @@ am still working out the best way to do it there.
 - **Management is INCLUDED.** People, groups, roles, rules (policies) and an
   activity log for administrators.
 - **It is MODULAR.** You see what you want and do not see what you do not want.
-- **Calls are INCLUDED.** Voice calls between UniHub users, with video and
-  group calls next on the [road to 1.0](docs/ROADMAP.md); calls to ordinary
-  phone numbers are not.
+- **Calls are INCLUDED.** Voice calls between UniHub users, with group voice
+  calls next on the [road to 1.0](docs/ROADMAP.md); calls to ordinary phone
+  numbers are not.
 
 So UniHub is for people who care about privacy and are not happy about having
 to use WhatsApp, Outlook, Gmail and other proprietary apps for all of this and
@@ -61,7 +61,7 @@ Built and released today (0.35):
 | Contacts | Contacts with every vCard field, vCard and Google/Outlook CSV import and export, and duplicate merging that can be undone. The **company directory** lists everyone in the organisation; **shared address books** are shared with people or groups for reading or editing. [Contacts](docs/CONTACTS.md) |
 | Calendar and ToDo | Local calendars inside UniHub, shared with people or groups, group and organisation calendars, repeating events, plus two-way sync with CalDAV servers such as Stalwart, Nextcloud, iCloud and Fastmail, including recurring events; Google and Microsoft calendars as read-only subscriptions. Tasks with subtasks, reminders, your own order and default lists. [Calendar](docs/CALENDAR.md) |
 | Chat | 1:1 and group chats with colleagues on the web and in the Android app, always end-to-end encrypted, files and voice messages included: replies, edits, deleting for everyone, mentions, delivery and read state, presence, and search on the device. A group chat can follow an organisation group and change with it. A chat passphrase brings the history to a new phone or browser; nobody else can read or restore a chat. A new device joins Chat only with the passphrase or your approval from another device. An administrator can have chat messages deleted after a set time. [Chat](docs/CHAT.md) |
-| Calls | Voice calls between two colleagues in the browser and in the Android app, encrypted between the two devices. On Android they ring like phone calls, with the app closed and over the lock screen. An optional relay, built into the image, connects calls between different networks. [Calls](docs/CHAT.md#calls) |
+| Calls | Voice calls between two colleagues in the browser and in the Android app, encrypted between the two devices. On Android they ring like phone calls, with the app closed and over the lock screen. Between different networks, without a forwarded port, the sound goes through UniHub's own web connection, still encrypted on the two devices; the reverse proxy must pass WebSockets. An optional relay is built into the image. [Calls](docs/CHAT.md#calls) |
 | Recordings and Music | Record in the browser or import audio, then organise, play and download it; Music keeps chords and lyrics with a recording. |
 | People, groups and rules | Add people with a one-time setup link, put them in groups with managers, and set rules for everyone or a group: required two-factor authentication, password length, session lifetime, modules, notification detail, app lock, phone contacts, offline copies, data safety and chat (who members may add, the largest file, how long messages are kept, calls). One owner manages the administrators; an activity log records sign-ins and administrative actions. [Administration](docs/AUTH_ADMIN_SETTINGS.md) |
 | Optional modules | Reorder, hide or disable modules and their background work. Disabling a module keeps its data. [Modules](docs/MODULES.md) |
@@ -74,7 +74,7 @@ Planned, one theme per version ([Road to 1.0](docs/ROADMAP.md); nothing below is
 
 | Version | Planned |
 | --- | --- |
-| 0.36 | Video, screen sharing in the browser and group calls through an optional self-hosted media server. |
+| 0.36 | Group voice calls. |
 | 1.0 | Stabilisation, a security review and a documented threat model; stable formats for the whole 1.x line. |
 
 Not planned before 1.0: iOS, calls to ordinary phone numbers or SMS, chat

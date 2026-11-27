@@ -8,31 +8,46 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
 ## 0.35.1 (unreleased)
 
+Calls between different networks, a phone on mobile data and a computer at
+home, no longer need a forwarded port or the relay: when the two devices
+cannot connect directly, the call's sound goes through UniHub's own web
+connection, encrypted on the two devices. The reverse proxy in front of
+UniHub must pass WebSockets; Server settings › Calls checks it, and
+[Upgrading](docs/UPGRADING.md#0351-calls-between-networks) says what each
+proxy needs. No database upgrade runs. [Chat](docs/CHAT.md#calls) says what
+the server sees of a call that goes through it.
+
 ### Added
 
-- When two devices cannot connect directly for a call (on different
-  networks without a relay), the call's sound now goes through UniHub's own
-  web connection, encrypted on the two devices with a key made for that call,
-  which the server cannot work out. The direct connection, and a configured
-  relay, are still tried first and take over as soon as they connect. The
-  reverse proxy in front of UniHub must pass WebSockets; a call that cannot
-  connect either way then says so. Browsers without WebCodecs audio (Firefox
-  on Android, Safari before 26) still call directly only.
-- The call's screen says "Through UniHub" under the time while the sound
-  goes through UniHub's server. A call that cannot connect either way says
-  why where it is known: the reverse proxy does not pass WebSockets (an
-  administrator can switch on WebSocket support there), this browser or the
-  other person's cannot carry calls between networks, or UniHub is carrying
-  too many calls right now.
-- Server settings › Calls shows "Calls between networks: working" or
-  "blocked by the reverse proxy", checked from the administrator's own
-  browser, with a link to what the reverse proxy needs. The relay for calls
-  is now described as optional.
-- The server can now carry a call's sound when the two devices cannot
-  connect directly: each end opens a WebSocket to UniHub, which passes the
-  sound, encrypted on the devices, from one end to the other without
-  reading or storing it. Up to 100 calls at once; signing out or a revoked
-  session closes it at once.
+- **Calls through UniHub.** When two devices cannot connect directly, the
+  call's sound goes through UniHub's server over the same web connection as
+  the rest of UniHub, encrypted on the two devices with a key made for that
+  call; the server passes it on without reading or storing it. The direct
+  connection, and a configured relay, are still tried and take over as soon
+  as they connect. The call's screen says "Through UniHub" under the time
+  while the sound goes that way. UniHub carries up to 100 such calls at
+  once. Browsers without WebCodecs audio (Firefox on Android, Safari before
+  26) still call directly only.
+- **Server settings › Calls** says "Calls between networks: working",
+  "blocked by the reverse proxy" or "could not be checked", from a check the
+  administrator's own browser makes through the reverse proxy, with a link to
+  what the proxy needs.
+
+### Changed
+
+- **The relay for calls is optional.** Calls between networks work without
+  it; where it is configured, a call that connects through it uses it in
+  place of UniHub's path. The Server page calls it optional.
+- **A call that cannot connect says why** where it is known: the reverse
+  proxy in front of UniHub does not pass WebSockets (an administrator can
+  switch on WebSocket support there), this browser or the other person's
+  cannot carry calls between networks, or UniHub is carrying too many calls
+  right now. Otherwise it says "Could not connect. Check the connection and
+  try again." instead of pointing at the relay.
+- **Reference pictures.** `call-active-*` shows "Through UniHub",
+  `call-ended-*` the reverse proxy's words, and four new pictures
+  `server-settings-*`, Wide and Phone, dark and light, show Server settings
+  with the check blocked by the reverse proxy.
 
 ### Fixed
 
@@ -42,15 +57,29 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 - A call the server refuses (the other person has no device in Chat, or
   calls are off for either of you) no longer leaves an empty chat behind.
 - When you call someone from the Android app at the moment they call you,
-  the app now answers their call instead of ending it as failed.
+  the app now answers their call instead of ending it as failed. This needs
+  the 0.35.1 app.
 - A device that joins Chat gets chat updates at once, also when the server
   was just checking its live connection, instead of up to 25 seconds later.
 - The relay for calls is now also offered over TCP port 3478 when
-  `TURN_URLS` names a `turn:` address without a transport, as the
-  examples do, so calls from networks that block UDP can use it.
+  `TURN_URLS` names a `turn:` address without a transport, as the examples
+  do, so calls from networks that block UDP can use it.
 - When the start refuses the relay's secret or `TURN_EXTERNAL_IP` (and logs a
   warning), the relay is no longer offered to devices and the Server page no
   longer says it is configured.
+
+### Known issues
+
+- An empty interface after a reload under an app lock the administrator
+  requires was reported and could not be reproduced: in every variant tried
+  the lock's prompt showed within a moment.
+- A call through UniHub has not been tried on a real phone yet: the
+  earpiece, the speaker, Bluetooth and echo were checked only on the Android
+  emulator and in desktop browsers.
+- Where the relay is used, two devices that both need it still do not reach
+  each other through it with host networking
+  ([Calls and the relay](docs/INSTALLATION.md#calls-and-the-relay)); such a
+  call goes through UniHub instead.
 
 ## 0.35.0
 

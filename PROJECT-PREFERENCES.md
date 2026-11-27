@@ -1005,14 +1005,16 @@ session needed it), and an administrator can sign a lost device out.
 Accepted, 2026-11-21 (maintainer, for 0.35.0). Built in 0.35.0 for 1:1 voice
 calls ([Chat](docs/CHAT.md#calls)).
 
-Calls are between UniHub users only, encrypted between the devices; the
-server passes on the set-up, never the sound. On Android they behave like
+Calls are between UniHub users only, encrypted between the devices; when
+they cannot connect directly, the server passes on the encrypted sound
+([P-52](#p-52-calls-between-networks-need-no-forwarded-port)). On Android they behave like
 phone calls (ringing with the app closed and the phone locked, answered from
 a headset); the app's own call screen is fine in place of the system's.
 Calls to and from phone numbers stay out: a contact's phone number already
 opens the phone's dialler. **A call can be answered while UniHub is locked,
-showing only the call.** Video, screen sharing and group calls follow in
-0.36.0; Android Auto is wanted later and waits in the parking lot.
+showing only the call.** Group voice calls follow in 0.36.0; video and
+screen sharing are not planned before 1.0 (P-52). Android Auto is wanted
+later and waits in the parking lot.
 
 #### P-49 Everything UniHub needs runs inside its own image
 
@@ -1048,6 +1050,36 @@ Accepted, 2026-11-21 (maintainer). Built since 0.29.0
 The UniHub PIN of the app lock belongs to one browser profile or installed
 web app, as before. There is no PIN for the whole account, because the
 server would have to keep a check of a short PIN.
+
+#### P-52 Calls between networks need no forwarded port
+
+Accepted, 2026-11-22 (maintainer, for 0.35.1). Built in 0.35.1; tested in
+desktop browsers and on the Android emulator, not yet on a real phone
+([Chat](docs/CHAT.md#calls)).
+
+A call between two devices on different networks must work without a port
+forwarded to the server. When the devices cannot connect directly, the
+call's sound goes through UniHub's own web connection, a WebSocket through
+the reverse proxy the installation already has, encrypted on the two
+devices with a key made for that call; the server only passes it on. Direct
+connections, and a configured relay, still take over when they connect.
+Everything UniHub needs runs inside its image and through that reverse
+proxy ([P-49](#p-49-everything-unihub-needs-runs-inside-its-own-image)); a
+separate container for the sound was rejected, because it needs the same
+ports. The relay built into the image in 0.35.0 stays, optional, and may be
+removed in a later version. Browsers without WebCodecs audio call directly
+only, and there is no second way through for a proxy that refuses
+WebSockets. Video calls and screen sharing are not planned before 1.0
+(parking lot); 0.36.0 brings group voice calls. This shipped in a patch
+release at the maintainer's request.
+
+Evidence: `api/src/services/call-media.ts`, `api/src/http/websocket.ts`,
+`api/src/routes/chat-calls.ts`, `src/lib/chat/call.ts`,
+`src/lib/chat/call-media.ts`, `src/lib/chat/call-media.worker.ts`,
+`src/pages/AdminSettings.tsx`; tests
+`api/tests/chat-call-media-mysql-integration.test.cts`,
+`tools/e2e/tests/chat/chat-call-through-unihub.e2e.ts`,
+`tools/e2e/android/calls.test.mjs`; CHANGELOG 0.35.1.
 
 ## Open decisions and conflicts
 
@@ -1138,6 +1170,13 @@ Open proposals do not override accepted decisions.
 
 When a decision above is replaced, move its old text here with its ID, the
 date it was superseded and a pointer to the replacement.
+
+- **P-48 as accepted 2026-11-21: the server never passes the sound, video
+  follows.** Superseded 2026-11-22 by the maintainer's rule that calls
+  between networks need no forwarded port and that video is not planned
+  ([P-52](#p-52-calls-between-networks-need-no-forwarded-port)). The old
+  sentences: "the server passes on the set-up, never the sound." and
+  "Video, screen sharing and group calls follow in 0.36.0".
 
 - **P-44 as accepted 2026-11-18: a new device reads at once.** Superseded
   2026-11-21 by the maintainer's rule that a new device joins Chat only by
