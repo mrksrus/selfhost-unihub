@@ -839,6 +839,10 @@ of 0.28.0's production code existed only because of review rounds.
   reviewed on its own before it joins the version branch; the release pull
   request gets the review of the whole flows. Product decisions are answered
   before the build starts.
+- As few parts as the version needs (maintainer, 2026-11-27: "dont just
+  split work into parts because you can"). Every part pays for its own
+  start, review and CI run. The 3,000 lines are a ceiling, not a size to aim
+  for. The planner and the owner decide the cut; no minimum size is set.
 - A patch release is one branch with one commit per fix, one review and one
   CI run.
 - A review finding blocks only with a shown, reachable trigger in the
