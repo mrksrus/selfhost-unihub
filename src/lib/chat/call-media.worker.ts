@@ -121,10 +121,10 @@ function start({ url, rate, keys, capture, play }: Extract<CallMediaCommand, { t
   const probe = async () => {
     const answer = await fetch(url, { credentials: 'same-origin' }).catch(() => null);
     if (!answer || answer.ok) return;
-    probed = true;
     const body = await answer.json().catch(() => null) as { code?: string; error?: string } | null;
     // A socket that opened meanwhile has answered the question.
     if (socket?.readyState === WebSocket.OPEN) return;
+    probed = true;
     postMessage({ t: 'refused', code: body?.code ?? null, error: body?.error ?? null } satisfies CallMediaEvent);
   };
 

@@ -121,7 +121,7 @@ phone's own unlock ([App lock](APP_LOCK.md)), and the page offers the UniHub
 PIN only to apps below level 3, which have left the window. The 0.34.0 app
 also hands a chat file the page decrypted to Android's Open with
 and Share sheets; the page offers those two only from level 4, so the 0.33.0 app
-saves chat files and show them in the page's viewers. Every app's contacts sync sends
+saves chat files and shows them in the page's viewers. Every app's contacts sync sends
 `X-Background-Sync: 1`, and the contacts routes stay open to it while a device
 falls short of a required lock or of required two-factor authentication.
 When an administrator forbids contacts on the phone, the server answers the
