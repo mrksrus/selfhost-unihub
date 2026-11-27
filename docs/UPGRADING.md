@@ -46,7 +46,8 @@ to 0.35.0 needs no restore.
 - **Android app.** Calls through UniHub need no new app: the app's call
   screen runs the server's page. The 0.35.1 app (offered under Settings →
   General → App) adds only the fix for calling someone at the moment they
-  call you.
+  call you. The app window is now 0.35.1 back to 0.33.0; the 0.32.0 app
+  leaves it ([Android compatibility](ANDROID_COMPATIBILITY.md#current-window)).
 - **Browsers.** A browser without WebCodecs audio (Firefox on Android,
   Safari before 26) still calls directly only; the call says so when it
   cannot connect.

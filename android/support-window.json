@@ -22,10 +22,19 @@
   ],
   "releases": [
     {
+      "version": "0.35.1",
+      "apk": {
+        "versionCode": 35001,
+        "sha256": null,
+        "signing": "release"
+      },
+      "shell": "supported"
+    },
+    {
       "version": "0.35.0",
       "apk": {
         "versionCode": 35000,
-        "sha256": null,
+        "sha256": "98703337aaf2d29623815ad2711a0f176efdcaede073d9c8f969bc1d574d50d1",
         "signing": "release"
       },
       "shell": "supported",
@@ -50,16 +59,6 @@
       },
       "shell": "supported",
       "note": "From this app a chat notification shows its message text (the preview sealed to the phone's push keys), Chat's window refuses screenshots, and the app lock knows the area `chat`. Older apps show \"New message\", do not block screenshots in Chat and cannot lock Chat: the server refuses Chat on a device that must lock it."
-    },
-    {
-      "version": "0.32.0",
-      "apk": {
-        "versionCode": 32000,
-        "sha256": "7d23eecba3003a254cba8283ecb59e4006a2d42058e7a5598c67f9013e232e4b",
-        "signing": "release"
-      },
-      "shell": "supported",
-      "note": "From this app the home-screen widgets look for `calendar-widgets`: only then do they read GET /api/widgets; against an older server they say the server needs an update. Older apps have no widgets."
     }
   ],
   "handshake": {

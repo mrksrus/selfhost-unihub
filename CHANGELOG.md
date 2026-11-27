@@ -6,7 +6,7 @@ Read the [upgrade guide](docs/UPGRADING.md) before updating an existing
 installation, and keep a consistent backup of the database, uploads, configuration and
 secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
-## 0.35.1 (unreleased)
+## 0.35.1
 
 Calls between different networks, a phone on mobile data and a computer at
 home, no longer need a forwarded port or the relay: when the two devices
