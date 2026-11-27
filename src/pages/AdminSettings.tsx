@@ -106,7 +106,7 @@ const AdminSettings = () => {
           description={<span className="block max-w-prose">{callsWords}{' '}
             <a href={CALLS_PROXY_DOCS_URL} target="_blank" rel="noopener noreferrer" className={cn(ROW_LINK, 'text-accent underline underline-offset-2')}>What the reverse proxy needs</a></span>} />
         <SettingsRow label={`Relay for calls: ${server?.callsRelay ? 'configured' : 'not configured'}`}
-          description={<span className="block max-w-prose">{server?.callsRelay ? 'Calls that cannot connect directly try the relay, encrypted, before they go through UniHub.' : 'Optional. A relay can carry calls between networks better on poor mobile connections.'}{' '}
+          description={<span className="block max-w-prose">{server?.callsRelay ? 'Calls that cannot connect directly also try the relay, encrypted; until one of them connects, the sound goes through UniHub.' : 'Optional. A relay can carry calls between networks better on poor mobile connections.'}{' '}
             <a href={CALLS_RELAY_DOCS_URL} target="_blank" rel="noopener noreferrer" className={cn(ROW_LINK, 'text-accent underline underline-offset-2')}>How to set up the relay</a></span>} />
       </SettingsSection>
 

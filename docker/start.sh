@@ -82,7 +82,7 @@ if [ -n "${TURN_SECRET_FILE:-}" ]; then
   [ -z "$turn_secret" ] || [ -z "${TURN_SECRET:-}" ] || [ "$TURN_SECRET" = "$turn_secret" ] || { echo "WARNING: TURN_SECRET and TURN_SECRET_FILE are both set, with different values; the relay for calls is off." >&2; turn_secret=; }
 fi
 if [ -z "$turn_secret" ]; then
-  [ -z "${TURN_URLS:-}" ] || [ -n "${TURN_SECRET:-}${TURN_SECRET_FILE:-}" ] || echo "WARNING: TURN_URLS is set without TURN_SECRET or TURN_SECRET_FILE; the relay for calls is off and calls between different networks fail." >&2
+  [ -z "${TURN_URLS:-}" ] || [ -n "${TURN_SECRET:-}${TURN_SECRET_FILE:-}" ] || echo "WARNING: TURN_URLS is set without TURN_SECRET or TURN_SECRET_FILE; the relay for calls is off." >&2
 else
   # The first address devices are told, without scheme, query and port.
   turn_realm="${TURN_URLS%%,*}"; turn_realm="${turn_realm#*:}"; turn_realm="${turn_realm%%\?*}"
