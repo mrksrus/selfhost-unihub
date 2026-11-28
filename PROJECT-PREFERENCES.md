@@ -1066,8 +1066,8 @@ connections, and a configured relay, still take over when they connect.
 Everything UniHub needs runs inside its image and through that reverse
 proxy ([P-49](#p-49-everything-unihub-needs-runs-inside-its-own-image)); a
 separate container for the sound was rejected, because it needs the same
-ports. The relay built into the image in 0.35.0 stays, optional, and may be
-removed in a later version. Browsers without WebCodecs audio call directly
+ports. The relay built into the image in 0.35.0 is removed in 0.36.0
+(maintainer, 2026-11-28); until then it stays, optional. Browsers without WebCodecs audio call directly
 only, and there is no second way through for a proxy that refuses
 WebSockets. Video calls and screen sharing are not planned before 1.0
 (parking lot); 0.36.0 brings group voice calls. This shipped in a patch
@@ -1080,6 +1080,17 @@ Evidence: `api/src/services/call-media.ts`, `api/src/http/websocket.ts`,
 `api/tests/chat-call-media-mysql-integration.test.cts`,
 `tools/e2e/tests/chat/chat-call-through-unihub.e2e.ts`,
 `tools/e2e/android/calls.test.mjs`; CHANGELOG 0.35.1.
+
+#### P-53 Group voice calls: at most 8 people, small chats ring
+
+Accepted, 2026-11-28 (maintainer, for 0.36.0). Not built yet.
+
+A group call holds at most 8 people, and its sound goes through UniHub's
+own web connection like a 1:1 call between networks
+([P-52](#p-52-calls-between-networks-need-no-forwarded-port)). A group chat
+with no more members than that rings every member like a 1:1 call; in a
+bigger chat nobody's phone rings, and members get a notification and a Join
+bar in the chat.
 
 ## Open decisions and conflicts
 
