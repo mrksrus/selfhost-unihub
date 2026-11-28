@@ -63,4 +63,31 @@ async function verifyChatCalls(connection: Executor) {
   }
 }
 
-export { addChatCalls, verifyChatCalls };
+// Upgrade step 35: group calls. chat_call_members holds each person who was
+// rung for a group chat's call or joined it, with the device and the sender
+// number while they are in it. No existing row changes.
+async function addChatCallMembers(connection: Executor) {
+  await connection.execute(`CREATE TABLE IF NOT EXISTS chat_call_members (
+    call_id CHAR(36) NOT NULL,
+    user_id CHAR(36) NOT NULL,
+    chat_device_id CHAR(36) NULL,
+    state VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    sender TINYINT UNSIGNED NULL,
+    joined_at DATETIME NULL,
+    left_at DATETIME NULL,
+    alive_at DATETIME NULL,
+    PRIMARY KEY (call_id, user_id),
+    KEY idx_chat_call_members_user (user_id, state),
+    KEY fk_chat_call_members_device (chat_device_id),
+    CONSTRAINT fk_chat_call_members_call FOREIGN KEY (call_id) REFERENCES chat_calls (id) ON DELETE CASCADE,
+    CONSTRAINT fk_chat_call_members_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE,
+    CONSTRAINT fk_chat_call_members_device FOREIGN KEY (chat_device_id) REFERENCES chat_devices (id) ON DELETE SET NULL
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+}
+
+async function verifyChatCallMembers(connection: Executor) {
+  const [present] = await connection.execute<RowDataPacket[]>("SHOW TABLES LIKE 'chat_call_members'");
+  if (!present.length) throw new Error('Table chat_call_members is missing');
+}
+
+export { addChatCalls, verifyChatCalls, addChatCallMembers, verifyChatCallMembers };

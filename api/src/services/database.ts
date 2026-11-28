@@ -20,7 +20,7 @@ import { addSharedCalendars, verifySharedCalendars } from './shared-calendars-mi
 import { addChat, verifyChat } from './chat-migration';
 import { addChatGroups, verifyChatGroups } from './chat-groups-migration';
 import { addChatDeviceApproval, verifyChatDeviceApproval } from './chat-device-approval-migration';
-import { addChatCalls, verifyChatCalls } from './chat-calls-migration';
+import { addChatCallMembers, addChatCalls, verifyChatCallMembers, verifyChatCalls } from './chat-calls-migration';
 import { log } from '../log';
 
 type FieldRow = RowDataPacket & { Field: string };
@@ -516,6 +516,17 @@ const MIGRATIONS: readonly Migration[] = [
     verify: async (connection: PoolConnection) => {
       await verifyDatabaseInventory(connection, { throughMigration: 34 });
       await verifyChatCalls(connection);
+    },
+  },
+  {
+    // Group calls: the people rung for or in a group chat's call
+    // (chat-calls-migration.ts). No row changes.
+    id: 35,
+    name: 'chat-call-members',
+    up: addChatCallMembers,
+    verify: async (connection: PoolConnection) => {
+      await verifyDatabaseInventory(connection, { throughMigration: 35 });
+      await verifyChatCallMembers(connection);
     },
   },
 ];

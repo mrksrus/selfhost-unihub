@@ -54,12 +54,12 @@ export = defineRoutes(joinedOnly({
   } },
   'GET /api/chat/calls/:id/media': { auth: 'user', module: 'chat', response: 'upgrade', body: { kind: 'none' }, handler: async (req: Request, userId: string, _body: unknown, res: ServerResponse) => {
     const callId = id(req);
-    const device = await mediaEnd(userId, token(req), callId);
+    const { device, sender } = await mediaEnd(userId, token(req), callId);
     if (!callMedia.admits(callId, device)) return { status: 503, error: 'UniHub is carrying too many calls right now.', code: 'CHAT_CALL_MEDIA_BUSY' };
-    return upgrade(req, res, ws => callMedia.attach({ callId, device, userId, token: token(req), ws,
-      // As the event stream: the session's own lookup, then the call's.
+    return upgrade(req, res, ws => callMedia.attach({ callId, device, userId, sender, token: token(req), ws,
+      // As the event stream: the session's own lookup, then the call's (a group call's membership and number now).
       check: async () => String(await verifyToken(req)) === userId
-        && await mediaEnd(userId, token(req), callId).then(own => own === device, error => { if (error?.status) return false; throw error; }) }));
+        && await mediaEnd(userId, token(req), callId).then(now => now.device === device && now.sender === sender, error => { if (error?.status) return false; throw error; }) }));
   } },
   'GET /api/chat/calls/check': { auth: 'user', module: 'chat', response: 'upgrade', body: { kind: 'none' }, handler: async (req: Request, _userId: string, _body: unknown, res: ServerResponse) => {
     return upgrade(req, res, ws => ws.close(1000));

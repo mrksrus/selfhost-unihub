@@ -8,6 +8,15 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
 ## Unreleased (0.36.0)
 
+### Added
+
+- **Group calls on the server.** A group chat has a voice call of up to 8
+  people at once. In a chat of up to 8 people everyone who can take a call
+  is rung; in a bigger chat nobody is rung and the others get a "started a
+  call" notification. Anyone in the chat can join a call that is going on;
+  the call ends when its last person leaves. Its sound always goes through
+  UniHub. A database upgrade adds one table. The call screens follow.
+
 ### Changed
 
 - **TypeScript 7.** The frontend, the workers and the API are compiled by

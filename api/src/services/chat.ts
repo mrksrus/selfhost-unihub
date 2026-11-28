@@ -2,7 +2,7 @@ import type { ResultSetHeader, RowDataPacket } from 'mysql2/promise';
 import type { SqlExecutor } from '../types';
 import type {
   ChatArchiveEntry, ChatConversation, ChatGroupStaleDetails, ChatMarksResponse, ChatMember, ChatMessage, ChatMessagesResponse, ChatNotify, ChatPeer,
-  ChatRetentionDays, ChatSender, ChatTooManyPeopleDetails, ChatWelcome, ChatCandidatesResponse, ChatCallEntry,
+  ChatRetentionDays, ChatSender, ChatTooManyPeopleDetails, ChatWelcome, ChatCandidatesResponse, ChatCallEntry, ChatConversationCall,
 } from '../contracts/chat';
 import type { Principal } from '../contracts/organisation';
 
@@ -42,6 +42,8 @@ const MAX_PREVIEW = 2048;
 const MAX_DEVICES = 1000;
 const MAX_ARCHIVE_COPIES = 200;
 const MAX_PEOPLE = 100;
+// At most this many people in a group call at once; a bigger chat's call rings nobody.
+const CALL_PEOPLE = 8;
 const MAX_MENTIONS = 20;
 const MAX_NAME = 80;
 const NOTIFY: readonly ChatNotify[] = ['all', 'mentions', 'none'];
@@ -83,9 +85,11 @@ const chatAdmin = async (userId: string, executor: SqlExecutor) => {
   const [[row]] = await executor.execute<RowDataPacket[]>('SELECT role FROM users WHERE id = ?', [userId]);
   return roleCan(row?.role, 'chat.manage');
 };
-// What counts as unread: a message, and a call the person missed (its caller is the sender, so never the caller's own).
+// What counts as unread: a message, and a call the person missed (its caller is the sender, so never the caller's own;
+// in a group call only a rung person who neither joined nor declined). Takes the person's id.
 const UNREAD_KIND = `((m.kind = 'message' AND m.replaces IS NULL AND m.ciphertext IS NOT NULL)
-  OR (m.kind = 'call' AND EXISTS (SELECT 1 FROM chat_calls k WHERE k.message_id = m.id AND k.outcome IN ('missed', 'cancelled', 'busy'))))`;
+  OR (m.kind = 'call' AND EXISTS (SELECT 1 FROM chat_calls k WHERE k.message_id = m.id AND ((k.callee_user_id IS NOT NULL AND k.outcome IN ('missed', 'cancelled', 'busy'))
+    OR EXISTS (SELECT 1 FROM chat_call_members cm WHERE cm.call_id = k.id AND cm.user_id = ? AND cm.state = 'missed')))))`;
 // A person in a group chat without a marks row has not joined yet: their messages start at the conversation's end.
 const JOINED = "IF(me.user_id IS NULL AND c.kind = 'group', c.last_seq, COALESCE(me.joined_seq, 0))";
 
@@ -141,8 +145,14 @@ async function describeConversations(userId: string, ids: readonly string[], exe
     LEFT JOIN chat_members me ON me.conversation_id = c.id AND me.user_id = ?
     LEFT JOIN chat_members peer ON peer.conversation_id = c.id AND peer.user_id <> ? AND c.kind = 'direct'
     WHERE c.id IN (${placeholders(ids)})
-    ORDER BY COALESCE(last_activity_at, c.created_at) DESC, c.id`, [userId, userId, userId, ...ids]);
+    ORDER BY COALESCE(last_activity_at, c.created_at) DESC, c.id`, [userId, userId, userId, userId, ...ids]);
   const reach = await conversationsReach(ids, executor);
+  // Each group chat's call going on, with the people in it.
+  const [going] = await executor.execute<RowDataPacket[]>(`SELECT k.id, k.conversation_id, k.created_at,
+      (SELECT COUNT(*) FROM chat_call_members cm WHERE cm.call_id = k.id AND cm.state = 'joined') AS people
+    FROM chat_calls k WHERE k.state <> 'ended' AND k.callee_user_id IS NULL AND k.conversation_id IN (${placeholders(ids)})`, [...ids]);
+  const calls = new Map(going.map(row => [String(row.conversation_id), { id: String(row.id), started_at: utcIso(row.created_at), people: Number(row.people),
+    full: Number(row.people) >= CALL_PEOPLE } satisfies ChatConversationCall]));
   const addedBy = (id: string) => reach.get(id)!.grantedBy.get(userId) ?? null;
   // The caller, each direct chat's other person and whoever added the caller to a group chat.
   const named = rows.map(row => row.kind === 'group' ? addedBy(String(row.id)) : otherOf(row.direct_key, userId)).filter((id): id is string => !!id);
@@ -170,6 +180,7 @@ async function describeConversations(userId: string, ids: readonly string[], exe
         role: managers.has(userId) ? 'manager' : 'member',
         member_count: people.length,
         added_by: by && by !== userId ? states.get(by)?.name ?? null : null,
+        call: calls.get(id) ?? null,
       };
     }
     const peerId = otherOf(row.direct_key, userId);
@@ -616,11 +627,13 @@ async function fetchMessages(userId: string, token: string | null, conversationI
 /** The calls of these 'call' entries, by message id. */
 async function callEntries(messageIds: readonly string[]): Promise<Map<string, ChatCallEntry>> {
   if (!messageIds.length) return new Map();
-  const [rows] = await db.execute<RowDataPacket[]>(`SELECT id, message_id, outcome, caller_user_id, callee_user_id, created_at, answered_at, ended_at FROM chat_calls
-    WHERE message_id IN (${messageIds.map(() => '?').join(', ')})`, [...messageIds]);
+  const [rows] = await db.execute<RowDataPacket[]>(`SELECT k.id, k.message_id, k.outcome, k.caller_user_id, k.callee_user_id, k.created_at, k.answered_at, k.ended_at,
+      (SELECT COUNT(*) FROM chat_call_members cm WHERE cm.call_id = k.id AND cm.joined_at IS NOT NULL) AS people
+    FROM chat_calls k WHERE k.message_id IN (${messageIds.map(() => '?').join(', ')})`, [...messageIds]);
   return new Map(rows.map(row => [String(row.message_id), {
     call_id: String(row.id), outcome: row.outcome, caller_user_id: row.caller_user_id ? String(row.caller_user_id) : null,
-    callee_user_id: row.callee_user_id ? String(row.callee_user_id) : null, started_at: utcIso(row.created_at), answered_at: row.answered_at ? utcIso(row.answered_at) : null, ended_at: utcIso(row.ended_at),
+    callee_user_id: row.callee_user_id ? String(row.callee_user_id) : null, people: Number(row.people) || (row.answered_at ? 2 : 1),
+    started_at: utcIso(row.created_at), answered_at: row.answered_at ? utcIso(row.answered_at) : null, ended_at: utcIso(row.ended_at),
   }]));
 }
 
@@ -776,7 +789,7 @@ realtime.onPresence(presenceChanged);
 
 export type { ChatNotificationSource };
 export {
-  peerState, otherOf, listConversations, startConversation, createGroup, confirmJoined, postMessage, fetchMessages, deleteMessage, moveMarks,
+  CALL_PEOPLE, peerState, otherOf, listConversations, startConversation, createGroup, confirmJoined, postMessage, fetchMessages, deleteMessage, moveMarks,
   storeArchive, listArchive, notificationSource, previewFor,
   renameChat, addChatMembers, removeChatMember, leaveChat, unfollowChat, unfollowDeletedGroup, followedGroupChanged, chatMembers, setNotify, chatCandidates,
 };

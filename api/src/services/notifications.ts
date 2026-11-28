@@ -298,6 +298,7 @@ const newCalendarItem = (title: string) => defineSourceKind<CalendarSource>({
 const chat = () => require('./chat') as typeof import('./chat');
 const calls = () => require('./chat-calls') as typeof import('./chat-calls');
 const callLevel = async (userId: string, _call: unknown, connection: SqlExecutor) => (await settingValues('user', userId, userId, connection)).chat_notification_detail;
+const callTitle = ({ caller, chat: name }: import('./chat-calls').CallNotice) => name === null ? caller : `${caller} in ${name}`;
 // A group chat names itself; a direct one is its sender.
 const chatTitle = ({ sender, chat: name, mentioned }: import('./chat').ChatNotificationSource) =>
   name === null ? sender : mentioned ? `${sender} mentioned you in ${name}` : `${sender} in ${name}`;
@@ -376,16 +377,24 @@ const KINDS: Readonly<Record<string, KindSpec>> = Object.freeze({
   // The app hands it to Android's call handling, which shows the title as the caller.
   call: defineSourceKind<import('./chat-calls').CallNotice>({
     module: 'chat', load: (userId, callId, connection, payload) => calls().callNotice(userId, callId, connection, payload), level: callLevel,
-    render: { full: call => ({ title: call.caller, body: 'Incoming call' }), sender: call => ({ title: call.caller, body: 'Incoming call' }), none: () => ({ title: 'Incoming call', body: '' }) },
+    render: { full: call => ({ title: callTitle(call), body: 'Incoming call' }), sender: call => ({ title: callTitle(call), body: 'Incoming call' }), none: () => ({ title: 'Incoming call', body: '' }) },
     expiresAt: (call, payload, now) => new Date((payload.call as { event?: unknown } | undefined)?.event === 'ring' ? call.ringsUntil : now + 15000),
     joinedChatDevices: true,
     ringingDevices: true,
   }),
   // A call the person missed, until its entry in the chat is read.
   call_missed: defineSourceKind<import('./chat-calls').CallNotice>({
-    module: 'chat', load: (userId, callId, connection, payload) => calls().callNotice(userId, callId, connection, payload, true), level: callLevel,
-    render: { full: call => ({ title: `Missed call from ${call.caller}`, body: '' }), sender: call => ({ title: `Missed call from ${call.caller}`, body: '' }),
+    module: 'chat', load: (userId, callId, connection, payload) => calls().callNotice(userId, callId, connection, payload, 'call_missed'), level: callLevel,
+    render: { full: call => ({ title: `Missed call from ${callTitle(call)}`, body: '' }), sender: call => ({ title: `Missed call from ${callTitle(call)}`, body: '' }),
       none: () => ({ title: 'Missed call', body: '' }) },
+    expiresAt: (_call, _payload, now) => new Date(now + DAY_MS),
+    joinedChatDevices: true,
+  }),
+  // A group chat's call started that did not ring the person, while it goes on and they are not in it.
+  call_started: defineSourceKind<import('./chat-calls').CallNotice>({
+    module: 'chat', load: (userId, callId, connection, payload) => calls().callNotice(userId, callId, connection, payload, 'call_started'), level: callLevel,
+    render: { full: call => ({ title: `${call.caller} started a call in ${call.chat}`, body: '' }), sender: call => ({ title: `${call.caller} started a call in ${call.chat}`, body: '' }),
+      none: () => ({ title: 'Call started', body: '' }) },
     expiresAt: (_call, _payload, now) => new Date(now + DAY_MS),
     joinedChatDevices: true,
   }),

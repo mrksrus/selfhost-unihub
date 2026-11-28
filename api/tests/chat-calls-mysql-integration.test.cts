@@ -67,18 +67,17 @@ test('chat calls: ringing, the first answer, signals, endings and entries, busy,
     return frame && open(frame.body);
   };
 
-  // ── A callee without a joined device is refused; so is a call to oneself and a group chat ──
+  // ── A callee without a joined device is refused; so is a call to oneself ──
   assert.deepEqual(await refused(alex, 'POST', '/api/chat/calls', { user_id: ids.stranger }), [403, 'CHAT_UNAVAILABLE']);
   const directChats = async (client: Client) => (await call(client, 'GET', '/api/chat/conversations')).conversations.filter((item: FixtureValue) => item.kind === 'direct').length;
   assert.equal(await directChats(alex), 0, 'a refused call leaves no empty chat behind');
   assert.deepEqual(await refused(alex, 'POST', '/api/chat/calls', { user_id: ids.manager }), [400, 'CHAT_SELF']);
-  const team = (await call(alex, 'POST', '/api/chat/conversations', { kind: 'group', name: 'Team', user_ids: [ids.member] })).conversation.id;
-  assert.deepEqual(await refused(alex, 'POST', '/api/chat/calls', { conversation_id: team }), [400, 'CHAT_NOT_DIRECT']);
 
   // ── Alex calls Blair: Blair's joined pages and the phone that can ring are told; the waiting tablet and the old app are not ──
   const started = await start(alex, { user_id: ids.member });
   const first = started.call.id as string;
   const chat = started.call.conversation_id as string;
+  assert.deepEqual([started.call.kind, started.call.name, started.call.members], ['direct', null, []]);
   assert.deepEqual([started.started, started.call.state, started.call.this_device, started.call.callee_name, started.ice_servers], [true, 'ringing', true, 'Blair Member', []]);
   for (const page of [pages.desk, pages.laptop, pages.alex]) assert.deepEqual(await page.next('chat.call'), { call_id: first });
   assert.equal(await pages.tablet.next('chat.call', 300), null, 'a waiting device hears nothing of a call');
@@ -112,7 +111,7 @@ test('chat calls: ringing, the first answer, signals, endings and entries, busy,
 
   // ── Signals go between the two ends, each reads only the other's, after its cursor ──
   const read = await call(winner, 'GET', `${route(first, 'signals')}?after=0`);
-  assert.deepEqual([read.signals.map((item: FixtureValue) => item.payload), read.after], [['offer'], offer]);
+  assert.deepEqual([read.signals.map((item: FixtureValue) => [item.payload, item.from]), read.after], [[['offer', a1]], offer]);
   await call(winner, 'POST', route(first, 'signals'), { payload: 'answer' });
   await call(winner, 'POST', route(first, 'signals'), { payload: 'x'.repeat(16384) });
   assert.deepEqual(await refused(winner, 'POST', route(first, 'signals'), { payload: 'x'.repeat(16385) }), [400, 'CHAT_CALL_SIGNAL_INVALID']);
