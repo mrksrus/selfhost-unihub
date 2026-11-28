@@ -9,7 +9,7 @@ import type {
   ChatMessageCreateRequest, ChatMessageDeletedResponse, ChatMessageResponse, ChatMessagesResponse, ChatCandidatesResponse, ChatConversationUpdatedResponse,
   ChatGroupChatCreateRequest, ChatMembersResponse, ChatNotify, ChatNotifyResponse, ChatAttachmentResponse, ChatDeviceResponse, ChatChallengeResponse,
   ChatApprovalsResponse, ChatCallAnswerResponse, ChatCallResponse, ChatCallSignalsResponse, ChatCallStartRequest, ChatCallStartResponse,
-  ChatCurrentCallResponse, ChatIceServersResponse,
+  ChatCurrentCallResponse,
 } from '../../api/src/contracts/chat';
 
 const data = async <T>(response: Promise<ApiResponse<T>>) => unwrap(await response)!;
@@ -68,7 +68,6 @@ export const chatApi = {
   callSignal: (id: string, payload: string) => data(api.post(`${call(id)}/signals`, { payload })),
   callSignals: (id: string, after: number) => data(api.get<ChatCallSignalsResponse>(`${call(id)}/signals?after=${after}`)),
   callAlive: async (id: string) => (await data(api.post<ChatCallResponse>(`${call(id)}/alive`))).call,
-  callIce: async (id: string) => (await data(api.get<ChatIceServersResponse>(`${call(id)}/ice`))).ice_servers,
   archive: (cursor: string | null) => data(api.get<ChatArchiveResponse>(`/chat/archive?limit=500${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`)),
 };
 

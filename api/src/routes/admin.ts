@@ -32,7 +32,6 @@ import { can } from '../security/permissions';
 import type { Permission } from '../security/permissions';
 import { personFromParam } from '../services/admin-path';
 import { withdrawOffersOf } from '../services/calendar-ownership';
-import { relayConfigured } from '../services/turn';
 
 type Request = RouteRequest & { url: string; params: Record<string, string> };
 interface Input {
@@ -590,7 +589,9 @@ export = defineRoutes({
 
     try {
       const mode = await getSignupMode();
-      return { signup_mode: mode, calls_relay: relayConfigured() };
+      // The relay for calls was removed: its variables are only reported, for the Server page to say so.
+      const calls_relay_leftover = ['TURN_SECRET', 'TURN_SECRET_FILE', 'TURN_URLS', 'TURN_EXTERNAL_IP'].some(name => !!process.env[name]);
+      return { signup_mode: mode, calls_relay_leftover };
     } catch (error) {
       return { error: 'Failed to get settings', status: 500 };
     }

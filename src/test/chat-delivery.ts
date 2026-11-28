@@ -259,14 +259,14 @@ function deliveryService() {
         const peer = (body.user_id as string | undefined) ?? conversations.get(body.conversation_id as string)!.people.find(person => person !== me)!;
         const live = [...calls.values()].filter(item => item.state !== 'ended');
         const incoming = live.find(item => item.caller === peer && item.callee === me && item.state === 'ringing');
-        if (incoming) return ok({ call: callView(incoming, mine), started: false, ice_servers: [] });
+        if (incoming) return ok({ call: callView(incoming, mine), started: false });
         if (live.some(item => item.caller === me || item.callee === me)) return { ...refuse(409, 'CHAT_CALL_IN_PROGRESS'), error: 'You are on a call.' };
         const made: Call = { id: crypto.randomUUID(), conversation: direct([me, peer].sort()).id, caller: me, callee: peer, callerDevice: mine!.id, answered: null,
           state: 'ringing', outcome: null, created_at: new Date().toISOString(), answered_at: null, signals: [] };
         calls.set(made.id, made);
         if (live.some(item => item.caller === peer || item.callee === peer)) { finish(made, 'busy'); return { ...refuse(409, 'CHAT_CALL_BUSY'), error: `${names.get(peer)} is on another call.` }; }
         hint(made);
-        return ok({ call: callView(made, mine), started: true, ice_servers: [] });
+        return ok({ call: callView(made, mine), started: true });
       }
       case 'GET /chat/calls/current': {
         const found = [...calls.values()].reverse().find(item => item.state !== 'ended' && (item.caller === me || item.callee === me));
@@ -280,7 +280,7 @@ function deliveryService() {
           Object.assign(call!, { state: 'active', answered: mine!.id, answered_at: new Date().toISOString() });
           hint(call!);
         }
-        return ok({ call: callView(call!, mine), ice_servers: [] });
+        return ok({ call: callView(call!, mine) });
       case 'POST /chat/calls/:id/end':
         if (call!.state !== 'ended') {
           const caller = call!.caller === me;
@@ -303,9 +303,6 @@ function deliveryService() {
       case 'POST /chat/calls/:id/alive':
         if (!isEnd(call!, mine)) return refuse(403, 'CHAT_CALL_DEVICE');
         return ok({ call: callView(call!, mine) });
-      case 'GET /chat/calls/:id/ice':
-        if (call!.state === 'ended') return refuse(409, 'CHAT_CALL_ENDED');
-        return ok({ ice_servers: [] });
     }
     throw new Error(`no route ${key}`);
   }

@@ -1065,7 +1065,6 @@ jobs:
         if: failure()
         run: |
           docker logs --tail 200 unihub-e2e-app || true
-          docker logs --tail 100 unihub-e2e-relay || true
           tail -n 50 "$UNIHUB_E2E_STATE"/log/*.log || true
 
       # Synthetic data only; the cached sign-in sessions stay behind.

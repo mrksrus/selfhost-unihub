@@ -165,21 +165,19 @@ export async function keepScreen(page: Page, name: string) {
 
 export const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-export type Kept = Window & { callConnections?: RTCPeerConnection[]; callConnection?: RTCPeerConnection; directConnected?: boolean; wrongRelayPassword?: true };
+export type Kept = Window & { callConnections?: RTCPeerConnection[]; callConnection?: RTCPeerConnection; directConnected?: boolean };
 
 /**
  * Keeps every connection the page makes (`callConnections`) for its statistics. The call's own is
  * the one made with servers (`callConnection`; `directConnected` once it connected); the sound
- * through UniHub plays through a pair made without. `relay`: the call's may use only the relay,
- * whose password `wrongRelayPassword` spoils; `none`: it gets no servers and may use only the
- * relay, so it has no candidates and never connects.
+ * through UniHub plays through a pair made without. `none`: the call's may use only relay
+ * candidates and gets no servers, so it has no candidates and never connects.
  */
-export const keepConnections = (page: Page, only: 'any' | 'relay' | 'none' = 'any') => page.context().addInitScript(only => {
+export const keepConnections = (page: Page, only: 'any' | 'none' = 'any') => page.context().addInitScript(only => {
   const kept = window as Kept;
   const Real = window.RTCPeerConnection;
   const call = (configuration?: RTCConfiguration) => !configuration?.iceServers || only === 'any' ? configuration : {
-    ...configuration, iceTransportPolicy: 'relay' as const,
-    iceServers: only === 'none' ? [] : configuration.iceServers.map(server => kept.wrongRelayPassword ? { ...server, credential: 'wrong' } : server),
+    ...configuration, iceTransportPolicy: 'relay' as const, iceServers: [],
   };
   kept.callConnections = [];
   window.RTCPeerConnection = class extends Real {

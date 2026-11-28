@@ -655,20 +655,20 @@
       "bytes": 151441
     },
     "server-settings-phone-dark.png": {
-      "sha256": "cdd519afe8e657eaca7073519e4f48f9c4692c1ae17566191cbea4cfdfaff6f7",
-      "bytes": 69475
+      "sha256": "75cad7bb2639df443c6b4593c99796fe001e14e03f3408279adfdede1d4cef30",
+      "bytes": 73048
     },
     "server-settings-phone-light.png": {
-      "sha256": "58dad9d856787b2dd0f828126698ec84540a88e0ca9bb31872045eb292824994",
-      "bytes": 73914
+      "sha256": "5cc775e223f025b98bf9781d5b170f79c5652f122eb7646f7f03d0c610625046",
+      "bytes": 77388
     },
     "server-settings-wide-dark.png": {
-      "sha256": "2019b3a81bd26bb97e4f669cc2f7f32240893e326df85ded5eb949ead89ca544",
-      "bytes": 138607
+      "sha256": "8081f99bc9a94c257d04e1305ca98c2222d7d436e49f61e8c9b891ea8e8e8722",
+      "bytes": 139466
     },
     "server-settings-wide-light.png": {
-      "sha256": "4987ed79f1ffaf43e577622d0545cd29adad40380e0044c366346f2c3795dbb2",
-      "bytes": 141756
+      "sha256": "877ce26bff2d3fa78a0831ccc35ca938125386a4392068845f338a8614220c9c",
+      "bytes": 142817
     },
     "settings-app-lock-phone-dark.png": {
       "sha256": "bb4541e80707badd4bb3b434512d21718006a99a8e78a84d2de284130cec89ca",
@@ -2313,6 +2313,48 @@
         "branch": "rel-0351",
         "dirty": true,
         "digest": "596d7416f4b740864a39c819b45381913c16aa0abc782d96b3327fd5333cf630"
+      },
+      "render": {
+        "playwright": "1.64.0",
+        "browser": "chromium-headless-shell 156.0.8078.4",
+        "browserArgs": [
+          "--font-render-hinting=none",
+          "--disable-lcd-text",
+          "--force-color-profile=srgb",
+          "--disable-gpu",
+          "--disable-skia-runtime-opts",
+          "--num-raster-threads=1",
+          "--disable-partial-raster"
+        ],
+        "platform": "linux-x64",
+        "fonts": {
+          "@fontsource/inter": "5.3.0",
+          "@fontsource/jetbrains-mono": "5.3.0"
+        },
+        "fontconfig": "isolated",
+        "deviceScaleFactor": 1
+      },
+      "host": {
+        "node": "v26.12.1",
+        "ci": false
+      },
+      "added": [],
+      "changed": [
+        "server-settings-phone-dark.png",
+        "server-settings-phone-light.png",
+        "server-settings-wide-dark.png",
+        "server-settings-wide-light.png"
+      ],
+      "removed": []
+    },
+    {
+      "date": "2026-11-28T13:26:49.323Z",
+      "reason": "Server settings: the relay row is gone; the line for a leftover relay variable shows, and the blocked words no longer name a relay",
+      "source": {
+        "commit": "5a8e95ca39be6173beb989194faa07492a58aa7e",
+        "branch": "feat/0.36.0-p1-relay-removed",
+        "dirty": true,
+        "digest": "97978ce31794b3798d232eb3dced032e4b2fee3452777e4d14c68e11654c3268"
       },
       "render": {
         "playwright": "1.64.0",

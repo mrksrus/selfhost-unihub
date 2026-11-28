@@ -73,26 +73,12 @@ RUN mkdir /out
 
 FROM android-${UNIHUB_ANDROID} AS android-app
 
-# ── Stage 3b: The relay for calls (coturn) ────────────────────────
-# The coturn project's own image, on the same Alpine release as the image
-# below. Its binary carries a file capability (to bind ports below 1024),
-# which an arbitrary user without capabilities could not execute: a fresh
-# copy leaves it and any setuid bit behind.
-FROM coturn/coturn:4.19.2-alpine@sha256:974824bdefa8759b7aa4508daf5066fdd9f5411e925055b6132fb2904aecca01 AS relay
-USER root
-RUN install -m 755 /usr/bin/turnserver /turnserver
-
 # ── Stage 4: Production image (Nginx + Node.js API) ───────────────
 FROM node:26.12.1-alpine@sha256:40cd011b55415bc894e45b02fdd5a5dfde056921b7d23a64c74f80497af48797
 
 # Install runtime services plus ffmpeg for recording conversion and temporary build deps for native node modules.
-# The libraries after ffmpeg are those the relay for calls links (docker/start.sh starts it when TURN_SECRET is set).
 RUN apk add --no-cache nginx wget netcat-openbsd mariadb-client ffmpeg \
-       libevent libcrypto3 libssl3 libpq mariadb-connector-c sqlite-libs hiredis mongo-c-driver libmicrohttpd \
     && apk add --no-cache --virtual .build-deps python3 make g++
-COPY --from=relay /turnserver /usr/bin/turnserver
-# Fails the build when a library the relay links is missing.
-RUN turnserver --version
 
 # ── Set up the API ─────────────────────────────────────────────────
 WORKDIR /app
@@ -147,8 +133,8 @@ RUN mkdir -p /app/uploads && chown unihub:unihub /app/uploads
 COPY docker/start.sh /app/start.sh
 RUN chmod +x /app/start.sh
 
-# The port when UNIHUB_HTTP_PORT is not set, and the relay for calls when configured.
-EXPOSE 80 3478/udp 3478/tcp 49160-49200/udp
+# The port when UNIHUB_HTTP_PORT is not set.
+EXPOSE 80
 
 # Allow the 300s MariaDB readiness window plus API startup before reporting failures.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=360s --retries=3 \

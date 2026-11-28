@@ -13,7 +13,6 @@ import { otherOf, peerState, startConversation } from './chat';
 import { policyForbids, resolvePolicy } from './settings';
 import { publishChatChanged, realtime } from './realtime';
 import { enqueueFromSource, processNotificationJobs } from './notifications';
-import { iceServers } from './turn';
 import { callMedia } from './call-media';
 
 // Voice calls between the two people of a direct chat (contracts/chat.ts).
@@ -172,7 +171,7 @@ async function startCall(userId: string, token: string | null, input: unknown) {
   const row = await loadCall(userId, id);
   announce(row, row.state === 'ended');
   if (row.outcome === 'busy') throw conflict('CHAT_CALL_BUSY', `${peer.name} is on another call.`);
-  return { call: toCall(row, own), started, ice_servers: iceServers(id) };
+  return { call: toCall(row, own), started };
 }
 
 /** GET /api/chat/calls/current: the person's ringing or active call. */
@@ -197,7 +196,7 @@ async function answerCall(userId: string, token: string | null, callId: string) 
     return call;
   });
   if (row) announce(row);
-  return { call: toCall(await loadCall(userId, callId), own), ice_servers: iceServers(callId) };
+  return { call: toCall(await loadCall(userId, callId), own) };
 }
 
 /** POST /api/chat/calls/:id/end: declined, cancelled, hung up or failed. */
@@ -258,15 +257,6 @@ async function callAlive(userId: string, token: string | null, callId: string) {
   return { call: toCall(await loadCall(userId, callId), own) };
 }
 
-/** GET /api/chat/calls/:id/ice: fresh connection servers for an end of a call going on. */
-async function callIceServers(userId: string, token: string | null, callId: string) {
-  const own = await deviceOf(userId, token);
-  const row = await loadCall(userId, callId);
-  if (row.state === 'ended') throw ended();
-  if (!isEnd(row, own)) throw notAnEnd();
-  return { ice_servers: iceServers(callId) };
-}
-
 /** GET /api/chat/calls/:id/media: the request's chat device when it is an end of the active call; refused otherwise. */
 async function mediaEnd(userId: string, token: string | null, callId: string) {
   const own = await deviceOf(userId, token);
@@ -323,4 +313,4 @@ async function callNotice(userId: string, callId: string, executor: SqlExecutor,
 }
 
 export type { CallNotice };
-export { startCall, currentCall, answerCall, endCall, postSignal, fetchSignals, callAlive, callIceServers, mediaEnd, sweepCalls, callNotice };
+export { startCall, currentCall, answerCall, endCall, postSignal, fetchSignals, callAlive, mediaEnd, sweepCalls, callNotice };

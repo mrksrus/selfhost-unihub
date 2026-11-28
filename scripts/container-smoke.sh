@@ -28,11 +28,7 @@ image="${UNIHUB_SMOKE_IMAGE:-unihub:ci}"
 container_name="unihub-smoke-${GITHUB_RUN_ID:-local}-${RANDOM}"
 volume_name="${container_name}-uploads"
 turn_secret="$(node -e 'console.log(require("node:crypto").randomBytes(48).toString("base64"))')"
-turn_secret_file="$(mktemp)"
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-# The relay's version is the one the Dockerfile copies from coturn's image.
-relay_version="$(sed -n 's|^FROM coturn/coturn:\([0-9.]*\)-alpine@.*|\1|p' "$script_dir/../Dockerfile")"
-[[ -n "$relay_version" ]] || { echo 'The Dockerfile names no coturn version.' >&2; exit 1; }
 
 cleanup() {
   local status=$?
@@ -42,7 +38,6 @@ cleanup() {
   docker logs --tail 60 "${container_name}-variant" 2>&1 || true
   docker rm -f "$container_name" "${container_name}-nginx" "${container_name}-variant" >/dev/null 2>&1 || true
   docker volume rm "$volume_name" >/dev/null 2>&1 || true
-  rm -f "$turn_secret_file"
   exit "$status"
 }
 trap cleanup EXIT
@@ -142,26 +137,13 @@ for(const target of ["/app/uploads","/app/uploads/legacy-smoke","/app/uploads/le
 if(fs.lstatSync("/app/uploads/legacy-smoke/link").uid!==10001)throw new Error("Symlink in uploads was not handed over");
 if(fs.statSync("/etc/passwd").uid!==0)throw new Error("Ownership change followed a symlink out of uploads");
 console.log("API runs as uid/gid 10001 without capabilities; uploads handed over");'
-# The relay for calls, started as root, drops to the API user like the API.
+# The relay for calls was removed: a start with its old secret only says so, and nothing of it is left.
+[[ "$startup_log" == *'NOTE: the relay for calls was removed in 0.36.0.'* ]] || { echo 'A leftover TURN_SECRET must be noted in the log.' >&2; exit 1; }
+docker run --rm --network none --entrypoint sh "$image" -c '! command -v turnserver' || { echo 'The image must not contain turnserver.' >&2; exit 1; }
 docker exec "$container_name" node -e '
-const fs=require("node:fs");const pid=fs.readdirSync("/proc").find(name=>{try{return fs.readFileSync(`/proc/${name}/comm`,"utf8").trim()==="turnserver"}catch{return false}});
-if(!pid)throw new Error("The relay for calls is not running");const status=fs.readFileSync(`/proc/${pid}/status`,"utf8");
-const field=name=>(new RegExp(`^${name}:[ \t]*(.*)$`,"m").exec(status)||[])[1]?.trim().split(/\s+/).filter(Boolean)||[];
-if(![...field("Uid"),...field("Gid")].every(id=>id==="10001")||field("Groups").length)throw new Error(`The relay must run as 10001 without groups: ${field("Uid")} ${field("Gid")} ${field("Groups")}`);
-if(BigInt("0x"+field("CapEff")[0])!==0n||BigInt("0x"+field("CapPrm")[0])!==0n)throw new Error("The relay must not hold capabilities");
-console.log("The relay for calls runs as uid/gid 10001 without capabilities")'
-# Without capabilities and as another user, as on TrueNAS: a file capability left on the binary would stop it here.
-[[ "$(docker run --rm --network none --cap-drop ALL --user 568:568 --entrypoint turnserver "$image" --version | tail -n 1)" == "$relay_version" ]] \
-  || { echo "The relay for calls must start without capabilities and be coturn $relay_version." >&2; exit 1; }
-[[ "$startup_log" == *'TURN_SECRET is set without TURN_URLS'* ]] || { echo 'A relay secret without TURN_URLS must be warned about.' >&2; exit 1; }
-# Peers the relay must refuse: loopback (also IPv4-mapped), the API's port,
-# this host's own address and the database's. Host networking: the
-# container's addresses are the runner's.
-own_ip="$(hostname -I | awk '{ print $1 }')"
-db_container="$(docker ps --quiet --filter publish=3306 | head -n 1)"
-db_ip="$([[ -z "$db_container" ]] || docker inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}' "$db_container" | awk '{ print $1 }')"
-RELAY_SECRET="$turn_secret" RELAY_REFUSE="127.0.0.1 127.0.0.1:4000 ::ffff:127.0.0.1 $own_ip $own_ip:4000 ${db_ip:+$db_ip:3306}" \
-  RELAY_ALLOW=203.0.113.5 node "$script_dir/relay-smoke.mts"
+const fs=require("node:fs");const open=["tcp","tcp6","udp","udp6"].filter(name=>{try{return fs.readFileSync(`/proc/net/${name}`,"utf8").split("\n").some(line=>/^\s*\d+: [0-9A-F]+:0D96 /.test(line))}catch{return false}});
+if(open.length)throw new Error(`Something listens on port 3478 (${open})`);
+console.log("Nothing listens on port 3478")'
 docker exec "$container_name" ffmpeg -version
 docker exec "$container_name" node -e 'const fs=require("node:fs");for(const name of ["LICENSE","LICENSING.md","THIRD_PARTY_NOTICES.md","frontend-dependency-notices.txt","crypto-dependency-notices.txt","alpine-packages.txt","ffmpeg-license.txt"]){if(!fs.statSync("/app/licenses/"+name).size)throw Error("Empty license notice: "+name)}'
 [[ "$(docker inspect --format '{{index .Config.Labels "org.opencontainers.image.licenses"}}' "$container_name")" == 'PolyForm-Noncommercial-1.0.0' ]]
@@ -236,8 +218,6 @@ docker exec -i -u 10001:10001 -e UNIHUB_API_ROOT=/app/api \
 container_log="$(docker logs "$container_name" 2>/dev/null)"
 [[ "$container_log" == *'"GET / HTTP/1.1" 200 '* ]] || { echo 'Nginx access log lines did not reach the container log.' >&2; exit 1; }
 docker exec "$container_name" sh -c '! ls /var/log/nginx/*.log 2>/dev/null' || { echo 'Nginx wrote log files under /var/log/nginx.' >&2; exit 1; }
-[[ "$container_log" == *"Coturn Version Coturn-$relay_version "* ]] && docker exec "$container_name" sh -c '[ -z "$(ls /var/log/turn*.log /var/tmp/turn*.log /tmp/turn*.log 2>/dev/null)" ]' \
-  || { echo "The relay for calls must log its version ($relay_version) to the container log, not to files." >&2; exit 1; }
 [[ "$(docker logs "$container_name" 2>&1)" != *"$turn_secret"* ]] || { echo 'The relay secret appeared in the container log.' >&2; exit 1; }
 # Graceful stop: with cap_drop ALL the root supervisor cannot signal the API
 # user, so shutdown goes through the IPC channel. It must finish well inside
@@ -329,27 +309,15 @@ for refused in 04000 70000 8080x; do
 done
 # A port above 1023 needs no NET_BIND_SERVICE. 4000 is the API's own port
 # inside the container: Nginx gets it and the API moves to 4001.
-start_variant 4000 --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add SETGID --cap-add SETUID \
-  -e "TURN_SECRET=$turn_secret" -e TURN_EXTERNAL_IP=203.0.113.7/10.0.0.1 -e TURN_URLS=turn:localhost:3478
-# A public/private pair would allow the private address: a warning, and nothing listens on the relay's port.
-variant_log="$(docker logs "${container_name}-variant" 2>&1)"
-[[ "$variant_log" == *'TURN_EXTERNAL_IP must be one IPv4 or IPv6 address'* && "$variant_log" != *'without TURN_URLS'* ]] \
-  || { echo 'A TURN_EXTERNAL_IP with / must turn the relay off with one warning.' >&2; exit 1; }
-# Nor is the relay offered: the supervisor and the API do not have its addresses.
-docker exec "${container_name}-variant" node -e '
-const fs=require("node:fs");
-const told=fs.readdirSync("/proc").filter(pid=>/^\d+$/.test(pid)&&Number(pid)!==process.pid).filter(pid=>{try{
-  return fs.readFileSync(`/proc/${pid}/cmdline`,"utf8").includes("/app/api/")&&fs.readFileSync(`/proc/${pid}/environ`,"utf8").split("\0").some(entry=>entry.startsWith("TURN_URLS="))}catch{return false}});
-if(told.length)throw new Error(`The relay is off, yet processes ${told} would offer it (TURN_URLS)`);
-console.log("The relay is off and not offered")'
-node "$script_dir/relay-smoke.mts"
+start_variant 4000 --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add SETGID --cap-add SETUID -e TURN_URLS= -e TURN_SECRET=
+# An empty relay variable is no leftover.
+[[ "$(docker logs "${container_name}-variant" 2>&1)" != *'relay for calls was removed'* ]] || { echo 'Empty TURN_ variables must not be noted.' >&2; exit 1; }
 stop_variant
 docker run --rm --network none --entrypoint chown \
   --mount "type=volume,source=$volume_name,target=/app/uploads" "$image" -R -h 568:568 /app/uploads
-# This start also runs the relay, from a secret file, with private peers allowed.
-printf '%s\n' "$turn_secret" > "$turn_secret_file" && chmod 644 "$turn_secret_file"
-start_variant 8568 --user 568:568 --mount "type=bind,source=$turn_secret_file,target=/run/turn-secret,readonly" \
-  -e TURN_SECRET_FILE=/run/turn-secret -e TURN_URLS=turn:localhost:3478 -e TURN_ALLOW_PRIVATE_PEERS=true
+# The relay's old secret file, even one that does not exist, never stops a start.
+start_variant 8568 --user 568:568 -e TURN_SECRET_FILE=/run/turn-secret-missing
+[[ "$(docker logs "${container_name}-variant" 2>&1)" == *'relay for calls was removed'* ]] || { echo 'A leftover TURN_SECRET_FILE must be noted.' >&2; exit 1; }
 docker exec "${container_name}-variant" node -e '
 const fs=require("node:fs");let count=0;
 for(const pid of fs.readdirSync("/proc").filter(name=>/^\d+$/.test(name))){
@@ -374,16 +342,5 @@ if [[ "$variant_log" == *'Permission denied'* || "$variant_log" == *'[emerg]'* |
   echo 'Started as --user 568:568, the container logged a permission or Nginx startup error.' >&2
   exit 1
 fi
-# Private peers allowed: the database is reachable, this host's own addresses still are not.
-RELAY_SECRET="$turn_secret" RELAY_REFUSE="127.0.0.1:4000 $own_ip $own_ip:4000" RELAY_ALLOW="203.0.113.5 ${db_ip}" node "$script_dir/relay-smoke.mts"
-# The relay's end is logged; the rest of UniHub keeps running.
-docker exec "${container_name}-variant" sh -c 'kill -TERM "$(pidof turnserver)"'
-for ((attempt=0; attempt<20; attempt++)); do
-  [[ "$(docker logs "${container_name}-variant" 2>&1)" == *'The relay for calls stopped: calls between different networks will not connect until the container is restarted.'* ]] && break
-  sleep 1
-done
-(( attempt < 20 )) || { echo 'The relay stopping was not reported.' >&2; exit 1; }
-sleep 2
-curl --silent --fail --max-time 5 "http://localhost:8568/health" >/dev/null || { echo 'The API stopped answering after the relay stopped.' >&2; exit 1; }
 stop_variant
-echo 'Container smoke passed: startup, non-root API and uploads handover, health, security headers, Android app download, authentication, isolation, malformed requests, audio, contact photo and encrypted backup round-trips, graceful stop, essential-service recovery, API-down answers, starts on another port and as another user, and the relay for calls (refusing internal peers, off without a secret).'
+echo 'Container smoke passed: startup, non-root API and uploads handover, health, security headers, Android app download, authentication, isolation, malformed requests, audio, contact photo and encrypted backup round-trips, graceful stop, essential-service recovery, API-down answers, starts on another port and as another user, and nothing left of the relay for calls but its note.'

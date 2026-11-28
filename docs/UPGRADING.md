@@ -5,6 +5,21 @@
 For a new installation, use [Installation](INSTALLATION.md). This page includes
 version-specific upgrade guidance. Preserve existing data and keys when upgrading.
 
+## 0.36.0 Group calls
+
+- **The relay for calls was removed.** The image no longer contains coturn
+  and no longer exposes ports 3478 and 49160 to 49200. Calls that cannot
+  connect directly go through UniHub's web connection, so **the reverse
+  proxy must pass WebSockets** ([0.35.1](#0351-calls-between-networks)).
+  Remove `UNIHUB_TURN_*` from `.env`, the `TURN_*` lines and the three
+  relay port lines from your Compose file, and close or stop forwarding
+  ports 3478 and 49160 to 49200 on the router and firewall. While one of
+  `TURN_SECRET`, `TURN_SECRET_FILE`, `TURN_URLS` or `TURN_EXTERNAL_IP` is
+  still set, UniHub starts normally, the log says so once per start and
+  Server settings › Calls shows "Relay for calls: removed". A call that went
+  through the relay over UDP now goes over the web connection (TCP), which
+  can stall where a poor mobile link drops packets.
+
 ## 0.35.1 Calls between networks
 
 No database upgrade runs, and there is no new port or variable. Going back

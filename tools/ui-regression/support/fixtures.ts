@@ -739,8 +739,8 @@ function defaultRoutes(emails: typeof EMAILS, admin = false): Route[] {
     ['POST', /^\/devices\/current\/lock-state$/, () => ok({})],
     ['GET', /^\/settings\/values\/device$/, () => ok({ device_id: DEVICES[0].id, settings: CURRENT_DEVICE.settings })],
     ['GET', /^\/admin\/instance-backup$/, () => ok(INSTANCE_BACKUP)],
-    // Server settings. The calls' check: the harness passes no WebSocket, and the plain request gets UniHub's answer to that.
-    ['GET', /^\/admin\/settings\/signup-mode$/, () => ok({ signup_mode: 'approval', calls_relay: false })],
+    // Server settings, on an installation that still sets a variable of the removed relay. The calls' check: the harness passes no WebSocket, and the plain request gets UniHub's answer to that.
+    ['GET', /^\/admin\/settings\/signup-mode$/, () => ok({ signup_mode: 'approval', calls_relay_leftover: true })],
     ['GET', /^\/chat\/calls\/check$/, () => ({ status: 426, body: { error: 'This address takes a WebSocket. The reverse proxy in front of UniHub may not pass WebSockets.', code: 'CHAT_CALL_MEDIA_UPGRADE' } })],
     ['GET', /^\/admin\/storage$/, () => ok({ storage: SERVER_STORAGE })],
     ['GET', /^\/admin\/audit$/, () => ok({ entries: [], cursor: null })],

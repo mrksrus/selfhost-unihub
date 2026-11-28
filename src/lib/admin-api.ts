@@ -99,10 +99,10 @@ export async function setGroupManager(groupId: string, userId: string, manager: 
 export type SignupMode = 'open' | 'approval' | 'disabled';
 export const signupModeQueryKey = ['admin', 'signup-mode'] as const;
 
-/** Who can sign up, and whether the relay for calls is configured (TURN_URLS and its secret). */
-export async function fetchSignupMode(signal?: AbortSignal): Promise<{ mode: SignupMode; callsRelay: boolean }> {
-  const data = unwrap(await api.get<{ signup_mode: SignupMode; calls_relay?: boolean }>('/admin/settings/signup-mode', { signal }));
-  return { mode: data?.signup_mode || 'disabled', callsRelay: !!data?.calls_relay };
+/** Who can sign up, and whether a variable of the removed relay for calls is still set. */
+export async function fetchSignupMode(signal?: AbortSignal): Promise<{ mode: SignupMode; callsRelayLeftover: boolean }> {
+  const data = unwrap(await api.get<{ signup_mode: SignupMode; calls_relay_leftover?: boolean }>('/admin/settings/signup-mode', { signal }));
+  return { mode: data?.signup_mode || 'disabled', callsRelayLeftover: !!data?.calls_relay_leftover };
 }
 export const callsCheckQueryKey = ['admin', 'calls-check'] as const;
 /** Whether a WebSocket from this browser reaches UniHub through the reverse proxy, as calls between networks need; null where that cannot be told. */
