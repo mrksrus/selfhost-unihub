@@ -2,7 +2,7 @@ import type { ServerResponse } from 'node:http';
 import type { RouteResponse } from '../types';
 import type { UpgradeRequest, WebSocketConnection } from '../http/websocket';
 import type {
-  ChatCallAnswerResponse, ChatCallResponse, ChatCallSignalPostedResponse, ChatCallSignalsResponse, ChatCallStartResponse, ChatCurrentCallResponse, ChatIceServersResponse,
+  ChatCallAnswerResponse, ChatCallResponse, ChatCallSignalPostedResponse, ChatCallSignalsResponse, ChatCallStartResponse, ChatCurrentCallResponse,
 } from '../contracts/chat';
 
 import { getAuthTokenFromRequest, verifyToken } from '../auth';
@@ -10,7 +10,7 @@ import { defineRoutes } from '../http/route';
 import { acceptWebSocket } from '../http/websocket';
 import { callMedia } from '../services/call-media';
 import { joinedOnly } from '../services/chat-devices';
-import { answerCall, callAlive, callIceServers, currentCall, endCall, fetchSignals, mediaEnd, postSignal, startCall } from '../services/chat-calls';
+import { answerCall, callAlive, currentCall, endCall, fetchSignals, mediaEnd, postSignal, startCall } from '../services/chat-calls';
 
 type Request = UpgradeRequest & { url: string; params: Record<string, string> };
 
@@ -63,9 +63,6 @@ export = defineRoutes(joinedOnly({
   } },
   'GET /api/chat/calls/check': { auth: 'user', module: 'chat', response: 'upgrade', body: { kind: 'none' }, handler: async (req: Request, _userId: string, _body: unknown, res: ServerResponse) => {
     return upgrade(req, res, ws => ws.close(1000));
-  } },
-  'GET /api/chat/calls/:id/ice': { auth: 'user', module: 'chat', handler: async (req: Request, userId: string) => {
-    return await callIceServers(userId, token(req), id(req)) satisfies ChatIceServersResponse;
   } },
 // The Server page's check of WebSockets carries nothing of Chat.
 }, ['GET /api/chat/calls/check']));

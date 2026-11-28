@@ -13,11 +13,10 @@ import { SettingsBlock, SettingsRow, SettingsSection } from '@/components/settin
 import { ROW_LINK } from '@/components/admin/person-words';
 import { cn } from '@/lib/utils';
 
-const CALLS_RELAY_DOCS_URL = 'https://github.com/mrksrus/selfhost-unihub/blob/main/docs/INSTALLATION.md#calls-and-the-relay';
 const CALLS_PROXY_DOCS_URL = 'https://github.com/mrksrus/selfhost-unihub/blob/main/docs/UPGRADING.md#0351-calls-between-networks';
 const CALLS_CHECK = {
   working: ['working', 'Calls that cannot connect directly go through UniHub\'s own web connection, encrypted on the two devices.'],
-  blocked: ['blocked by the reverse proxy', 'The reverse proxy in front of UniHub does not pass WebSockets, so calls between networks connect only directly or through a configured relay. Switch on WebSocket support in the reverse proxy.'],
+  blocked: ['blocked by the reverse proxy', 'The reverse proxy in front of UniHub does not pass WebSockets, so calls between networks connect only directly. Switch on WebSocket support in the reverse proxy.'],
   unknown: ['could not be checked', 'This browser could not complete UniHub\'s check. Load the page again to check once more; if it stays so, check that Chat is on for you.'],
   pending: ['checking…', 'This browser is checking whether the reverse proxy passes WebSockets.'],
 } as const;
@@ -105,9 +104,8 @@ const AdminSettings = () => {
         <SettingsRow label={`Calls between networks: ${callsState}`}
           description={<span className="block max-w-prose">{callsWords}{' '}
             <a href={CALLS_PROXY_DOCS_URL} target="_blank" rel="noopener noreferrer" className={cn(ROW_LINK, 'text-accent underline underline-offset-2')}>What the reverse proxy needs</a></span>} />
-        <SettingsRow label={`Relay for calls: ${server?.callsRelay ? 'configured' : 'not configured'}`}
-          description={<span className="block max-w-prose">{server?.callsRelay ? 'Calls that cannot connect directly also try the relay, encrypted; until one of them connects, the sound goes through UniHub.' : 'Optional. A relay can carry calls between networks better on poor mobile connections.'}{' '}
-            <a href={CALLS_RELAY_DOCS_URL} target="_blank" rel="noopener noreferrer" className={cn(ROW_LINK, 'text-accent underline underline-offset-2')}>How to set up the relay</a></span>} />
+        {server?.callsRelayLeftover && <SettingsRow label="Relay for calls: removed"
+          description={<span className="block max-w-prose">The relay for calls was removed in 0.36.0. The TURN_ variables in your configuration do nothing now. Remove them, and close ports 3478 and 49160 to 49200 on the router and firewall.</span>} />}
       </SettingsSection>
 
       <SettingsSection title="Storage">

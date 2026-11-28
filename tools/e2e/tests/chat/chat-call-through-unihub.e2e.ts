@@ -6,9 +6,9 @@ import { onlyOn } from '../support/ui.ts';
 import { addPerson } from '../organisation/organisation-helpers.ts';
 import { callScreen, chatBrowser, confirmRules, FAKE_MICROPHONE, gone, heard, keepConnections, leave, messagesOf, ringing, secondBrowser, shows, startChat, twoPeople, type Kept } from './chat-helpers.ts';
 
-// Calls between two browsers that cannot connect directly and have no relay:
-// each call connection gets no servers and may use only the relay, so it has
-// no candidates and never connects. The sound then goes through UniHub's own
+// Calls between two browsers that cannot connect directly: each call
+// connection gets no servers and may use only relay candidates, so it has
+// none and never connects. The sound then goes through UniHub's own
 // connection (the call's WebSocket), encrypted by the two pages.
 
 // Received sound energy in three seconds: the generated tone gives about 0.3 to 0.9, silence near 0.
@@ -107,6 +107,8 @@ test('behind a proxy that does not pass WebSockets, a call that cannot connect d
       await server.page.goto(`${stack.url}/admin/settings`);
       await shows(server.page.getByText(`Calls between networks: ${says}`, { exact: true }), 60_000);
     }
+    // The stack runs with a variable of the removed relay still set.
+    await shows(opened.at(-1)!.page.getByText('Relay for calls: removed', { exact: true }), 30_000);
     passed = true;
   } finally {
     await leave(opened, people, passed);

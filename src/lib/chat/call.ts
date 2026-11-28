@@ -12,7 +12,7 @@ import { onAppEvent } from '@/lib/app-events';
 import { chatApi, unreachable } from '@/lib/chat-api';
 import { fromBase64Url, toBase64Url } from '@/lib/chat/bytes';
 import { CallMedia, callKey, callMediaKeys } from '@/lib/chat/call-media';
-import type { ChatCall, ChatCallAnswerResponse, ChatCallOutcome, ChatCallStartRequest, ChatCallStartResponse, ChatIceServer } from '../../../api/src/contracts/chat';
+import type { ChatCall, ChatCallAnswerResponse, ChatCallOutcome, ChatCallStartRequest, ChatCallStartResponse } from '../../../api/src/contracts/chat';
 
 const ALIVE_MS = 30_000;
 /** A connection not up this long after it was first tried or broke ends the call as failed. */
@@ -308,7 +308,7 @@ class Calls implements ChatCalls {
     }
     this.set(this.viewOf(answer.call, true));
     this.ringUntil(answer.call);
-    await this.connect(answer.call.id, answer.ice_servers, true, attempt);
+    await this.connect(answer.call.id, true, attempt);
   }
 
   private ringUntil(call: ChatCall) {
@@ -355,7 +355,7 @@ class Calls implements ChatCalls {
     // Hung up while the server answered: the call it took ends too.
     if (this.stale(attempt)) { void chatApi.endCall(id).catch(() => undefined); return; }
     this.update({ answered_at: answer.call.answered_at });
-    await this.connect(id, answer.ice_servers, false, attempt);
+    await this.connect(id, false, attempt);
     void this.offerMedia(attempt);
     // The offer waits among the signals.
     await this.sync();
@@ -436,17 +436,18 @@ class Calls implements ChatCalls {
     });
   }
 
-  private async connect(id: string, iceServers: ChatIceServer[], caller: boolean, attempt: number) {
+  private async connect(id: string, caller: boolean, attempt: number) {
     try {
-      await this.connectNow(id, iceServers, caller);
+      await this.connectNow(id, caller);
     } catch {
       // A connection closed by a hang-up rejects what it was doing.
       if (!this.stale(attempt)) await this.fail();
     }
   }
 
-  private async connectNow(id: string, iceServers: ChatIceServer[], caller: boolean) {
-    const pc = this.pc = new RTCPeerConnection({ iceServers });
+  private async connectNow(id: string, caller: boolean) {
+    // No servers: the devices' own addresses only; elsewhere the sound goes through UniHub.
+    const pc = this.pc = new RTCPeerConnection({ iceServers: [] });
     for (const track of this.stream!.getTracks()) pc.addTrack(track, this.stream!);
     pc.ontrack = ({ track, streams: [remote] }) => {
       if (track.kind !== 'audio' || !remote || typeof Audio === 'undefined') return;
@@ -548,9 +549,6 @@ class Calls implements ChatCalls {
     const pc = this.pc!;
     // An offer is out: its answer comes first.
     if (pc.signalingState !== 'stable') return;
-    const iceServers = await chatApi.callIce(this.view!.id!);
-    if (pc !== this.pc) return;
-    pc.setConfiguration({ iceServers });
     pc.restartIce();
     await this.offer(pc);
   }

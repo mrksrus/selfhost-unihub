@@ -322,96 +322,15 @@ Calls says "Calls between networks: working" once it does. Browsers without
 WebCodecs audio (Firefox on Android, Safari before 26) call directly only
 ([Chat](CHAT.md#calls)).
 
-The relay for calls, coturn, built into the UniHub image, is optional. It
-carries a call over UDP, which can hold up better than a web connection on
-a poor mobile network, and a call that connects through it uses it in place
-of UniHub's path. It needs forwarded ports. It is off until it has a secret,
-and then UniHub runs it beside the API in the same container.
+The relay for calls (coturn) was removed in 0.36.0. The `TURN_` variables
+do nothing now: remove them, and close ports 3478 and 49160 to 49200; the
+log and Server settings › Calls say so while one is still set
+([Upgrading](UPGRADING.md#0360-group-calls)).
 
-**Switch it on.** In `.env`, with a secret from `openssl rand -base64 48`
-and the public IP address explained below:
-
-    UNIHUB_TURN_URLS=turn:calls.example.org:3478
-    UNIHUB_TURN_SECRET=
-    UNIHUB_TURN_EXTERNAL_IP=
-
-`TURN_URLS` is the address devices are told: a name or IP address of this
-server that devices outside reach, and its port. Devices are told it for
-UDP and for TCP, for networks that block UDP. Then uncomment the relay's
-three `ports:` lines in `docker-compose.yml` and run `docker compose up -d`.
-They are off by default because Docker opens a published port in the firewall
-and holds it even while nothing listens. Instead of the secret itself,
-`TURN_SECRET_FILE` can name a file that holds it, readable by uid 10001.
-
-**Ports.** Open or forward, to the same port numbers on this server:
-
-| Port | Protocol | For |
-| --- | --- | --- |
-| 3478 | UDP and TCP | Devices reach the relay (TCP for networks that block UDP) |
-| 49160 to 49200 | UDP | The sound of relayed calls |
-
-A reverse proxy cannot carry them: it forwards web requests, and this is
-not web traffic. Forward the ports from the router to the server, and allow
-them in the server's firewall. There is no TLS port (5349) in this version.
-
-**Behind NAT.** Docker's own network is behind NAT even on a server with a
-public address, so set `TURN_EXTERNAL_IP` to the address the Internet sees:
-the server's public IP address, or the router's when the server is at home;
-one address, IPv4 or IPv6.
-The relay tells devices that address. It is read at start; after the address
-changes, restart UniHub.
-
-**What the relay refuses.** Only people signed in to UniHub get its
-credentials, made per call. It never sends to this network's own addresses:
-loopback, the container's own addresses (so not the API or the web server;
-one exception below), link-local, multicast and reserved addresses, and by default not to private
-networks and carrier-grade NAT (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16,
-100.64.0.0/10, fc00::/7), which includes the database's network. An
-installation whose people all call from one private network or VPN can set
-`UNIHUB_TURN_ALLOW_PRIVATE_PEERS=true`. That opens the IPv4 ranges only:
-the relay always refuses fc00::/7. Loopback and the container's own addresses
-stay refused (but for the exception below), while the UDP services of the
-database's network, of other machines on those networks and of this server itself, through Docker's
-gateway, become reachable through the relay for anyone signed in. The relay
-carries UDP only.
-
-One own address is open: on Docker's network the container's IPv4 address,
-where nothing but the relay receives UDP, so that two devices that both need
-the relay reach each other through it. With host networking the container's
-addresses are the server's, with the server's own UDP services, and stay
-refused; a call between two such devices does not connect there, nor over
-IPv6 anywhere. Where the relay cannot tell that the container has a network
-of its own (host networking inside an LXC container, a network namespace
-shared with another container; neither is supported), it opens that address
-too, and the UDP services there become reachable through it for anyone
-signed in. On a server with a public address and without
-`TURN_EXTERNAL_IP`, the server's own addresses other than the container's
-are not refused either.
-
-**Check it.** `docker compose logs unihub` shows "Starting the relay for
-calls" and coturn's own lines; a warning names a missing `TURN_URLS` or
-secret, or a value the relay refused; the relay then stays off and is not
-offered to devices, and the Server page says "Relay for calls: not configured". From a computer on another network,
-`turnutils_stunclient -p 3478 calls.example.org` (from coturn's tools)
-prints the address it sees; then call from a phone on mobile data to a
-device at home. Should the relay stop, the log says so and the rest of
-UniHub keeps running; relayed calls work again after a restart.
-
-**What it costs.** Only calls without a direct path use the relay or
-UniHub's path. Their sound passes through the server, encrypted end to end
-so neither can hear it. Through the relay that is about 100 kbit/s in each
-direction per call; through UniHub, 24 kbit/s of sound in each direction
-plus the frames' and the connection's overhead, at most 100 such calls at
-once. Each relayed
-connection is limited to 512 kbit/s in each direction. The port range allows
-40 relayed connections at once, at least 20 calls.
-
-**TrueNAS.** Calls between networks go through UniHub there as anywhere,
-through the reverse proxy in front of the app. The catalogue app's form has
-no fields for the relay's ports and no host networking, so the relay cannot
-be reached from outside there; to use it, run UniHub as a custom app from
-the Compose file. The variables could be set in Additional Environment
-Variables, but without the ports the relay only answers inside the NAS.
+**What it costs.** Only calls without a direct path go through UniHub. Their
+sound passes through the server, encrypted end to end so it cannot hear it:
+24 kbit/s of sound in each direction plus the frames' and the connection's
+overhead, at most 100 such calls at once.
 
 ## Common problems
 

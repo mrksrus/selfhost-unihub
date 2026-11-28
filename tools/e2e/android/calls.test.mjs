@@ -116,7 +116,7 @@ async function joinChat(page) {
 /**
  * Keeps every connection a page makes where its statistics can be read (`window.callConnections`).
  * The call's own is made with servers (the sound through UniHub plays through a pair made without):
- * while `window.noDirect` is set it gets none and may use only the relay, so it has no candidates;
+ * while `window.noDirect` is set it may use only relay candidates and gets no servers, so it has none;
  * `window.directConnected` tells whether one connected.
  */
 const KEEP_CONNECTIONS = () => {

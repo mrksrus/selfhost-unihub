@@ -79,7 +79,7 @@ test('chat calls: ringing, the first answer, signals, endings and entries, busy,
   const started = await start(alex, { user_id: ids.member });
   const first = started.call.id as string;
   const chat = started.call.conversation_id as string;
-  assert.deepEqual([started.started, started.call.state, started.call.this_device, started.call.callee_name, started.ice_servers], [true, 'ringing', true, 'Blair Member', []]);
+  assert.deepEqual([started.started, started.call.state, started.call.this_device, started.call.callee_name], [true, 'ringing', true, 'Blair Member']);
   for (const page of [pages.desk, pages.laptop, pages.alex]) assert.deepEqual(await page.next('chat.call'), { call_id: first });
   assert.equal(await pages.tablet.next('chat.call', 300), null, 'a waiting device hears nothing of a call');
   assert.deepEqual(await refused(tablet, 'GET', '/api/chat/calls/current'), [403, 'CHAT_DEVICE_WAITING']);
@@ -92,7 +92,7 @@ test('chat calls: ringing, the first answer, signals, endings and entries, busy,
   // ── Casey, not in the call, gets 404 on every route of it ──
   await enrol(casey);
   for (const [method, path, body] of [['POST', route(first, 'answer')], ['POST', route(first, 'end'), {}], ['POST', route(first, 'signals'), { payload: 'x' }],
-    ['GET', route(first, 'signals')], ['POST', route(first, 'alive')], ['GET', route(first, 'ice')]] as [string, string, unknown?][]) {
+    ['GET', route(first, 'signals')], ['POST', route(first, 'alive')]] as [string, string, unknown?][]) {
     assert.deepEqual(await refused(casey, method, path, body), [404, 'CHAT_CALL_NOT_FOUND'], `${method} ${path}`);
   }
   assert.equal((await call(casey, 'GET', '/api/chat/calls/current')).call, null);
@@ -215,26 +215,4 @@ test('chat calls: ringing, the first answer, signals, endings and entries, busy,
   assert.deepEqual(await rows('SELECT id FROM chat_calls WHERE conversation_id = ?', [chat]), []);
   assert.deepEqual((await call(alex, 'GET', `/api/chat/conversations/${chat}/messages`)).messages.filter((item: FixtureValue) => item.kind === 'call'), []);
   void [a1, desk, lap, phoneChat, oldChat];
-});
-
-test('relay credentials: the standard answer for a fixed secret and time, none without the configuration', () => {
-  const { iceServers, relayConfigured } = require('../dist/src/services/turn') as typeof import('../src/services/turn');
-  const saved = { urls: process.env.TURN_URLS, secret: process.env.TURN_SECRET };
-  try {
-    delete process.env.TURN_URLS;
-    process.env.TURN_SECRET = 'relay-secret';
-    assert.deepEqual([iceServers('call-1'), relayConfigured()], [[], false]);
-    process.env.TURN_URLS = 'turn:calls.example.test:3478, turn:calls.example.test:3478?transport=tcp';
-    const now = Date.UTC(2026, 0, 1);
-    const username = `${now / 1000 + 12 * 3600}:call-1`;
-    assert.deepEqual(iceServers('call-1', now), [{ urls: ['turn:calls.example.test:3478?transport=udp', 'turn:calls.example.test:3478?transport=tcp'], username,
-      credential: crypto.createHmac('sha1', 'relay-secret').update(username).digest('base64') }]);
-    // The known answer of this secret and user name.
-    assert.equal(iceServers('call-1', now)[0].credential, 'RaNcGrGnMXbOr+b/58j3PVQdcRI=');
-    assert.equal(relayConfigured(), true);
-    delete process.env.TURN_SECRET;
-    assert.deepEqual(iceServers('call-1', now), []);
-  } finally {
-    for (const [name, value] of [['TURN_URLS', saved.urls], ['TURN_SECRET', saved.secret]] as const) if (value === undefined) delete process.env[name]; else process.env[name] = value;
-  }
 });

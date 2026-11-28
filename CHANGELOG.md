@@ -8,6 +8,18 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
 ## Unreleased (0.36.0)
 
+### Removed
+
+- **The relay for calls** (coturn) is no longer in the image, and the image
+  no longer exposes ports 3478 and 49160 to 49200. Calls that cannot connect
+  directly go through UniHub's web connection, as they do on every
+  installation without a relay since 0.35.1; the reverse proxy must pass
+  WebSockets. Such a call now runs over TCP where a relayed one ran over
+  UDP, so it can stall on a poor mobile link. An installation that still
+  sets a `TURN_` variable starts normally; the log and Server settings ›
+  Calls say to remove it and to close the ports
+  ([Upgrading](docs/UPGRADING.md#0360-group-calls)).
+
 ### Changed
 
 - **TypeScript 7.** The frontend, the workers and the API are compiled by

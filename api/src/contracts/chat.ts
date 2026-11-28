@@ -664,9 +664,6 @@ export type ChatCallState = 'ringing' | 'active' | 'ended';
  */
 export type ChatCallOutcome = 'answered' | 'missed' | 'cancelled' | 'declined' | 'busy' | 'failed';
 
-/** One entry of RTCConfiguration.iceServers: the relay's addresses with credentials made for this call, good for twelve hours. */
-export interface ChatIceServer { urls: string[]; username: string; credential: string }
-
 /** A call as one of its two people sees it from the request's device. */
 export interface ChatCall {
   id: string;
@@ -730,7 +727,7 @@ export interface ChatCallEntry {
  * answer is that ringing call (started false), to be answered.
  */
 export type ChatCallStartRequest = { user_id: string } | { conversation_id: string };
-export interface ChatCallStartResponse { call: ChatCall; started: boolean; ice_servers: ChatIceServer[] }
+export interface ChatCallStartResponse { call: ChatCall; started: boolean }
 
 /** GET /api/chat/calls/current: the person's ringing or active call; null when there is none. */
 export interface ChatCurrentCallResponse { call: ChatCall | null }
@@ -743,7 +740,7 @@ export interface ChatCurrentCallResponse { call: ChatCall | null }
  * again is answered as it is), 409 CHAT_CALL_ENDED once it ended; 403
  * CHAT_CALL_DEVICE for the caller.
  */
-export interface ChatCallAnswerResponse { call: ChatCall; ice_servers: ChatIceServer[] }
+export interface ChatCallAnswerResponse { call: ChatCall }
 
 /**
  * POST /api/chat/calls/:id/end: declines, cancels or hangs up, with failed
@@ -784,9 +781,6 @@ export interface ChatCallSignalsResponse { signals: ChatCallSignal[]; after: num
  * while the call rings or is active. An active call without one for 90
  * seconds ends as failed. Answers the call as it is now.
  */
-
-/** GET /api/chat/calls/:id/ice: fresh connection servers for a restart, to either end of a call that has not ended. */
-export interface ChatIceServersResponse { ice_servers: ChatIceServer[] }
 
 /** The live hint chat.call. */
 export interface ChatCallHint { call_id: string }
@@ -863,5 +857,5 @@ export interface ChatCallMediaFrame { version: 1; sender: number; key: number; s
  */
 export interface ChatCallNotification { id: string; event: 'ring' | 'end' }
 
-/** GET /api/admin/settings/signup-mode also answers whether the relay for calls is configured (TURN_URLS and a secret), for the Server page. */
-export interface ServerCallsRelay { calls_relay: boolean }
+/** GET /api/admin/settings/signup-mode also answers whether a variable of the removed relay for calls is still set, for the Server page. */
+export interface ServerCallsRelayLeftover { calls_relay_leftover: boolean }
