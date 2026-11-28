@@ -54,6 +54,10 @@ The API source is TypeScript. `npm --prefix api start` compiles first, then star
 `api/dist/server.js`. `npm --prefix api run build` creates the CommonJS runtime
 and `npm --prefix api run typecheck` checks source without emitting code.
 
+`tsc` is TypeScript 7 (`typescript` in `api/`, `@typescript/native` in the root).
+TypeScript 7 has no compiler API yet, so the root's `typescript` is the npm alias of
+`@typescript/typescript6`: ESLint and the scripts that call `ts.transpileModule` use it.
+
 The notification service worker and audio worklet are authored in `workers/`.
 `npm run build:workers` emits classic scripts into ignored `.worker-dist/`.
 Vite serves those files during development and includes them in production

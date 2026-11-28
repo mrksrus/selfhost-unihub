@@ -78,7 +78,7 @@ test('the instance backup copies the installation, keeps only verified runs, ref
   const contact = await alex.request('POST', '/api/contacts', { name: { given: 'Casey' }, emails: ['casey@example.test'] });
   assert.ok([200, 201].includes(contact.status), JSON.stringify(contact.body));
   // A contact photo through the real routes: its files are named by content and released after a commit.
-  const sharp = require('sharp') as typeof import('sharp').default;
+  const sharp = require('sharp') as typeof import('sharp');
   const portrait = await sharp({ create: { width: 400, height: 400, channels: 3, background: '#2050c0' } }).jpeg().toBuffer();
   const contactId = String((contact.body.contact as FixtureValue).id);
   const photoReply = await alex.request('PUT', `/api/contacts/${contactId}/photo`, portrait, { 'content-type': 'image/jpeg' });

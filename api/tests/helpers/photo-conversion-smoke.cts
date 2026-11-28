@@ -7,7 +7,7 @@ const assert: typeof import('node:assert/strict') = require('node:assert/strict'
 const fs = (require('node:fs') as typeof import('node:fs'));
 const path = (require('node:path') as typeof import('node:path'));
 const apiRoot = process.env.UNIHUB_API_ROOT || path.resolve(__dirname, '../../dist');
-const sharp = require(require.resolve('sharp', { paths: [apiRoot] })) as typeof import('sharp').default;
+const sharp = require(require.resolve('sharp', { paths: [apiRoot] })) as typeof import('sharp');
 const { convertContactPhoto } = require(path.join(apiRoot, 'src/services/contact-photos')) as typeof import('../../src/services/contact-photos');
 
 const RED = [220, 30, 30];

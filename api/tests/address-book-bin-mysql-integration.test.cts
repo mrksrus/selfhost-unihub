@@ -6,7 +6,7 @@ const assert: typeof import('node:assert/strict') = require('node:assert/strict'
 const fs = require('node:fs') as typeof import('node:fs');
 const os = require('node:os') as typeof import('node:os');
 const path = require('node:path') as typeof import('node:path');
-const sharp = require('sharp') as typeof import('sharp').default;
+const sharp = require('sharp') as typeof import('sharp');
 const { withTestDatabase } = require('./helpers/test-database.cts') as import('./helpers/test-database.cts').TestDatabaseHelpers;
 const { seedPeople } = require('./helpers/people.cts') as import('./helpers/people.cts').PeopleHelpers;
 

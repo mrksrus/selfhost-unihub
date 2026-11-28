@@ -58,8 +58,7 @@ const BOOKS_DIRECTORY = 'books';
 // sharp is a native module. It loads on the first conversion, not at
 // startup: if its binary cannot load on a platform, photos answer 503 and
 // everything else keeps working.
-// The CommonJS export is the function itself (the types describe it as the ES default).
-type SharpModule = typeof import('sharp').default;
+type SharpModule = typeof import('sharp');
 let sharpModule: SharpModule | null = null;
 function loadSharp(): SharpModule {
   if (sharpModule) return sharpModule;

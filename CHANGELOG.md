@@ -6,6 +6,14 @@ Read the [upgrade guide](docs/UPGRADING.md) before updating an existing
 installation, and keep a consistent backup of the database, uploads, configuration and
 secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
+## Unreleased (0.36.0)
+
+### Changed
+
+- **TypeScript 7.** The frontend, the workers and the API are compiled by
+  TypeScript 7.0; the emitted API is the same apart from whitespace. Nothing
+  a person sees changes.
+
 ## 0.35.1
 
 Calls between different networks, a phone on mobile data and a computer at

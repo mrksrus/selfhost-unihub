@@ -92,7 +92,7 @@ export function textParts<P extends { name: string }>(text: string, people: P[] 
   const names = people.map(person => person.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).sort((a, b) => b.length - a.length);
   const mention = names.length ? new RegExp(`(@(?:${names.join('|')}))(?![\\p{L}\\p{N}])`, 'gu') : null;
   // split() with one capture group puts the addresses, and then the mentions, at the odd places.
-  return text.split(LINK).flatMap((part, index) => (index % 2 ? [{ text: part, href: part }]
+  return text.split(LINK).flatMap<{ text: string; href?: string; mention?: P }>((part, index) => (index % 2 ? [{ text: part, href: part }]
     : !mention ? [{ text: part }]
     // Not inside a word: the "@" of a mail address mentions nobody.
     : part.split(mention).map((piece, at, pieces) => (at % 2 && !/[\p{L}\p{N}]$/u.test(pieces[at - 1]) ? { text: piece, mention: people.find(person => piece === `@${person.name}`) } : { text: piece }))))

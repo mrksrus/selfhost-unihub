@@ -7,7 +7,7 @@ const crypto = require('node:crypto') as typeof import('node:crypto');
 const fs = require('node:fs') as typeof import('node:fs');
 const os = require('node:os') as typeof import('node:os');
 const path = require('node:path') as typeof import('node:path');
-const sharp = require('sharp') as typeof import('sharp').default;
+const sharp = require('sharp') as typeof import('sharp');
 const { withTestDatabase } = require('./helpers/test-database.cts') as import('./helpers/test-database.cts').TestDatabaseHelpers;
 
 // The contacts section of data schema 5 (0.26.0) through the real exporter,

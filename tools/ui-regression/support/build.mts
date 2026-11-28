@@ -16,7 +16,7 @@ export async function buildFrontend(): Promise<SourceIdentity> {
     if (built.digest === source.digest) return built;
   }
   const vite = path.join(repoRoot, 'node_modules/vite/dist/node/index.js');
-  const tsc = path.join(repoRoot, 'node_modules/typescript/bin/tsc');
+  const tsc = path.join(repoRoot, 'node_modules/@typescript/native/bin/tsc');
   for (const file of [vite, tsc]) {
     if (!fs.existsSync(file)) throw new Error(`Frontend dependencies are not installed (${path.relative(repoRoot, file)} is missing). Run npm ci in the repository root first.`);
   }
