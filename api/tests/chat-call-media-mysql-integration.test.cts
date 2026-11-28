@@ -251,8 +251,11 @@ test('chat call media: who may open the socket, frames both ways, the frame read
   Object.assign(callMedia.config, { rate: 1e9, burst: 1e9 });
   blairIn.socket.pause();
   const loud = Buffer.concat([Buffer.from([1, 0, 0, 0, 0, 0, 1]), crypto.randomBytes(900)]);
-  for (let index = 0; index < 3000; index++) alexIn.ws.send(loud);
-  await until(async () => caseyIn.got.length, length => length === 3000, 'Casey gets every frame');
+  // In batches Casey keeps up with, more than Blair's socket buffers take.
+  for (let batch = 1; batch <= 200; batch++) {
+    for (let index = 0; index < 15; index++) alexIn.ws.send(loud);
+    await until(async () => caseyIn.got.length, length => length === batch * 15, 'Casey gets every frame');
+  }
   assert.ok(callMedia.stats().buffered <= 2 * 8192 + 1100, `the API holds ${callMedia.stats().buffered} bytes for Blair`);
   Object.assign(callMedia.config, defaults);
   blairIn.socket.destroy();

@@ -173,6 +173,17 @@ async function main() {
         [file, teamChat, teamMessage, admin, `chat/${teamChat}/${file}`]);
       fs.mkdirSync(path.join(chatFiles, teamChat), { recursive: true });
       fs.writeFileSync(path.join(chatFiles, teamChat, file), crypto.randomBytes(4096));
+      // An answered group call in the team chat: who was in it, and who missed it.
+      const [groupCall, groupEntry] = [crypto.randomUUID(), crypto.randomUUID()];
+      await db.execute('UPDATE chat_conversations SET last_seq = 2 WHERE id = ?', [teamChat]);
+      await db.execute("INSERT INTO chat_messages (id, conversation_id, seq, group_id, sender_user_id, sender_chat_device_id, kind) VALUES (?, ?, 2, NULL, ?, ?, 'call')",
+        [groupEntry, teamChat, admin, adminChat]);
+      await db.execute(`INSERT INTO chat_calls (id, conversation_id, caller_user_id, callee_user_id, caller_chat_device_id, state, outcome, created_at, answered_at, ended_at, alive_at, message_id)
+        VALUES (?, ?, ?, NULL, ?, 'ended', 'answered', UTC_TIMESTAMP() - INTERVAL 8 MINUTE, UTC_TIMESTAMP() - INTERVAL 7 MINUTE, UTC_TIMESTAMP() - INTERVAL 1 MINUTE,
+          UTC_TIMESTAMP() - INTERVAL 1 MINUTE, ?)`, [groupCall, teamChat, admin, adminChat, groupEntry]);
+      await db.execute(`INSERT INTO chat_call_members (call_id, user_id, state, joined_at, left_at, alive_at) VALUES
+        (?, ?, 'left', UTC_TIMESTAMP() - INTERVAL 8 MINUTE, UTC_TIMESTAMP() - INTERVAL 1 MINUTE, UTC_TIMESTAMP() - INTERVAL 1 MINUTE),
+        (?, ?, 'missed', NULL, UTC_TIMESTAMP() - INTERVAL 7 MINUTE, NULL)`, [groupCall, admin, groupCall, other.id]);
       console.log(JSON.stringify({ seeded: ['setting_policies', 'instance_backups', 'mail_engine_migration_progress', 'org_groups', 'org_group_members', 'invites', 'login_attempts',
         'address_books', 'grants', 'directory_entries', ...BOOK_ROWS.tables.map(table => `${table} of books`), 'photo files of books',
         ...CALENDAR_ROWS.tables.map(table => `${table} of organisation calendars`), 'calendar_series', 'calendar_views', 'calendar_reminders', 'calendar offers', ...CHAT_TABLES, 'chat files'] }));
