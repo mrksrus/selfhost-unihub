@@ -16,7 +16,7 @@ interface Frame { opcode: number; data: Buffer }
 // and timers run by calling its tick, never by waiting for them.
 test('chat call media: who may open the socket, frames both ways, the frame reader, limits, replacement, endings and revocation', { skip: !process.env.MYSQL_TEST_HOST, timeout: 300000 }, async t => {
   const pool = await withTestDatabase(t);
-  const { ids, clients, call, enrol, signIn, api, until } = await chatPeople(t, pool);
+  const { ids, clients, groups, call, enrol, signIn, api, until } = await chatPeople(t, pool);
   const { manager: alex, member: blair, stranger: casey } = clients;
   type Client = typeof alex;
   const { callMedia } = require('../dist/src/services/call-media') as typeof import('../src/services/call-media');
@@ -222,6 +222,60 @@ test('chat call media: who may open the socket, frames both ways, the frame read
   assert.deepEqual([await callee.closed(), await again.closed()], [1000, 1000]);
   await until(async () => callMedia.stats(), stats => stats.calls === 0 && stats.sockets === 0, 'the relay is empty');
   assert.deepEqual(await refusal(alex, media(first)), [409, 'CHAT_CALL_ENDED']);
+
+  // ── A group call of three: every frame to both others, unless its sender byte is not the sender's number ──
+  await pool.execute("INSERT INTO org_group_members (group_id, user_id, role, added_by) VALUES (?, ?, 'member', ?)", [groups.support, ids.stranger, ids.admin]);
+  const team = (await call(alex, 'POST', '/api/chat/conversations', { kind: 'group', name: 'Team', follow: { kind: 'group', id: groups.support } })).conversation.id;
+  const group = (await call(alex, 'POST', '/api/chat/calls', { conversation_id: team })).call.id as string;
+  assert.equal(callMedia.stats().sockets, 0);
+  const alexIn = await browser(alex, media(group));
+  assert.deepEqual(await refusal(blair, media(group)), [403, 'CHAT_CALL_DEVICE'], 'rung, not in it');
+  await call(blair, 'POST', `/api/chat/calls/${group}/answer`);
+  const caseySender = (await call(casey, 'POST', `/api/chat/calls/${group}/answer`)).call.members.find((member: { user_id: string }) => member.user_id === ids.stranger).sender;
+  const blairIn = await raw(blair, media(group));
+  const caseyIn = await browser(casey, media(group));
+  const voiced = (sender: number) => Buffer.concat([Buffer.from([1, sender, 0, 0, 0, 0, 1]), crypto.randomBytes(80)]);
+  const spoken = voiced(0);
+  alexIn.ws.send(voiced(caseySender));
+  alexIn.ws.send(spoken);
+  assert.deepEqual((await blairIn.next())?.data, spoken, 'the frame as Casey is dropped, the next one passes');
+  await until(async () => caseyIn.got.length, length => length === 1, 'Casey hears Alex');
+  assert.deepEqual(caseyIn.got.shift(), spoken);
+  const fromCasey = voiced(caseySender);
+  caseyIn.ws.send(fromCasey);
+  assert.deepEqual((await blairIn.next())?.data, fromCasey);
+  await until(async () => alexIn.got.length, length => length === 1, 'Alex hears Casey');
+  alexIn.got.length = 0;
+
+  // ── Blair stops reading: Blair loses frames, Casey none, and the API holds at most one threshold per other end ──
+  Object.assign(callMedia.config, { rate: 1e9, burst: 1e9 });
+  blairIn.socket.pause();
+  const loud = Buffer.concat([Buffer.from([1, 0, 0, 0, 0, 0, 1]), crypto.randomBytes(900)]);
+  // In batches Casey keeps up with, more than Blair's socket buffers take.
+  for (let batch = 1; batch <= 200; batch++) {
+    for (let index = 0; index < 15; index++) alexIn.ws.send(loud);
+    await until(async () => caseyIn.got.length, length => length === batch * 15, 'Casey gets every frame');
+  }
+  assert.ok(callMedia.stats().buffered <= 2 * 8192 + 1100, `the API holds ${callMedia.stats().buffered} bytes for Blair`);
+  Object.assign(callMedia.config, defaults);
+  blairIn.socket.destroy();
+  caseyIn.got.length = 0;
+
+  // ── The stream budget: a room of three counts 6; a new end past the budget is refused, a reconnect is not ──
+  await until(async () => callMedia.stats().sockets, sockets => sockets === 2, 'Blair is gone');
+  Object.assign(callMedia.config, { maxStreams: 5 });
+  assert.deepEqual(await refusal(blair, media(group)), [503, 'CHAT_CALL_MEDIA_BUSY']);
+  const alexAgain = await browser(alex, media(group));
+  assert.equal(await alexIn.closed(), 4000);
+  Object.assign(callMedia.config, defaults);
+
+  // ── Casey leaves: Casey's socket closes at once, the call goes on ──
+  await call(casey, 'POST', `/api/chat/calls/${group}/end`, {});
+  assert.equal(await caseyIn.closed(), 1000);
+  assert.equal(alexAgain.ws.readyState, WebSocket.OPEN);
+  await call(alex, 'POST', `/api/chat/calls/${group}/end`, {});
+  await call(blair, 'POST', `/api/chat/calls/${group}/end`, {});
+  assert.equal(await alexAgain.closed(), 1000);
 
   // ── Signing out closes that session's socket at once; a deactivated person's goes at the next check ──
   const second = (await call(alex, 'POST', '/api/chat/calls', { user_id: ids.member })).call.id as string;

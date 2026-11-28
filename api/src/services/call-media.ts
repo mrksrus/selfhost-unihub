@@ -12,6 +12,8 @@ interface End {
   callId: string;
   device: string;
   userId: string;
+  /** A group call's member number, which the second byte of each frame must carry; null in a direct call. */
+  sender: number | null;
   tokenHash: string | null;
   ws: WebSocketConnection;
   /** Whether the session and the call still admit this end; false closes it, a throw keeps it. */
@@ -31,6 +33,8 @@ const config = {
   rate: 60,
   burst: 120,
   maxSockets: 200,
+  // A room of n ends forwards n × (n − 1) streams.
+  maxStreams: 400,
 };
 
 const calls = new Map<string, Map<string, End>>();
@@ -38,11 +42,15 @@ let timer: NodeJS.Timeout | null = null;
 let closing = false;
 let refusedAt = 0;
 const ends = () => [...calls.values()].flatMap(room => [...room.values()]);
+const streams = () => [...calls.values()].reduce((sum, room) => sum + room.size * (room.size - 1), 0);
+// About 1.5 seconds of every other end's sound.
+const slowLimit = (callId: string) => config.slowBytes * Math.max(1, (calls.get(callId)?.size ?? 1) - 1);
 
 /** Whether an end of this call may open a socket now; a reconnect of an attached device always may. */
 function admits(callId: string, device: string) {
   if (closing) return false;
-  if (calls.get(callId)?.has(device) || ends().length < config.maxSockets) return true;
+  const room = calls.get(callId);
+  if (room?.has(device) || (ends().length < config.maxSockets && streams() + 2 * (room?.size ?? 0) <= config.maxStreams)) return true;
   if (Date.now() - refusedAt > 60 * 1000) { refusedAt = Date.now(); log.warn('CALLS', 'Media sockets at capacity'); }
   return false;
 }
@@ -53,10 +61,13 @@ function forward(from: End, data: Buffer) {
   from.refilledAt = now;
   if (from.tokens < 1) return;
   from.tokens--;
+  // In a group everyone holds everyone's key: only this byte stops one member speaking as another.
+  if (from.sender !== null && data[1] !== from.sender) return;
+  const limit = slowLimit(from.callId);
   for (const to of calls.get(from.callId)?.values() ?? []) {
     if (to === from) continue;
     // Old sound is worth nothing: a receiver that does not keep up loses frames, never memory.
-    if (to.ws.buffered > config.slowBytes) to.slowSince ??= now;
+    if (to.ws.buffered > limit) to.slowSince ??= now;
     else { to.slowSince = null; to.ws.send(data); }
   }
 }
@@ -78,16 +89,18 @@ async function tick() {
   const now = Date.now();
   await Promise.all(ends().map(end => {
     if (now - end.ws.heardAt > config.idleMs || (end.slowSince !== null && now - end.slowSince >= config.slowMs)) return end.ws.close(4001);
-    if (end.ws.buffered <= config.slowBytes) end.slowSince = null;
+    if (end.ws.buffered <= slowLimit(end.callId)) end.slowSince = null;
     end.ws.ping();
     return revalidate(end);
   }));
 }
 
-function attach({ callId, device, userId, token, ws, check }: { callId: string; device: string; userId: string; token: string | null; ws: WebSocketConnection; check: End['check'] }) {
+function attach({ callId, device, userId, sender, token, ws, check }: {
+  callId: string; device: string; userId: string; sender: number | null; token: string | null; ws: WebSocketConnection; check: End['check'];
+}) {
   const room = calls.get(callId) ?? new Map<string, End>();
   calls.set(callId, room);
-  const end: End = { callId, device, userId, tokenHash: hashToken(token), ws, check, checking: false, tokens: config.burst, refilledAt: Date.now(), slowSince: null };
+  const end: End = { callId, device, userId, sender, tokenHash: hashToken(token), ws, check, checking: false, tokens: config.burst, refilledAt: Date.now(), slowSince: null };
   const previous = room.get(device);
   room.set(device, end);
   previous?.ws.close(4000);
@@ -117,6 +130,8 @@ const callMedia = {
   tick,
   /** The call ended. */
   closeCall: (callId: string) => closeWhere(end => end.callId === callId, 1000),
+  /** The device left the call. */
+  closeEnd: (callId: string, device: string) => closeWhere(end => end.callId === callId && end.device === device, 1000),
   closeUser: (userId: unknown, exceptToken: string | null = null) => {
     const except = hashToken(exceptToken);
     return closeWhere(end => end.userId === String(userId) && !(except && end.tokenHash === except), 1008);

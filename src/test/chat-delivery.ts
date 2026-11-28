@@ -208,7 +208,7 @@ function deliveryService() {
     };
     if (conversation.name !== undefined) {
       return { ...base, kind: 'group', name: conversation.name, follows: null, role: conversation.managers!.includes(userId) ? 'manager' : 'member',
-        member_count: conversation.people.length, added_by: null };
+        member_count: conversation.people.length, added_by: null, call: null };
     }
     const peer = conversation.people.find(person => person !== userId)!;
     const theirs = marksOf(conversation, peer);
@@ -236,7 +236,7 @@ function deliveryService() {
     return found;
   };
   const isEnd = (call: Call, device: Device | undefined) => !!device && (call.callerDevice === device.id || call.answered === device.id);
-  const callView = (call: Call, device: Device | undefined): ChatCall => ({ id: call.id, conversation_id: call.conversation, caller_user_id: call.caller,
+  const callView = (call: Call, device: Device | undefined): ChatCall => ({ id: call.id, conversation_id: call.conversation, kind: 'direct', name: null, members: [], caller_user_id: call.caller,
     callee_user_id: call.callee, caller_name: names.get(call.caller)!, callee_name: names.get(call.callee)!, state: call.state, outcome: call.outcome,
     this_device: isEnd(call, device), created_at: call.created_at, answered_at: call.answered_at, ended_at: call.state === 'ended' ? new Date().toISOString() : null });
   // Hints reach the pages after the answer, as the live stream's do.
@@ -247,7 +247,7 @@ function deliveryService() {
     Object.assign(call, { state: 'ended', outcome, signals: [] });
     messages.push({ id: crypto.randomUUID(), conversation_id: at.id, seq: ++at.last_seq, group_id: null, sender_user_id: call.caller, sender_chat_device_id: call.callerDevice,
       kind: 'call', replaces: null, format: 0, ciphertext: null, created_at: new Date().toISOString(),
-      call: { call_id: call.id, outcome, caller_user_id: call.caller, callee_user_id: call.callee, started_at: call.created_at, answered_at: call.answered_at, ended_at: new Date().toISOString() } });
+      call: { call_id: call.id, outcome, caller_user_id: call.caller, callee_user_id: call.callee, people: call.answered_at ? 2 : 1, started_at: call.created_at, answered_at: call.answered_at, ended_at: new Date().toISOString() } });
     hint(call);
   }
   /** The calls routes (api/src/services/chat-calls.ts) for the device of `mine`. */
@@ -298,7 +298,7 @@ function deliveryService() {
         if (!isEnd(call!, mine)) return refuse(403, 'CHAT_CALL_DEVICE');
         const after = Number(params.get('after'));
         const signals = call!.signals.filter(item => item.id > after && item.from !== mine!.id).slice(0, 100);
-        return ok({ signals: signals.map(({ id, payload }) => ({ id, payload, created_at: '' })), after: signals.at(-1)?.id ?? after });
+        return ok({ signals: signals.map(({ id, from, payload }) => ({ id, from, payload, created_at: '' })), after: signals.at(-1)?.id ?? after });
       }
       case 'POST /chat/calls/:id/alive':
         if (!isEnd(call!, mine)) return refuse(403, 'CHAT_CALL_DEVICE');

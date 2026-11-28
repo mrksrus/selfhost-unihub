@@ -314,6 +314,18 @@ export interface ChatGroupConversation extends ChatConversationBase {
   member_count: number;
   /** The name of the person who added the caller; null for its creator, in a followed chat, or once that person is gone. */
   added_by: string | null;
+  /** The chat's call while one is going on (ringing or active); null otherwise. */
+  call: ChatConversationCall | null;
+}
+
+/** A group chat's call going on, for joining it from the chat. */
+export interface ChatConversationCall {
+  id: string;
+  started_at: string;
+  /** The people in it now. */
+  people: number;
+  /** 8 people are in it: a join is refused until one leaves. */
+  full: boolean;
 }
 
 export type ChatConversation = ChatDirectConversation | ChatGroupConversation;
@@ -629,27 +641,44 @@ export interface ChatArchiveResponse { copies: ChatArchiveEntry[]; cursor: strin
 // --- Calls ---------------------------------------------------------------------------------
 
 /*
- * Voice calls between the two people of a direct chat. Media is peer to
- * peer (WebRTC, DTLS-SRTP) where the devices connect directly; the server
- * carries the ring, the signals (offer, answer, candidates as opaque text)
- * and the call's record, and passes on the encrypted sound when they cannot
- * (GET /api/chat/calls/:id/media).
- * Every call route names the call by id and the call names its
- * conversation. One call per person at a time.
+ * Voice calls. A direct call is between the two people of a direct chat:
+ * media is peer to peer (WebRTC, DTLS-SRTP) where the devices connect
+ * directly, and through UniHub (GET /api/chat/calls/:id/media) when they
+ * cannot. A group call is the call of a group chat, at most 8 people at once,
+ * and its sound always goes through UniHub: every device sends one stream and
+ * the server passes it to every other device in the call. The server carries
+ * the ring, the signals (opaque text the devices define) and the call's
+ * record. Every call route names the call by id and the call names its
+ * conversation. One call per person at a time, of either kind; a person who
+ * is rung or in a call is busy.
  *
  * Refusals every call route shares, besides the chat routes' own: 404
- * CHAT_CALL_NOT_FOUND for anyone who is not one of the call's two people,
- * and 403 CHAT_CALL_DEVICE for a device of theirs that is not an end of the
- * call where the route needs one (the calling device, and once answered the
- * answering device).
+ * CHAT_CALL_NOT_FOUND for anyone who is not one of a direct call's two
+ * people, or whom the group chat does not reach now (checked on every
+ * request); 403 CHAT_CALL_DEVICE for a device of theirs that is not an end
+ * of the call where the route needs one (a direct call's calling device and
+ * once answered the answering device; a group call's device of a joined
+ * member).
  *
  * The live hint chat.call (ChatCallHint, module chat, joined devices only)
- * goes to both people's pages when a call starts, is answered or ends, and to
- * the other end when a signal is posted: refetch GET /api/chat/calls/current
- * or the call's signals.
+ * goes to both people's pages when a direct call starts, is answered or
+ * ends, and to the other end when a signal is posted: refetch GET
+ * /api/chat/calls/current or the call's signals. For a group call it goes to
+ * every person of the chat when the call starts, someone is rung, joins,
+ * declines or leaves, and it ends (with chat.changed, as the call on the
+ * group conversation changed), and to the members in it when a signal is
+ * posted.
  */
 
-/** ringing (45 seconds at most), active once answered, ended. */
+/** A call's kind is its chat's. */
+export type ChatCallKind = 'direct' | 'group';
+
+/**
+ * ringing (45 seconds at most), active once answered, ended. A group call
+ * rings while people were rung and nobody but its starter joined yet; one in
+ * which nobody was rung (a chat of more than 8 people, or everyone else
+ * busy) is active from its start.
+ */
 export type ChatCallState = 'ringing' | 'active' | 'ended';
 
 /**
@@ -661,22 +690,56 @@ export type ChatCallState = 'ringing' | 'active' | 'ended';
  * restarted from a backup). A missed, cancelled or busy call is a missed call
  * for the callee: a call_missed notification, and its entry counts as unread
  * for them.
+ *
+ * A group call ends when the last person in it leaves: answered when anyone
+ * besides its starter was ever in it, cancelled when not; failed when its
+ * people stopped sending signs of life. A call that rang and that nobody
+ * joined ends as missed when the ring time is over, or declined once every
+ * rung person declined. Never busy. Its missed calls are per person
+ * (ChatCallMemberState missed), also when others answered.
  */
 export type ChatCallOutcome = 'answered' | 'missed' | 'cancelled' | 'declined' | 'busy' | 'failed';
 
 /** One entry of RTCConfiguration.iceServers: the relay's addresses with credentials made for this call, good for twelve hours. */
 export interface ChatIceServer { urls: string[]; username: string; credential: string }
 
-/** A call as one of its two people sees it from the request's device. */
+/**
+ * A person of a group call: rung (ringing, 45 seconds at most), in it on one
+ * device (joined), declined the ring, missed it (the ring time passed, or the
+ * call ended while it rang), or left (also when the call ended, or when they
+ * stopped sending signs of life or the chat no longer reaches them).
+ */
+export type ChatCallMemberState = 'ringing' | 'joined' | 'declined' | 'missed' | 'left';
+
+/** One person who was rung for a group call or joined it, the starter included. */
+export interface ChatCallMember {
+  user_id: string;
+  /** The directory's name now. */
+  name: string;
+  state: ChatCallMemberState;
+  /** The chat device in the call while joined; null otherwise. */
+  chat_device_id: string | null;
+  /** The number the server gave this member while joined (0 to 7): the sender byte of their frames (ChatCallMediaFrame); null otherwise. */
+  sender: number | null;
+  /** The last time they joined; null for someone who never did. */
+  joined_at: string | null;
+}
+
+/** A call as one of its people sees it from the request's device. */
 export interface ChatCall {
   id: string;
   conversation_id: string;
-  /** null once the person was deleted. */
+  kind: ChatCallKind;
+  /** The group chat's name; null for a direct call. */
+  name: string | null;
+  /** null once the person was deleted. A group call's caller is its starter; its callee is null. */
   caller_user_id: string | null;
   callee_user_id: string | null;
-  /** The directory's names now; 'Deleted person' once deleted. */
+  /** The directory's names now; 'Deleted person' once deleted (always for a group call's callee). */
   caller_name: string;
   callee_name: string;
+  /** A group call's people, in the order they joined, those never in it last; empty for a direct call. */
+  members: ChatCallMember[];
   state: ChatCallState;
   /** null until it ended. */
   outcome: ChatCallOutcome | null;
@@ -685,7 +748,8 @@ export interface ChatCall {
    * or the device that answered. false on the callee's devices while it
    * rings (any of them may answer) and on every other device of the two
    * people; an active call with this_device false on the callee's side was
-   * answered on another device.
+   * answered on another device. In a group call: whether the request's
+   * device is the device its person joined with.
    */
   this_device: boolean;
   created_at: string;
@@ -695,7 +759,10 @@ export interface ChatCall {
 
 /**
  * The call of a 'call' chat entry (ChatMessage.call). Its length is
- * ended_at minus answered_at for an answered call.
+ * ended_at minus answered_at for an answered call. In a group chat its
+ * caller is the starter and its sender; the callee is null. A group call's
+ * entry counts as unread for each person who missed it (rung, and neither
+ * joined nor declined).
  */
 export interface ChatCallEntry {
   call_id: string;
@@ -703,6 +770,8 @@ export interface ChatCallEntry {
   /** null once the person was deleted (the entry stays). */
   caller_user_id: string | null;
   callee_user_id: string | null;
+  /** How many people were in the call: a direct call 2 once answered, else 1; a group call everyone who ever joined, the starter included. */
+  people: number;
   started_at: string;
   answered_at: string | null;
   ended_at: string;
@@ -716,8 +785,18 @@ export interface ChatCallEntry {
  * 45 seconds: their pages by the hint, Android apps that can ring by a
  * notification of kind call.
  *
+ * Named by a group chat, it starts the chat's group call, with the request's
+ * device joined as its first member (sender 0). In a chat of up to 8 people
+ * (member_count when it starts) every other person who can take a call now
+ * (active, Chat on, a joined device, calls allowed by their policy) and is
+ * not busy is rung, as a direct callee is; everyone else of the chat is sent
+ * call_started. In a bigger chat nobody is rung and everyone else is sent
+ * call_started. While the chat has a call going on, nothing new starts: the
+ * answer is that call (started false), which the device joins with
+ * POST /api/chat/calls/:id/answer.
+ *
  * Refused: 400 CHAT_SELF; 400 CHAT_CALL_INVALID without exactly one of the
- * two, 400 CHAT_NOT_DIRECT for a group chat; 404 USER_NOT_FOUND; 403
+ * two; 404 USER_NOT_FOUND; 403
  * CHAT_UNAVAILABLE with the reason when the callee cannot be written to
  * (deactivated, Chat off, no joined device); 403 POLICY_FORBIDS
  * (PolicyForbidsDetails, policy chat.calls) when calls are forbidden for the
@@ -742,6 +821,15 @@ export interface ChatCurrentCallResponse { call: ChatCall | null }
  * CHAT_CALL_ANSWERED once another device answered (the same device answering
  * again is answered as it is), 409 CHAT_CALL_ENDED once it ended; 403
  * CHAT_CALL_DEVICE for the caller.
+ *
+ * In a group call it joins: a rung person answering, or anyone the chat
+ * reaches joining a call going on (also after declining, missing it or
+ * leaving). The request's device becomes the person's device in the call
+ * with the lowest free sender number; their other devices stop ringing.
+ * Refused: 403 POLICY_FORBIDS while calls are forbidden for them; 409
+ * CHAT_CALL_IN_PROGRESS while they are rung for or in another call; 409
+ * CHAT_CALL_ANSWERED while they are in it on another device; 409
+ * CHAT_CALL_FULL while 8 people are in it.
  */
 export interface ChatCallAnswerResponse { call: ChatCall; ice_servers: ChatIceServer[] }
 
@@ -752,6 +840,12 @@ export interface ChatCallAnswerResponse { call: ChatCall; ice_servers: ChatIceSe
  * (declined); once answered: either end (answered, or failed). The signals
  * are deleted and the call's entry is written. An ended call is answered as
  * it is.
+ *
+ * In a group call: any joined device of a rung person declines (only that
+ * person stops ringing; failed from it changes nothing), and the device of a
+ * member in the call leaves (its media socket closes). The call ends only
+ * when the last person in it left, or when nobody joined and nobody is rung
+ * any more.
  */
 export interface ChatCallEndRequest { failed?: boolean }
 export interface ChatCallResponse { call: ChatCall }
@@ -764,25 +858,31 @@ export interface ChatCallResponse { call: ChatCall }
  * CHAT_CALL_SIGNAL_INVALID; 409 CHAT_CALL_ENDED; 409 CHAT_CALL_SIGNALS_LIMIT
  * after 1,000 signals in one call. The server logs none of it and deletes
  * every signal when the call ends.
+ *
+ * In a group call a signal goes to every device in the call, also to those
+ * that join later (signals stay until the call ends); the device of a joined
+ * member posts, at most 300 signals per device in one call.
  */
 export interface ChatCallSignalRequest { payload: string }
 export interface ChatCallSignalPostedResponse { id: number }
 
-/** A signal from the other end. */
-export interface ChatCallSignal { id: number; payload: string; created_at: string }
+/** A signal from another end; `from` is the chat device that posted it, as the server knows it (null once that device is gone). */
+export interface ChatCallSignal { id: number; from: string | null; payload: string; created_at: string }
 
 /**
- * GET /api/chat/calls/:id/signals?after=<id>: the other end's signals after
+ * GET /api/chat/calls/:id/signals?after=<id>: the other ends' signals after
  * that id, oldest first (at most 100); `after` is the cursor for the next
- * read (the last id answered, or the one asked). Either end; an ended call
- * has none.
+ * read (the last id answered, or the one asked). Either end, or a joined
+ * member's device in a group call; an ended call has none.
  */
 export interface ChatCallSignalsResponse { signals: ChatCallSignal[]; after: number }
 
 /**
  * POST /api/chat/calls/:id/alive: an end's sign of life, every 30 seconds
  * while the call rings or is active. An active call without one for 90
- * seconds ends as failed. Answers the call as it is now.
+ * seconds ends as failed. Answers the call as it is now. In a group call it
+ * is the member's own: a member without one for 90 seconds is taken out
+ * (left), and the call ends as failed when that leaves nobody in it.
  */
 
 /** GET /api/chat/calls/:id/ice: fresh connection servers for a restart, to either end of a call that has not ended. */
@@ -798,21 +898,26 @@ export interface ChatCallHint { call_id: string }
  * end to the other end's socket unchanged and reads, stores and logs none of
  * it; the devices encrypt it with a key the server cannot compute. Each end
  * opens its own socket; a second socket of the same device replaces the first
- * (close 4000), as after a reconnect.
+ * (close 4000), as after a reconnect. In a group call it is the socket of a
+ * joined member's device, also while the call still rings; a message goes to
+ * every other end of the call, and one whose sender byte (the second byte)
+ * is not the sending member's number is dropped. Nothing else of a message
+ * is read.
  *
  * Refused before the handshake, as an ordinary JSON answer: the chat routes'
  * refusals and the call routes' shared ones; 409 CHAT_CALL_ENDED; 409
- * CHAT_CALL_NOT_ACTIVE while it rings; 503 CHAT_CALL_MEDIA_BUSY when UniHub
- * carries 200 sockets already; 400 CHAT_CALL_MEDIA_INVALID for a malformed
+ * CHAT_CALL_NOT_ACTIVE while a direct call rings; 503 CHAT_CALL_MEDIA_BUSY
+ * when UniHub carries 200 sockets already, or when a new end would take it
+ * past 400 forwarded streams (a call of n ends counts n × (n − 1)); 400 CHAT_CALL_MEDIA_INVALID for a malformed
  * handshake; 426 CHAT_CALL_MEDIA_UPGRADE for a request that passed every
  * check but arrived without its Upgrade: a reverse proxy that does not pass
  * WebSockets (a page tells that from a failed socket with a plain GET).
  *
  * Messages: binary only, at most 1,024 bytes each, unfragmented, no
  * extensions or subprotocols. At most 60 a second from an end, in bursts of
- * 120; more are dropped. While an end's socket has more than 8 KiB unsent,
- * messages to it are dropped. The server pings every 25 seconds; browsers
- * answer on their own.
+ * 120; more are dropped. While an end's socket has more than 8 KiB times the
+ * number of other ends unsent, messages to it are dropped. The server pings
+ * every 25 seconds; browsers answer on their own.
  *
  * The devices' frame (ChatCallMediaFrame) names its sender and key so that
  * group calls can forward one end's frames to every other end.
@@ -825,12 +930,12 @@ export interface ChatCallHint { call_id: string }
 
 /**
  * Why the server closed a media socket:
- * 1000 the call ended (or the check is done); 1001 the server is stopping;
+ * 1000 the call ended, or this device left it (or the check is done); 1001 the server is stopping;
  * 1002 a protocol error (an unmasked frame, reserved bits, an unknown opcode,
  * a bad control frame); 1003 a text or fragmented message; 1008 the session
  * ended or this device is no longer an end of the call (sign-out, a revoked
- * session, a deactivated person, checked at once on sign-out and every 25
- * seconds); 1009 a message over 1,024 bytes; 4000 replaced by a newer
+ * session, a deactivated person, someone the group chat no longer reaches,
+ * a new sender number; checked at once on sign-out and every 25 seconds); 1009 a message over 1,024 bytes; 4000 replaced by a newer
  * socket of the same device; 4001 the end sent nothing for 60 seconds or did
  * not read for 15 seconds.
  */
@@ -841,7 +946,8 @@ export type ChatCallMediaClose = 1000 | 1001 | 1002 | 1003 | 1008 | 1009 | 4000 
  * 7-byte header in clear, [version 1][sender 1][key 1][sequence 4,
  * big-endian], then the AES-GCM ciphertext of [kind 1][Opus packet] with its
  * 16-byte tag, the header as additional data. version 1; sender and key 0 in
- * a call between two people.
+ * a call between two people. In a group call sender is the member's number
+ * (ChatCallMember.sender) and key 0.
  */
 export interface ChatCallMediaFrame { version: 1; sender: number; key: number; sequence: number }
 
@@ -860,6 +966,16 @@ export interface ChatCallMediaFrame { version: 1; sender: number; key: number; s
  * - call_missed: to every joined device of the callee, for a missed,
  *   cancelled or busy call: "Missed call from <name>" ("Missed call" at
  *   'none'), for a day or until its entry is read; url /chat?c=<conversation>.
+ *
+ * In a group call call rings each rung person, its title "<starter> in
+ * <chat>" ('Incoming call' at 'none'), and call_missed goes to each person
+ * who missed it: "Missed call from <starter> in <chat>".
+ *
+ * - call_started: to every joined device of a person of a group chat who was
+ *   not rung (a chat of more than 8, or busy at the start) when its call
+ *   starts: "<starter> started a call in <chat>" ('Call started' at 'none'),
+ *   while the call lasts and they are not in it, unless the chat notifies
+ *   them of nothing or calls are forbidden for them; url /chat?c=<conversation>.
  */
 export interface ChatCallNotification { id: string; event: 'ring' | 'end' }
 

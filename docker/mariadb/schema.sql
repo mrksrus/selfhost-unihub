@@ -3,7 +3,7 @@
 -- Schema changes are numbered migrations in api/src/services/database.ts; the app
 -- creates and upgrades its own schema on startup. This file is a reviewable
 -- reference, and a database test fails when it differs from a freshly migrated database.
--- Through migration 34.
+-- Through migration 35.
 
 CREATE TABLE `address_books` (
   `id` char(36) NOT NULL,
@@ -468,6 +468,23 @@ CREATE TABLE `chat_attachments` (
   CONSTRAINT `fk_chat_attachments_conversation` FOREIGN KEY (`conversation_id`) REFERENCES `chat_conversations` (`id`) ON DELETE CASCADE,
   CONSTRAINT `fk_chat_attachments_message` FOREIGN KEY (`message_id`) REFERENCES `chat_messages` (`id`),
   CONSTRAINT `fk_chat_attachments_uploader` FOREIGN KEY (`uploader_user_id`) REFERENCES `users` (`id`) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `chat_call_members` (
+  `call_id` char(36) NOT NULL,
+  `user_id` char(36) NOT NULL,
+  `chat_device_id` char(36) DEFAULT NULL,
+  `state` varchar(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  `sender` tinyint(3) unsigned DEFAULT NULL,
+  `joined_at` datetime DEFAULT NULL,
+  `left_at` datetime DEFAULT NULL,
+  `alive_at` datetime DEFAULT NULL,
+  PRIMARY KEY (`call_id`,`user_id`),
+  KEY `idx_chat_call_members_user` (`user_id`,`state`),
+  KEY `fk_chat_call_members_device` (`chat_device_id`),
+  CONSTRAINT `fk_chat_call_members_call` FOREIGN KEY (`call_id`) REFERENCES `chat_calls` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_chat_call_members_device` FOREIGN KEY (`chat_device_id`) REFERENCES `chat_devices` (`id`) ON DELETE SET NULL,
+  CONSTRAINT `fk_chat_call_members_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE `chat_call_signals` (

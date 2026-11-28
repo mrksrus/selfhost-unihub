@@ -29,7 +29,7 @@ const CHAT_MANIFEST = Object.freeze({
   module: Object.freeze({ id: 'chat', label: 'Chat', backgroundSupported: false, recoverySection: null }),
   pages: Object.freeze([Object.freeze({ id: 'chat', label: 'Chat', module: 'chat' })]),
   // Its notification kinds; services/notifications.ts renders them and refuses to start without each.
-  notificationKinds: Object.freeze(['chat', 'chat_device', 'call', 'call_missed']),
+  notificationKinds: Object.freeze(['chat', 'chat_device', 'call', 'call_missed', 'call_started']),
   // Upgrade step 31 (chat-migration.ts).
   introducedIn: 31,
   excludedReason: 'Chats are not in a personal backup: the server cannot read them, and they are restored with the chat passphrase. Only the instance backup carries them, as stored.',
@@ -61,6 +61,8 @@ const CHAT_MANIFEST = Object.freeze({
       introducedIn: 34 },
     chat_call_signals: { owner: 'organisation', shareable: false, dataClass: 'installation', restore: `${INSTANCE_ONLY} A call's signals go when it ends.`,
       columns: 'id call_id from_chat_device_id payload created_at', introducedIn: 34 },
+    chat_call_members: { owner: 'user', shareable: false, dataClass: 'org', restore: `${INSTANCE_ONLY} It goes with its call or person; a group call going on ends at the next start.`,
+      columns: 'call_id user_id chat_device_id state sender joined_at left_at alive_at', introducedIn: 35 },
   }),
 });
 

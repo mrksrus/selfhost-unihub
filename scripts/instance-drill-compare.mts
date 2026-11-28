@@ -82,6 +82,7 @@ export const INSTALLATION_RULES: Readonly<Record<string, Rule>> = Object.freeze(
   chat_attachments: { reason: "A chat file's row comes back with its message and uploader." },
   chat_calls: { reason: 'Calls come back with their outcome and their entry in the chat.' },
   chat_call_signals: { reason: "A call's signals are deleted when it ends, so an installation at rest has none.", empty: true },
+  chat_call_members: { reason: "A group call's people come back with their states." },
   'chat files': { reason: 'Chat files come back as the ciphertext they were.' },
 });
 
