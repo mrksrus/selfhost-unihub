@@ -274,7 +274,7 @@ test('contacts import, photos and merges: inline photos stored and exported, imp
 }, async t => {
   const { captureLog } = require('../dist/src/log') as typeof import('../src/log');
   t.after(captureLog(() => {}));
-  const sharp = require('sharp') as typeof import('sharp').default;
+  const sharp = require('sharp') as typeof import('sharp');
   const scratch = fs.mkdtempSync(path.join(process.env.TMPDIR || os.tmpdir(), 'unihub-contact-seams-'));
   const previous = { imports: process.env.CONTACT_IMPORTS_ROOT, photos: process.env.CONTACT_PHOTOS_ROOT, spool: process.env.UPLOAD_SPOOL_ROOT };
   process.env.CONTACT_IMPORTS_ROOT = path.join(scratch, 'imports');
@@ -452,7 +452,7 @@ test('contacts review probes: long values, undo and purge under the photo lock, 
 }, async t => {
   const { captureLog } = require('../dist/src/log') as typeof import('../src/log');
   t.after(captureLog(() => {}));
-  const sharp = require('sharp') as typeof import('sharp').default;
+  const sharp = require('sharp') as typeof import('sharp');
   const scratch = fs.mkdtempSync(path.join(process.env.TMPDIR || os.tmpdir(), 'unihub-contact-review-'));
   const previous = { imports: process.env.CONTACT_IMPORTS_ROOT, photos: process.env.CONTACT_PHOTOS_ROOT, spool: process.env.UPLOAD_SPOOL_ROOT };
   process.env.CONTACT_IMPORTS_ROOT = path.join(scratch, 'imports');

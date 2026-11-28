@@ -51,7 +51,11 @@ export default tseslint.config(
     extends: [js.configs.recommended, ...tseslint.configs.recommended],
     files: ["workers/**/*.ts"],
     languageOptions: { ecmaVersion: 2022, globals: globals.serviceworker },
-    rules: { "@typescript-eslint/no-unused-vars": "off" },
+    rules: {
+      "@typescript-eslint/no-unused-vars": "off",
+      // Classic workers: an import or export would make tsc emit a module they cannot load.
+      "no-restricted-syntax": ["error", ...["ImportDeclaration", "ImportExpression", "ExportNamedDeclaration", "ExportDefaultDeclaration", "ExportAllDeclaration"].map(selector => ({ selector, message: "Workers are classic scripts: no import or export." }))],
+    },
   },
   {
     extends: [js.configs.recommended, ...tseslint.configs.recommended],

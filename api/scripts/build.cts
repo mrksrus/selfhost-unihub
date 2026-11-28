@@ -3,8 +3,10 @@ const fs = require('node:fs') as typeof import('node:fs');
 const path = require('node:path') as typeof import('node:path');
 const { spawnSync } = require('node:child_process') as typeof import('node:child_process');
 const apiRoot = path.resolve(__dirname, '..');
+// The package's exports do not name bin/tsc.
+const tsc = path.join(apiRoot, 'node_modules/typescript/bin/tsc');
 fs.rmSync(path.join(apiRoot, 'dist'), { recursive: true, force: true });
-const result = spawnSync(process.execPath, [require.resolve('typescript/bin/tsc'), '-p', path.join(apiRoot, 'tsconfig.json')], { stdio: 'inherit' });
+const result = spawnSync(process.execPath, [tsc, '-p', path.join(apiRoot, 'tsconfig.json')], { stdio: 'inherit' });
 if (result.error) throw result.error;
 process.exitCode = result.status ?? 1;
 if (result.status === 0) {
@@ -17,7 +19,7 @@ if (result.status === 0) {
 // The Docker API-only builder has no worker source; its frontend stage builds it.
 const workersConfig = path.resolve(apiRoot, '../tsconfig.workers.json');
 if (result.status === 0 && fs.existsSync(workersConfig)) {
-  const workers = spawnSync(process.execPath, [require.resolve('typescript/bin/tsc'), '-p', workersConfig], { stdio: 'inherit' });
+  const workers = spawnSync(process.execPath, [tsc, '-p', workersConfig], { stdio: 'inherit' });
   if (workers.error) throw workers.error;
   process.exitCode = workers.status ?? 1;
 }
